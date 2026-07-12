@@ -55,7 +55,7 @@ function buildPages(doc: string, pages: number) {
     els.push(el);
   }
   $pagesEl.replaceChildren(...els);
-  $pageNo.textContent = `1 / ${pages}`;
+  $pageNo.textContent = `p. 1 / ${pages}`;
 
   loader = new IntersectionObserver(
     (entries) => {
@@ -85,7 +85,7 @@ function buildPages(doc: string, pages: number) {
       for (const e of entries) {
         if (e.isIntersecting) {
           const page = (e.target as HTMLElement).dataset.page!;
-          $pageNo.textContent = `${page} / ${pages}`;
+          $pageNo.textContent = `p. ${page} / ${pages}`;
           localStorage.setItem(`pos:${doc}`, page);
         }
       }

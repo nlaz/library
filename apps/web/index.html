@@ -3,7 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>The Library</title>
+    <script>
+      document.documentElement.dataset.theme =
+        localStorage.theme === "dark" ? "dark" : "light";
+    </script>
+    <link rel="preload" href="/fonts/instrument-sans-vf.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
@@ -25,6 +33,7 @@
         autofocus
       />
       <button id="add-btn" title="Add PDFs to the library" hidden>+ Add</button>
+      <button id="theme-btn" title="Switch theme"></button>
       <div id="status"></div>
     </header>
     <main>

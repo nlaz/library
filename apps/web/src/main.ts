@@ -18,7 +18,24 @@ const $viewerClose = document.getElementById("viewer-close")!;
 const $pageImg = document.getElementById("page-img") as HTMLImageElement;
 const $pageHl = document.getElementById("page-hl")!;
 const $addBtn = document.getElementById("add-btn")!;
+const $themeBtn = document.getElementById("theme-btn")!;
 const $dropzone = document.getElementById("dropzone")!;
+
+// ---------------------------------------------------------------------------
+// theme: light is the default; <head> set data-theme before the stylesheet
+// ---------------------------------------------------------------------------
+
+function syncThemeBtn() {
+  // the label names the destination, not the current state
+  $themeBtn.textContent = document.documentElement.dataset.theme === "dark" ? "Light" : "Dark";
+}
+$themeBtn.addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.theme = next;
+  syncThemeBtn();
+});
+syncThemeBtn();
 
 const FULL_DEBOUNCE_MS = 120;
 const PREVIEW_H = 190; // px, keep in sync with .preview height in style.css
@@ -142,7 +159,7 @@ function bookCard(d: DocInfo, cols: Collections): HTMLElement {
   title.textContent = displayTitle(d);
   const sub = document.createElement("div");
   sub.className = "bsub";
-  sub.textContent = d.pages ? `${d.pages} pages` : "queued";
+  sub.textContent = d.pages ? `${d.pages} pp.` : "queued";
 
   el.append(cover, title, sub);
 
@@ -459,7 +476,7 @@ let viewerHit: WireHit | null = null;
 
 function openViewer(hit: WireHit) {
   viewerHit = hit;
-  $viewerLabel.textContent = `${hit.doc} — page ${hit.page}`;
+  $viewerLabel.textContent = `${hit.doc} · p. ${hit.page}`;
   $viewerRead.hidden = !desktop;
   $pageHl.replaceChildren(...hlBoxes(hit.boxes));
   const src = pageUrl(hit.img);

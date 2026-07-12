@@ -33,7 +33,8 @@ use serde::{Deserialize, Serialize};
 
 const CHUNK_WORDS: usize = 200;
 const CHUNK_STRIDE: usize = 160; // 40 words of overlap between neighbors
-const EMBED_BATCH: usize = 16;
+// >= 16 lets ese's rayon path fan a batch across cores
+const EMBED_BATCH: usize = 128;
 
 /// Minimum figure height, as a fraction of the page (~4x a text line).
 const FIG_MIN_H: f32 = 0.07;

@@ -1,0 +1,11 @@
+[package]
+name = "fold"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+anny = { path = "../anny" }
+fxhash = "0"
+postcard = { version = "1", features = ["use-std"] }
+serde = { version = "1", features = ["derive"] }
+fjall = { version = "3", default-features = false }

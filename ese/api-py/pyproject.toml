@@ -1,0 +1,50 @@
+[build-system]
+requires = [
+  "maturin>=1.10,<2.0"
+]
+build-backend = "maturin"
+
+[dependency-groups]
+dev = [
+  "maturin[patchelf]>=1.10.0",
+]
+
+[project]
+name = "ese"
+classifiers = [
+  "Intended Audience :: Developers",
+  "Programming Language :: Rust",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+authors = [
+  {email = "william@flowercomputer.com", name = "W. Turner Abney"}
+]
+keywords = [
+  "embeddings",
+  "rust",
+]
+license = "Apache 2.0"
+readme = "readme.md"
+requires-python = ">=3.10"
+version = "0.1.0"
+dependencies = [
+    "numpy>=2.2.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/flowercomputers/ese"
+Repository = "https://github.com/flowercomputers/ese"
+
+[tool.maturin]
+features = [
+  "pyo3/extension-module"
+]
+
+[tool.uv]
+default-groups = "all"

@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["fold", "anny", "ese", "examples/*"]
+
+# hoisted from fold; applies workspace-wide
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+
+# hoisted from anny
+[profile.bench]
+lto = "fat"
+codegen-units = 1

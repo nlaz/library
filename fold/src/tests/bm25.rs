@@ -71,3 +71,45 @@ fn bm25_rank_and_retract() {
         assert!(idx.search("rust", 10).is_empty());
     });
 }
+
+#[test]
+fn bm25_search_filtered() {
+    let mut st = Stream::new(
+        fresh_db("bm25_filtered.db"),
+        terminal::search::Bm25::<String, String>::new("bm25_idx"),
+    );
+
+    st.wtx(|tx| {
+        for i in 0..50 {
+            let group = if i % 2 == 0 { "even" } else { "odd" };
+            // vary length so scores differ deterministically
+            tx.insert(&Keyed::new(
+                format!("{group}{i}"),
+                format!("fox {}", "pad ".repeat(i)),
+            ));
+        }
+    });
+
+    st.rtx(|idx| {
+        let all = idx.search("fox", 50);
+        assert_eq!(all.len(), 50);
+
+        // filtered matches the full ranking restricted to the predicate:
+        // the filter applies before limit-truncation, so hits don't starve
+        let filt = idx.search_filtered("fox", 10, |k| k.starts_with("odd"));
+        assert_eq!(filt.len(), 10);
+        assert!(filt.iter().all(|h| h.val.starts_with("odd")));
+        let expect: Vec<_> = all
+            .iter()
+            .filter(|h| h.val.starts_with("odd"))
+            .take(10)
+            .collect();
+        for (a, b) in filt.iter().zip(expect) {
+            assert_eq!(a.val, b.val);
+            assert_eq!(a.score, b.score);
+        }
+
+        // reject-everything filter returns nothing
+        assert!(idx.search_filtered("fox", 10, |_| false).is_empty());
+    });
+}

@@ -706,6 +706,293 @@ where
         }
         best
     }
+
+    // ------------------------- public: filtered search -------------------------
+    // Like `search`, but only ids passing `allow` are returned. Traversal is
+    // identical to the unfiltered search (the frontier routes THROUGH
+    // disallowed nodes — gating the frontier itself would break reachability);
+    // a separate K-capacity result list collects the allowed nodes seen.
+    pub fn search_filtered(
+        &self,
+        q: &[Dtype],
+        allow: impl Fn(u32) -> bool,
+    ) -> Vec<(Distance::Out, u32)> {
+        let (e_lvl, e_id) = match self.entry_point {
+            Some(ep) => ep,
+            None => return Vec::new(),
+        };
+        let mut cur = e_id as usize;
+        for layer in (1..=e_lvl as usize).rev() {
+            cur = self.greedy(q, cur, layer);
+        }
+        VISITED.with(|v| {
+            let (buf, stamp) = &mut *v.borrow_mut();
+            Self::bump(buf, stamp, self.meta.len());
+            let mut fr = Frontier::<Distance::Out, EF_SEARCH>::new();
+            let mut res = Frontier::<Distance::Out, K>::new();
+            fr.reset();
+            res.reset();
+            let entries = [cur as u32];
+            for &e in &entries {
+                let eu = e as usize;
+                if buf[eu] == *stamp {
+                    continue;
+                }
+                buf[eu] = *stamp;
+                let d = self.dq(q, eu);
+                fr.push(d, e);
+                if allow(e) {
+                    res.push(d, e);
+                }
+            }
+            while let Some((_cd, c)) = fr.next() {
+                let c = c as usize;
+                let nbrs = self.nbr(c, 0);
+                for k in 0..nbrs.len() {
+                    let n = nbrs[k];
+                    if n == NONE {
+                        continue;
+                    }
+                    let nu = n as usize;
+                    if !self.present(nu, 0) || buf[nu] == *stamp {
+                        continue;
+                    }
+                    buf[nu] = *stamp;
+                    let d = self.dq(q, nu);
+                    fr.push(d, n);
+                    if allow(n) {
+                        res.push(d, n);
+                    }
+                }
+            }
+            res.items().iter().map(|&Item(d, i)| (d, i)).collect()
+        })
+    }
+
+    // Brute-force over an explicit id list (the small-allow-list fallback):
+    // exact, sorted ascending, up to K. Dead/out-of-range ids are skipped.
+    pub fn search_among(&self, q: &[Dtype], ids: &[u32]) -> Vec<(Distance::Out, u32)> {
+        let mut out: Vec<(Distance::Out, u32)> = ids
+            .iter()
+            .filter(|&&id| (id as usize) < self.meta.len() && self.meta[id as usize].alive)
+            .map(|&id| (self.dq(q, id as usize), id))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp_total(&b.0));
+        out.truncate(K);
+        out
+    }
+
+    // --------------------------- public: persistence ---------------------------
+    // The blob is a same-machine cache: raw native-endian array copies behind a
+    // validated header. Any mismatch (shape, dtype width, truncation) yields
+    // LoadError — callers fall back to rebuilding from their durable vectors.
+    // K / EF_SEARCH / EF_BUILD are search-time knobs and deliberately NOT part
+    // of the header: changing them must not invalidate a stored graph.
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let n = self.meta.len();
+        let mut out = Vec::with_capacity(
+            64 + n * (DIM * size_of::<Dtype>() + M_0 * 4 + 6) + self.upper.len() * 4,
+        );
+        out.extend_from_slice(b"ANNG");
+        push_u32(&mut out, 1); // format version
+        push_u32(&mut out, DIM as u32);
+        push_u32(&mut out, M_0 as u32);
+        push_u32(&mut out, MAX_LEVEL as u32);
+        push_u32(&mut out, size_of::<Dtype>() as u32);
+        push_u64(&mut out, n as u64);
+        push_u64(&mut out, self.upper.len() as u64);
+        push_u64(&mut out, self.free_nodes.len() as u64);
+        for fu in &self.free_upper {
+            push_u64(&mut out, fu.len() as u64);
+        }
+        match self.entry_point {
+            Some((lvl, id)) => {
+                out.push(1);
+                out.push(lvl);
+                push_u32(&mut out, id);
+            }
+            None => {
+                out.push(0);
+                out.push(0);
+                push_u32(&mut out, 0);
+            }
+        }
+        push_u64(&mut out, self.rng_state);
+
+        push_raw(&mut out, &self.vectors);
+        push_raw(&mut out, &self.l0);
+        for m in &self.meta {
+            out.push(m.level);
+            push_u32(&mut out, m.upper);
+            out.push(m.alive as u8);
+        }
+        push_raw(&mut out, &self.upper);
+        push_raw(&mut out, &self.free_nodes);
+        for fu in &self.free_upper {
+            push_raw(&mut out, fu);
+        }
+        out
+    }
+
+    pub fn from_bytes(metric: Distance, bytes: &[u8]) -> Result<Self, LoadError> {
+        let mut c = Cursor { buf: bytes, pos: 0 };
+        if c.take(4)? != b"ANNG" {
+            return Err(LoadError::BadMagic);
+        }
+        if c.u32()? != 1 {
+            return Err(LoadError::BadVersion);
+        }
+        let (dim, m0, maxl, dsize) = (c.u32()?, c.u32()?, c.u32()?, c.u32()?);
+        if dim as usize != DIM
+            || m0 as usize != M_0
+            || maxl as usize != MAX_LEVEL
+            || dsize as usize != size_of::<Dtype>()
+        {
+            return Err(LoadError::ShapeMismatch);
+        }
+        let n = c.u64()? as usize;
+        let upper_len = c.u64()? as usize;
+        let free_nodes_len = c.u64()? as usize;
+        let mut free_upper_lens = [0usize; 64];
+        if MAX_LEVEL > 64 {
+            return Err(LoadError::ShapeMismatch);
+        }
+        for l in free_upper_lens.iter_mut().take(MAX_LEVEL) {
+            *l = c.u64()? as usize;
+        }
+        let ep_present = c.take(1)?[0];
+        let ep_lvl = c.take(1)?[0];
+        let ep_id = c.u32()?;
+        let rng_state = c.u64()?;
+
+        let vectors: Vec<[Dtype; DIM]> = c.raw_vec(n)?;
+        let l0: Vec<[u32; M_0]> = c.raw_vec(n)?;
+        let mut meta = Vec::with_capacity(n);
+        for _ in 0..n {
+            let level = c.take(1)?[0];
+            let upper = c.u32()?;
+            let alive = c.take(1)?[0] != 0;
+            if level as usize >= MAX_LEVEL {
+                return Err(LoadError::Corrupt);
+            }
+            meta.push(NodeMeta { level, upper, alive });
+        }
+        let upper: Vec<u32> = c.raw_vec(upper_len)?;
+        let free_nodes: Vec<u32> = c.raw_vec(free_nodes_len)?;
+        let mut free_upper: [Vec<u32>; MAX_LEVEL] = std::array::from_fn(|_| Vec::new());
+        for (i, fu) in free_upper.iter_mut().enumerate() {
+            *fu = c.raw_vec(free_upper_lens[i])?;
+        }
+        if c.pos != bytes.len() {
+            return Err(LoadError::Corrupt);
+        }
+
+        let entry_point = if ep_present == 1 {
+            if ep_id as usize >= n || ep_lvl as usize >= MAX_LEVEL {
+                return Err(LoadError::Corrupt);
+            }
+            Some((ep_lvl, ep_id))
+        } else {
+            None
+        };
+
+        Ok(Self {
+            _metric: metric,
+            vectors,
+            l0,
+            meta,
+            upper,
+            free_nodes,
+            free_upper,
+            entry_point,
+            rng_state,
+            visited: Vec::new(),
+            vstamp: 0,
+        })
+    }
+}
+
+// ----------------------- persistence support types -----------------------
+
+/// Why a persisted graph blob could not be loaded. All variants mean "rebuild
+/// from your durable source of truth instead" — never data loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadError {
+    BadMagic,
+    BadVersion,
+    ShapeMismatch,
+    Truncated,
+    Corrupt,
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            LoadError::BadMagic => "bad magic",
+            LoadError::BadVersion => "unsupported format version",
+            LoadError::ShapeMismatch => "graph shape/dtype does not match this index type",
+            LoadError::Truncated => "blob is truncated",
+            LoadError::Corrupt => "blob is internally inconsistent",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::error::Error for LoadError {}
+
+#[inline]
+fn push_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_ne_bytes());
+}
+#[inline]
+fn push_u64(out: &mut Vec<u8>, v: u64) {
+    out.extend_from_slice(&v.to_ne_bytes());
+}
+
+// Raw native-endian copy of a slice of plain-old-data values. Sound because
+// every T used here (Scalar primitives, u32, fixed arrays of them) is Copy
+// with no padding or pointers.
+#[inline]
+fn push_raw<T: Copy>(out: &mut Vec<u8>, data: &[T]) {
+    let bytes =
+        unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, size_of_val(data)) };
+    out.extend_from_slice(bytes);
+}
+
+struct Cursor<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], LoadError> {
+        if self.pos + n > self.buf.len() {
+            return Err(LoadError::Truncated);
+        }
+        let s = &self.buf[self.pos..self.pos + n];
+        self.pos += n;
+        Ok(s)
+    }
+    fn u32(&mut self) -> Result<u32, LoadError> {
+        Ok(u32::from_ne_bytes(self.take(4)?.try_into().unwrap()))
+    }
+    fn u64(&mut self) -> Result<u64, LoadError> {
+        Ok(u64::from_ne_bytes(self.take(8)?.try_into().unwrap()))
+    }
+    // Read `n` T values by raw byte copy into a fresh, properly aligned Vec.
+    fn raw_vec<T: Copy>(&mut self, n: usize) -> Result<Vec<T>, LoadError> {
+        let nbytes = n
+            .checked_mul(size_of::<T>())
+            .ok_or(LoadError::Corrupt)?;
+        let src = self.take(nbytes)?;
+        let mut v: Vec<T> = Vec::with_capacity(n);
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), v.as_mut_ptr() as *mut u8, nbytes);
+            v.set_len(n);
+        }
+        Ok(v)
+    }
 }
 // ============================ tests ============================
 #[cfg(test)]
@@ -1211,5 +1498,171 @@ mod tests {
             let ib: Vec<u32> = rb.iter().map(|(_, i)| *i).collect();
             assert_eq!(ia, ib, "same seed produced different results");
         }
+    }
+
+    // ======================= persistence =======================
+
+    #[test]
+    fn roundtrip_bit_identical() {
+        let mut rng = Rng::new(7);
+        let mut ix = Ix8::new(L2, 42);
+        let mut live: Vec<(u32, [f32; 8])> = Vec::new();
+        for _ in 0..2000 {
+            let v: [f32; 8] = rng.vec();
+            live.push((ix.insert(v), v));
+        }
+        // some removals so free lists + tombstones are exercised
+        for i in (0..2000).step_by(7) {
+            ix.remove(live[i].0);
+        }
+        live.retain(|(id, _)| id % 7 != 0 || !ix.free_nodes.contains(id));
+
+        let bytes = ix.to_bytes();
+        let re = Ix8::from_bytes(L2, &bytes).expect("load failed");
+        check_invariants(&re);
+        assert_eq!(ix.len(), re.len());
+        assert_eq!(ix.entry_point, re.entry_point);
+        assert_eq!(ix.rng_state, re.rng_state);
+
+        let mut qrng = Rng::new(99);
+        for _ in 0..50 {
+            let q: [f32; 8] = qrng.vec();
+            let a: Vec<(f32, u32)> = ix.search(&q);
+            let b: Vec<(f32, u32)> = re.search(&q);
+            assert_eq!(a, b, "loaded graph gave different results");
+        }
+    }
+
+    #[test]
+    fn roundtrip_then_insert_matches_original() {
+        // continuing to insert after a load must follow the same RNG
+        // trajectory as the original graph
+        let mut rng = Rng::new(3);
+        let vecs: Vec<[f32; 8]> = (0..600).map(|_| rng.vec()).collect();
+
+        let mut a = Ix8::new(L2, 42);
+        for v in &vecs[..400] {
+            a.insert(*v);
+        }
+        let bytes = a.to_bytes();
+        let mut b = Ix8::from_bytes(L2, &bytes).unwrap();
+        for v in &vecs[400..] {
+            a.insert(*v);
+            b.insert(*v);
+        }
+        check_invariants(&b);
+        let mut qrng = Rng::new(5);
+        for _ in 0..20 {
+            let q: [f32; 8] = qrng.vec();
+            assert_eq!(a.search(&q), b.search(&q));
+        }
+    }
+
+    #[test]
+    fn load_rejects_bad_blobs() {
+        let mut rng = Rng::new(11);
+        let mut ix = Ix8::new(L2, 42);
+        for _ in 0..100 {
+            ix.insert(rng.vec::<8>());
+        }
+        let good = ix.to_bytes();
+
+        assert_eq!(Ix8::from_bytes(L2, b"no").err(), Some(LoadError::Truncated));
+        assert_eq!(Ix8::from_bytes(L2, b"nope").err(), Some(LoadError::BadMagic));
+        let mut bad_magic = good.clone();
+        bad_magic[0] = b'X';
+        assert_eq!(Ix8::from_bytes(L2, &bad_magic).err(), Some(LoadError::BadMagic));
+        // truncated mid-array
+        assert_eq!(
+            Ix8::from_bytes(L2, &good[..good.len() / 2]).err(),
+            Some(LoadError::Truncated)
+        );
+        // trailing garbage
+        let mut long = good.clone();
+        long.extend_from_slice(&[0u8; 16]);
+        assert_eq!(Ix8::from_bytes(L2, &long).err(), Some(LoadError::Corrupt));
+        // wrong shape: DIM 16 index reading a DIM 8 blob
+        assert_eq!(Ix16::from_bytes(L2, &good).err(), Some(LoadError::ShapeMismatch));
+    }
+
+    // ======================= filtered search =======================
+
+    #[test]
+    fn filtered_matches_restricted_brute() {
+        let mut rng = Rng::new(21);
+        let mut ix = Ix8::new(L2, 42);
+        let mut live: Vec<(u32, [f32; 8])> = Vec::new();
+        for _ in 0..3000 {
+            let v: [f32; 8] = rng.vec();
+            live.push((ix.insert(v), v));
+        }
+
+        for (selectivity, min_recall) in [(0.5, 0.85), (0.1, 0.6)] {
+            let allowed: HashSet<u32> = live
+                .iter()
+                .map(|(id, _)| *id)
+                .filter(|id| (*id as f64 / 3000.0) < selectivity)
+                .collect();
+            let restricted: Vec<(u32, [f32; 8])> = live
+                .iter()
+                .filter(|(id, _)| allowed.contains(id))
+                .cloned()
+                .collect();
+
+            let mut qrng = Rng::new(31);
+            let (mut hit, mut total) = (0usize, 0usize);
+            for _ in 0..40 {
+                let q: [f32; 8] = qrng.vec();
+                let truth = brute(&restricted, &q, 10);
+                let got: HashSet<u32> = ix
+                    .search_filtered(&q, |id| allowed.contains(&id))
+                    .into_iter()
+                    .map(|(_, i)| i)
+                    .collect();
+                for (i, t) in truth.into_iter().enumerate() {
+                    // only score the top half of truth: deep-tail recall under
+                    // selective filters is bounded by traversal, by design
+                    if i < 5 {
+                        total += 1;
+                        if got.contains(&t) {
+                            hit += 1;
+                        }
+                    }
+                }
+                for id in &got {
+                    assert!(allowed.contains(id), "filter leaked id {id}");
+                }
+            }
+            let recall = hit as f64 / total as f64;
+            assert!(
+                recall >= min_recall,
+                "selectivity {selectivity}: recall {recall} < {min_recall}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_among_is_exact() {
+        let mut rng = Rng::new(17);
+        let mut ix = Ix8::new(L2, 42);
+        let mut live: Vec<(u32, [f32; 8])> = Vec::new();
+        for _ in 0..500 {
+            let v: [f32; 8] = rng.vec();
+            live.push((ix.insert(v), v));
+        }
+        let subset: Vec<(u32, [f32; 8])> = live.iter().step_by(9).cloned().collect();
+        let ids: Vec<u32> = subset.iter().map(|(id, _)| *id).collect();
+
+        let mut qrng = Rng::new(23);
+        for _ in 0..25 {
+            let q: [f32; 8] = qrng.vec();
+            let truth = brute(&subset, &q, 10);
+            let got: Vec<u32> = ix.search_among(&q, &ids).into_iter().map(|(_, i)| i).collect();
+            assert_eq!(got, truth, "search_among must be exact");
+        }
+        // dead ids are skipped
+        ix.remove(ids[0]);
+        let got: Vec<u32> = ix.search_among(&[0.5; 8], &ids).into_iter().map(|(_, i)| i).collect();
+        assert!(!got.contains(&ids[0]));
     }
 }

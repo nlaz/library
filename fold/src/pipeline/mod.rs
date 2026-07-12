@@ -101,6 +101,15 @@ pub trait Push<D: Clone> {
     /// Called once if the transaction fails.
     fn abort(&mut self) {}
 
+    /// Persist any expensive derived state so the next open can skip
+    /// rebuilding it. Called by
+    /// [`Stream::checkpoint`](crate::stream::Stream::checkpoint) inside its
+    /// own write transaction; sinks with nothing to save use the default
+    /// no-op. Operators forward to their downstream node(s).
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        let _ = tx;
+    }
+
     /// Get a read handle to the sink.
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R>;
 }
@@ -122,6 +131,10 @@ impl<D: Clone, T: Push<D>> Push<D> for &mut T {
     #[inline]
     fn abort(&mut self) {
         (**self).abort()
+    }
+    #[inline]
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        (**self).checkpoint(tx)
     }
     #[inline]
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {

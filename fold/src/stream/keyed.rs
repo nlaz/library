@@ -130,7 +130,8 @@ where
         })
     }
 
-    /// Fsync all committed state to disk; see [`Stream::checkpoint`].
+    /// Persist derived sink state and fsync to disk; see
+    /// [`Stream::checkpoint`].
     pub fn checkpoint(&mut self) {
         self.inner.checkpoint()
     }

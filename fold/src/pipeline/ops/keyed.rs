@@ -48,6 +48,9 @@ impl<K: Clone, V: Clone, F: Fn(&V) -> K, G: Push<Keyed<K, V>>> Push<V> for KeyBy
         self.next.abort()
     }
     #[inline]
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }
@@ -89,6 +92,9 @@ impl<K: Clone, V: Clone, G: Push<V>> Push<Keyed<K, V>> for Unkey<G, K, V> {
         self.next.abort()
     }
     #[inline]
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }
@@ -209,6 +215,9 @@ where
         self.next.abort();
     }
 
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }

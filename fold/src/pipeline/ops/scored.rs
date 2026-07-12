@@ -157,6 +157,9 @@ impl<S: Clone, V: Clone, F: Fn(&V) -> S, G: Push<Scored<S, V>>> Push<V> for Scor
         self.next.abort()
     }
     #[inline]
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }
@@ -198,6 +201,9 @@ impl<S: Clone, V: Clone, G: Push<V>> Push<Scored<S, V>> for Unscore<G, S, V> {
         self.next.abort()
     }
     #[inline]
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }
@@ -361,6 +367,9 @@ where
         self.next.abort();
     }
 
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }

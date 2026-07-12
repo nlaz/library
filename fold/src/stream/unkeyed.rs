@@ -81,11 +81,17 @@ impl<D: Clone, P: Push<D>> Stream<D, P> {
         // tx drops here
     }
 
-    /// Fsync all committed state to disk.
+    /// Persist expensive derived sink state, then fsync everything to disk.
     ///
+    /// Runs every node's [`Push::checkpoint`] hook in its own write
+    /// transaction (letting sinks like the HNSW terminal save their in-memory
+    /// graph so the next open skips rebuilding it), commits, and syncs.
     /// Commits are durable against process crashes as soon as `wtx` returns;
     /// checkpointing additionally hardens them against OS/power failure.
     pub fn checkpoint(&mut self) {
+        let mut wtx = WriteTx::new(self.store.write_tx());
+        self.pipeline.checkpoint(&mut wtx);
+        wtx.commit();
         self.store.persist(fjall::PersistMode::SyncAll).unwrap();
     }
 

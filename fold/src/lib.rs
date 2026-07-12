@@ -58,5 +58,8 @@ pub mod pipeline;
 
 pub mod stream;
 
+// downstream metric/param access without a separate dependency
+pub use anny;
+
 #[cfg(test)]
 mod tests;

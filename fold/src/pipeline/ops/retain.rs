@@ -215,6 +215,9 @@ where
         self.next.abort();
     }
 
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }

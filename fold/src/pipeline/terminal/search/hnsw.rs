@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use anny::metric::{Metric, Scalar};
 use fjall::Readable;
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -13,6 +13,18 @@ use crate::{
 fn decode_vector<T: DeserializeOwned + Copy, const DIM: usize>(bytes: &[u8]) -> [T; DIM] {
     let v: Vec<T> = postcard::from_bytes(bytes).unwrap();
     std::array::from_fn(|i| v[i])
+}
+
+// graph-keyspace row keys
+const GEN_KEY: &[u8] = b"g";
+const HDR_KEY: &[u8] = b"h"; // postcard((gen: u64, n_chunks: u32))
+const KEYS_KEY: &[u8] = b"k"; // postcard(Vec<(u32, K)>)
+const CHUNK_PREFIX: u8 = b'c'; // 'c' + u32 BE -> blob chunk
+const CHUNK_BYTES: usize = 1 << 20;
+
+fn chunk_key(i: u32) -> [u8; 5] {
+    let b = i.to_be_bytes();
+    [CHUNK_PREFIX, b[0], b[1], b[2], b[3]]
 }
 
 // The in-memory side of the sink, shared with readers. `ids`/`keys` tie the
@@ -109,6 +121,11 @@ where
 /// from committed state on next use). Under fold's single-writer discipline
 /// readers otherwise always observe a graph consistent with their snapshot.
 ///
+/// [`Stream::checkpoint`](crate::stream::Stream::checkpoint) persists the
+/// graph itself as a blob in a sibling `{name}_graph` keyspace; when the
+/// stored blob matches the vectors' generation, the next open loads it
+/// directly instead of re-inserting every vector.
+///
 /// Tuning lives in the const parameters (`M0`, `TOP_K`, `EF_SEARCH`,
 /// `EF_BUILD`, `MAX_LEVEL`), with usable defaults; `TOP_K` fixes the number
 /// of results per search at compile time.
@@ -139,8 +156,13 @@ pub struct Hnsw<
 > {
     name: String,
     ks: Option<fjall::SingleWriterTxKeyspace>,
+    graph_ks: Option<fjall::SingleWriterTxKeyspace>,
     metric: M,
     seed: u64,
+    // generation counts mutating commits; saved_generation is the generation
+    // of the last-written graph blob (u64::MAX: no blob matches the graph)
+    generation: u64,
+    saved_generation: u64,
     state: Rc<RefCell<State<K, T, M, DIM, M0, TOP_K, EF_SEARCH, EF_BUILD, MAX_LEVEL>>>,
     // encoded key -> (key, latest embedding, net delta this tx)
     pending: FxHashMap<Vec<u8>, (K, [T; DIM], i64)>,
@@ -172,8 +194,11 @@ where
         Hnsw {
             name: name.into(),
             ks: None,
+            graph_ks: None,
             metric,
             seed,
+            generation: 0,
+            saved_generation: 0,
             state: Rc::new(RefCell::new(State {
                 index: anny::hnsw::Hnsw::new(metric, seed),
                 ids: FxHashMap::default(),
@@ -183,6 +208,70 @@ where
             pending: FxHashMap::default(),
             vec_buf: Default::default(),
         }
+    }
+}
+
+impl<
+    K,
+    T,
+    M,
+    const DIM: usize,
+    const M0: usize,
+    const TOP_K: usize,
+    const EF_SEARCH: usize,
+    const EF_BUILD: usize,
+    const MAX_LEVEL: usize,
+> Hnsw<K, T, M, DIM, M0, TOP_K, EF_SEARCH, EF_BUILD, MAX_LEVEL>
+where
+    K: Serialize + DeserializeOwned,
+    T: Scalar + DeserializeOwned,
+    M: Metric<T> + Copy,
+{
+    /// Fast path: load the checkpointed graph blob if it matches the current
+    /// generation. Returns false (and leaves state untouched) on staleness or
+    /// any decode failure — the caller replays from the vector rows instead.
+    fn try_load_blob(
+        &mut self,
+        rtx: &fjall::Snapshot,
+        gks: &fjall::SingleWriterTxKeyspace,
+    ) -> bool {
+        let Ok(Some(hdr)) = rtx.get(gks, HDR_KEY) else {
+            return false;
+        };
+        let Ok((blob_gen, n_chunks)) = postcard::from_bytes::<(u64, u32)>(&hdr) else {
+            return false;
+        };
+        if blob_gen != self.generation {
+            return false; // graph changed since the blob was written
+        }
+        let mut blob = Vec::new();
+        for i in 0..n_chunks {
+            match rtx.get(gks, chunk_key(i)) {
+                Ok(Some(c)) => blob.extend_from_slice(&c),
+                _ => return false,
+            }
+        }
+        let Ok(index) = anny::hnsw::Hnsw::from_bytes(self.metric, &blob) else {
+            return false;
+        };
+        let Ok(Some(kb)) = rtx.get(gks, KEYS_KEY) else {
+            return false;
+        };
+        let Ok(pairs) = postcard::from_bytes::<Vec<(u32, K)>>(&kb) else {
+            return false;
+        };
+        if index.len() != pairs.len() {
+            return false;
+        }
+        let mut state = self.state.borrow_mut();
+        state.ids = pairs
+            .iter()
+            .map(|(id, k)| (postcard::to_stdvec(k).unwrap(), *id))
+            .collect();
+        state.keys = pairs.into_iter().collect();
+        state.index = index;
+        state.stale = false;
+        true
     }
 }
 
@@ -207,16 +296,34 @@ where
 
     fn init(&mut self, init: &mut PipelineInitCtx<'_>) {
         let ks = init.keyspace(&self.name);
-        // recover the graph from the vectors persisted by earlier runs
-        self.state.borrow_mut().rebuild(
-            self.metric,
-            self.seed,
-            init.snapshot().iter(&ks).map(|kv| {
-                let (k, v) = kv.into_inner().unwrap();
-                (k.to_vec(), v.to_vec())
-            }),
-        );
+        let graph_ks = init.keyspace(&format!("{}_graph", self.name));
+        let rtx = init.snapshot();
+
+        self.generation = rtx
+            .get(&graph_ks, GEN_KEY)
+            .unwrap()
+            .map(|v| u64::from_le_bytes(v.as_ref().try_into().unwrap()))
+            .unwrap_or(0);
+
+        if self.try_load_blob(&rtx, &graph_ks) {
+            self.saved_generation = self.generation;
+        } else {
+            // no blob / stale blob: recover the graph from the vectors
+            // persisted by earlier runs
+            self.state.borrow_mut().rebuild(
+                self.metric,
+                self.seed,
+                rtx.iter(&ks).map(|kv| {
+                    let (k, v) = kv.into_inner().unwrap();
+                    (k.to_vec(), v.to_vec())
+                }),
+            );
+            // sentinel: no blob matches the live graph, so the next
+            // checkpoint always writes one
+            self.saved_generation = u64::MAX;
+        }
         self.ks = Some(ks);
+        self.graph_ks = Some(graph_ks);
     }
 
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &Keyed<K, [T; DIM]>, delta: isize) {
@@ -246,6 +353,7 @@ where
             let (metric, seed) = (self.metric, self.seed);
             state.rebuild(metric, seed, entries);
         }
+        let mut mutated = false;
         for (kenc, (key, vec, delta)) in self.pending.drain() {
             match delta {
                 1.. => {
@@ -254,14 +362,23 @@ where
 
                     tx.insert(&ks, &kenc, &self.vec_buf);
                     state.upsert(kenc, key, vec);
+                    mutated = true;
                 }
                 0 => {}
                 _ => {
                     if state.remove(&kenc) {
                         tx.remove(&ks, &kenc);
+                        mutated = true;
                     }
                 }
             }
+        }
+        if mutated {
+            // the durable counter follows the graph; commit can run several
+            // times per transaction, monotonicity is all that matters
+            self.generation += 1;
+            let gks = self.graph_ks.clone().unwrap();
+            tx.insert(&gks, GEN_KEY, self.generation.to_le_bytes());
         }
     }
 
@@ -269,6 +386,57 @@ where
         self.pending.clear();
         // graph mutations from any mid-tx flush cannot be undone in place
         self.state.borrow_mut().stale = true;
+        // the tx's GEN_KEY writes roll back while the in-memory counter
+        // stays bumped, and the post-abort rebuild matches no stored blob:
+        // force the next checkpoint to rewrite
+        self.saved_generation = u64::MAX;
+    }
+
+    /// Persist the in-memory graph so the next open loads it instead of
+    /// re-inserting every vector. Skipped when the last-written blob already
+    /// matches the live graph.
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        if self.generation == self.saved_generation {
+            return;
+        }
+        let ks = self.ks.clone().unwrap();
+        let gks = self.graph_ks.clone().unwrap();
+        let mut state = self.state.borrow_mut();
+        if state.stale {
+            // never checkpoint a stale graph: resync from committed rows
+            let entries = tx.iter(&ks).map(|kv| {
+                let (k, v) = kv.into_inner().unwrap();
+                (k.to_vec(), v.to_vec())
+            });
+            let (metric, seed) = (self.metric, self.seed);
+            state.rebuild(metric, seed, entries);
+        }
+        let blob = state.index.to_bytes();
+        let pairs: Vec<(u32, &K)> = state.keys.iter().map(|(id, k)| (*id, k)).collect();
+        let keys_blob = postcard::to_stdvec(&pairs).unwrap();
+        drop(state);
+
+        let old_chunks: u32 = tx
+            .get(&gks, HDR_KEY)
+            .map(|v| postcard::from_bytes::<(u64, u32)>(&v).unwrap().1)
+            .unwrap_or(0);
+        let n_chunks = blob.len().div_ceil(CHUNK_BYTES) as u32;
+        for (i, chunk) in blob.chunks(CHUNK_BYTES).enumerate() {
+            tx.insert(&gks, chunk_key(i as u32), chunk);
+        }
+        for i in n_chunks..old_chunks {
+            tx.remove(&gks, chunk_key(i));
+        }
+        // also heal the durable counter: after an abort it lags the
+        // in-memory generation this blob is written under
+        tx.insert(&gks, GEN_KEY, self.generation.to_le_bytes());
+        tx.insert(&gks, KEYS_KEY, keys_blob);
+        tx.insert(
+            &gks,
+            HDR_KEY,
+            postcard::to_stdvec(&(self.generation, n_chunks)).unwrap(),
+        );
+        self.saved_generation = self.generation;
     }
 
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
@@ -348,6 +516,49 @@ where
                 .map(|(d, id)| Scored::new(d, state.keys[&id].clone()))
                 .collect()
         })
+    }
+
+    /// The up-to-`TOP_K` approximately nearest keys among those passing
+    /// `pred`, ascending by distance.
+    ///
+    /// Small match sets are answered exactly by brute force; larger ones by
+    /// a filtered graph walk (the filter applies before `TOP_K`-truncation,
+    /// unlike filtering the results of [`search`](HnswReader::search), which
+    /// can starve below `TOP_K`).
+    pub fn search_filtered(
+        &self,
+        q: &[T; DIM],
+        pred: impl Fn(&K) -> bool,
+    ) -> Vec<Scored<M::Out, K>> {
+        const BRUTE_MAX: usize = 2000;
+        self.with_state(|state| {
+            let allowed: FxHashSet<u32> = state
+                .keys
+                .iter()
+                .filter(|(_, k)| pred(k))
+                .map(|(id, _)| *id)
+                .collect();
+            let hits = if allowed.len() <= BRUTE_MAX {
+                let ids: Vec<u32> = allowed.iter().copied().collect();
+                state.index.search_among(&q[..], &ids)
+            } else {
+                state
+                    .index
+                    .search_filtered(&q[..], |id| allowed.contains(&id))
+            };
+            hits.into_iter()
+                .map(|(d, id)| Scored::new(d, state.keys[&id].clone()))
+                .collect()
+        })
+    }
+
+    /// Whether `key` is indexed, straight from the persisted rows.
+    pub fn contains(&self, key: &K) -> bool
+    where
+        K: Serialize,
+    {
+        let k = postcard::to_stdvec(key).unwrap();
+        self.tx.get(&self.ks, k).unwrap().is_some()
     }
 
     /// The number of live embeddings.

@@ -33,6 +33,10 @@ macro_rules! impl_push_tuple {
                 $(self.$idx.abort();)+
             }
             #[inline]
+            fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+                $(self.$idx.checkpoint(tx);)+
+            }
+            #[inline]
             fn reader<'tx, Rd: Readable>(&self, tx: &'tx Rd) -> Self::Reader<'tx, Rd> {
                 ($(self.$idx.reader(tx),)+)
             }

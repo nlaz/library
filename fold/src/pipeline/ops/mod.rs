@@ -56,6 +56,9 @@ impl<F: Fn(&D) -> bool, G: Push<D>, D: Clone> Push<D> for Filter<D, F, G> {
         self.next.abort()
     }
     #[inline]
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }
@@ -99,6 +102,9 @@ impl<O: Clone, F: Fn(&D) -> O, G: Push<O>, D: Clone> Push<D> for Map<F, G, D, O>
         self.next.abort()
     }
     #[inline]
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }
@@ -143,6 +149,9 @@ impl<D: Clone, O: Clone, F: Fn(&D) -> Option<O>, G: Push<O>> Push<D> for FilterM
         self.next.abort()
     }
     #[inline]
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }
@@ -198,6 +207,9 @@ where
         self.next.abort()
     }
     #[inline]
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }
@@ -275,6 +287,9 @@ impl<D: Clone + Serialize, G: Push<D>> Push<D> for Distinct<D, G> {
         self.next.abort();
     }
 
+    fn checkpoint(&mut self, tx: &mut WriteTx<'_>) {
+        self.next.checkpoint(tx)
+    }
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         self.next.reader(tx)
     }

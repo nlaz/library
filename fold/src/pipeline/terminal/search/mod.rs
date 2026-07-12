@@ -4,7 +4,7 @@
 use std::{cell::RefCell, collections::hash_map::Entry, marker::PhantomData};
 
 use fjall::Readable;
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -278,8 +278,22 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
     /// duplicate query terms count once. Documents matching no term are
     /// omitted, so fewer than `limit` hits may return.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Scored<f64, K>> {
+        self.search_filtered(query, limit, |_| true)
+    }
+
+    /// Like [`search`](Bm25Reader::search), but only documents passing
+    /// `pred` are scored. The filter applies before `limit`-truncation,
+    /// unlike filtering the results of `search`, which can starve below
+    /// `limit`.
+    pub fn search_filtered(
+        &self,
+        query: &str,
+        limit: usize,
+        pred: impl Fn(&K) -> bool,
+    ) -> Vec<Scored<f64, K>> {
         // per-thread scratch reused across calls: terms are overwritten by
-        // the tokenizer, postings drained per term, docs drained per call
+        // the tokenizer, postings drained per term, docs and rejected
+        // drained/cleared per call
         #[derive(Default)]
         struct Bufs {
             terms: Vec<u8>,
@@ -287,6 +301,8 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
             postings: Vec<(Vec<u8>, i64)>,
             // encoded doc key -> (accumulated score, cached doc length)
             docs: FxHashMap<Vec<u8>, (f64, f64)>,
+            // encoded doc keys that failed `pred`, tested once per call
+            rejected: FxHashSet<Vec<u8>>,
         }
         thread_local! {
             static BUFS: RefCell<Bufs> = RefCell::new(Bufs::default());
@@ -300,6 +316,7 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
 
         BUFS.with_borrow_mut(|bufs| {
             (self.tok)(query, &mut bufs.terms);
+            bufs.rejected.clear();
 
             for (i, term) in bufs.terms.split(|&b| b == 0).enumerate() {
                 // count duplicate query terms once: queries are short, so a
@@ -325,11 +342,20 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
                 let df = bufs.postings.len() as f64;
                 let idf = ((n as f64 - df + 0.5) / (df + 0.5) + 1.0).ln();
                 for (kenc, tf) in bufs.postings.drain(..) {
+                    if bufs.rejected.contains(&kenc) {
+                        continue;
+                    }
                     // the posting key's allocation moves into the map, which
                     // doubles as the doc-length cache across terms
                     let (score, dl) = match bufs.docs.entry(kenc) {
                         Entry::Occupied(e) => e.into_mut(),
                         Entry::Vacant(e) => {
+                            // filter at first sight of the doc, before
+                            // limit-truncation
+                            if !pred(&postcard::from_bytes::<K>(e.key()).unwrap()) {
+                                bufs.rejected.insert(e.into_key());
+                                continue;
+                            }
                             bufs.key.clear();
                             bufs.key.push(DOCLEN);
                             bufs.key.extend_from_slice(e.key());

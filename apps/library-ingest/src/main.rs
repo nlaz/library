@@ -9,8 +9,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use library_core::{Word, tokenize};
 use library_ingest::{
-    IngestCtx, Progress, add_pdf, collect, embedder, layout, prepare_figures, prepare_text,
-    subdivide, to_emb,
+    IngestCtx, Progress, add_pdf, collect, layout, prepare_figures, prepare_text, subdivide,
 };
 
 /// Drop the whole process (Vision OCR, ort's worker threads) to background
@@ -250,9 +249,8 @@ fn ingest(
     let ctx = ctx(data, width);
     let (doc, pdf) = add_pdf(&ctx, pdf, name)?;
 
-    // The model pass runs before the embedder loads: no point keeping ort's
-    // threads and weights resident while the on-device model owns the hour.
-    // prepare_text then just re-applies the cached edits.
+    // The model pass runs before anything else touches ort: prepare_text
+    // then just re-applies the cached edits.
     if clean {
         library_ingest::ocr::ocr_pdf(
             &pdf,
@@ -266,10 +264,8 @@ fn ingest(
     }
 
     let t = Instant::now();
-    let bge = embedder(data)?;
-    let recs = prepare_text(&ctx, &pdf, &doc, limit, &bge, &mut print_progress)?;
+    let recs = prepare_text(&ctx, &pdf, &doc, limit, &mut print_progress)?;
     println!("prepared: {} chunks in {:?}", recs.len(), t.elapsed());
-    drop(bge); // free the text encoder before CLIP loads
 
     let t = Instant::now();
     let mut st = library_core::open(data.join("library.db"));
@@ -389,11 +385,8 @@ fn search(query: &str, data: &Path, k: usize, lex_only: bool) -> Result<()> {
     let qemb = if lex_only {
         None
     } else {
-        let t = Instant::now();
-        let model = embedder(data)?;
-        let e = to_emb(model.embed(vec![query.to_string()], None)?.remove(0));
-        println!("embed query: {:?}", t.elapsed());
-        Some(e)
+        // ese embeds at call time — no model load, cold start included
+        Some(ese::encode_single(query))
     };
 
     let t = Instant::now();

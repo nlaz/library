@@ -25,12 +25,9 @@ pub mod textout;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use fastembed::{
-    EmbeddingModel, ImageEmbedding, ImageEmbeddingModel, ImageInitOptions, InitOptions,
-    TextEmbedding,
-};
+use fastembed::{ImageEmbedding, ImageEmbeddingModel, ImageInitOptions};
 use library_core::{
-    Bbox, ChunkKey, ChunkRec, ClipEmb, EMB_DIM, Emb, ImageKey, ImageRec, Images, Library, Word,
+    Bbox, ChunkKey, ChunkRec, ClipEmb, Emb, ImageKey, ImageRec, Images, Library, Word,
 };
 use serde::{Deserialize, Serialize};
 
@@ -128,19 +125,6 @@ pub fn doc_id(pdf: &Path) -> String {
     id.trim_matches('-').to_string()
 }
 
-pub fn embedder(data: &Path) -> Result<TextEmbedding> {
-    Ok(TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::BGESmallENV15)
-            .with_cache_dir(data.join("models"))
-            .with_show_download_progress(true),
-    )?)
-}
-
-pub fn to_emb(v: Vec<f32>) -> Emb {
-    let arr: Emb = v.try_into().expect("embedding has wrong dimension");
-    arr
-}
-
 type Collections = std::collections::BTreeMap<String, Vec<String>>;
 
 fn load_collections(data: &Path) -> Result<Collections> {
@@ -214,7 +198,6 @@ pub fn prepare_text(
     pdf: &Path,
     doc: &str,
     limit: Option<usize>,
-    bge: &TextEmbedding,
     progress: ProgressFn,
 ) -> Result<Vec<ChunkRec>> {
     let pages_dir = ctx.data.join("pages").join(doc);
@@ -259,21 +242,22 @@ pub fn prepare_text(
         }
     }
 
-    // 5. embed, small batches so peak memory stays flat and progress is visible
-    let mut embs: Vec<Vec<f32>> = Vec::with_capacity(chunks.len());
+    // 5. embed (ese: compile-time static embeddings, no model to load),
+    // batched so progress stays visible
+    let mut embs: Vec<Emb> = Vec::with_capacity(chunks.len());
     for batch in chunks.chunks(EMBED_BATCH) {
         let texts: Vec<String> = batch
             .iter()
             .map(|(_, words)| words.iter().map(|w| w.t.as_str()).collect::<Vec<_>>().join(" "))
             .collect();
-        embs.extend(bge.embed(texts, None)?);
+        embs.extend(ese::encode(&texts));
         progress(Progress::Embed { done: embs.len(), total: chunks.len() });
     }
 
     Ok(chunks
         .into_iter()
         .zip(embs)
-        .map(|((key, words), e)| ChunkRec { key, words, emb: to_emb(e) })
+        .map(|((key, words), emb)| ChunkRec { key, words, emb })
         .collect())
 }
 
@@ -455,8 +439,6 @@ pub fn commit_figures(st: &mut Images, doc: &str, recs: &[ImageRec]) -> (usize, 
     st.checkpoint();
     (old.len(), recs.len())
 }
-
-const _: () = assert!(EMB_DIM == 384, "BGESmallENV15 emits 384-dim vectors");
 
 #[cfg(test)]
 mod tests {

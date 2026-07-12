@@ -4,7 +4,7 @@ use anny::metric::Cosine;
 use fold::pipeline::terminal::search::{Bm25, Bm25Reader, Hnsw, HnswReader};
 use fold::pipeline::terminal::{InvertedIndex, InvertedIndexReader};
 use fold::pipeline::{FlatMap, Keyed, Map, Push};
-use fold::stream::{PipelineInitCtx, Readable, Stream, WriteTx};
+use fold::stream::{KeyedStream, PipelineInitCtx, Readable, WriteTx};
 use fxhash::FxHashMap;
 pub use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -40,13 +40,31 @@ pub struct Word {
     pub h: f32,
 }
 
-/// The record pushed through the fold graph. `emb` may be zeroed on removal:
-/// every sink either ignores the payload on negative deltas or keys off
-/// `words`, which we reconstruct from the meta store.
-#[derive(Clone)]
+/// serde for f32 arrays past serde's 32-element impls: out as a slice, back
+/// through a Vec (the same shape fold's Hnsw sink persists).
+mod f32_array {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer, const N: usize>(v: &[f32; N], s: S) -> Result<S::Ok, S::Error> {
+        v[..].serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(d: D) -> Result<[f32; N], D::Error> {
+        let v = Vec::<f32>::deserialize(d)?;
+        v.try_into()
+            .map_err(|v: Vec<f32>| serde::de::Error::custom(format!("expected {N} floats, got {}", v.len())))
+    }
+}
+
+/// The record stored under a [`ChunkKey`] in the library's primary-key
+/// table and pushed through the fold graph as `Keyed<ChunkKey, ChunkRec>`.
+/// The [`KeyedStream`] retracts the stored copy on upsert/remove, so
+/// records never need to be reconstructed to delete them.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ChunkRec {
     pub key: ChunkKey,
     pub words: Vec<Word>,
+    #[serde(with = "f32_array")]
     pub emb: Emb,
 }
 
@@ -182,30 +200,34 @@ pub type VecIndex = Hnsw<ChunkKey, f32, Cosine, EMB_DIM, 32, 40, 80, 80, 16>;
 /// The Bm25 sink's tokenizer type: a plain fn pointer keeps it nameable.
 pub type LexTok = fn(&str, &mut Vec<u8>);
 
+/// What the [`KeyedStream`] table feeds the graph: the primary key plus the
+/// stored record.
+pub type ChunkIn = Keyed<ChunkKey, ChunkRec>;
+
 pub type LexSink = Map<
-    fn(&ChunkRec) -> Keyed<ChunkKey, String>,
+    fn(&ChunkIn) -> Keyed<ChunkKey, String>,
     Bm25<ChunkKey, String>,
-    ChunkRec,
+    ChunkIn,
     Keyed<ChunkKey, String>,
 >;
 pub type VecSink =
-    Map<fn(&ChunkRec) -> Keyed<ChunkKey, Emb>, VecIndex, ChunkRec, Keyed<ChunkKey, Emb>>;
+    Map<fn(&ChunkIn) -> Keyed<ChunkKey, Emb>, VecIndex, ChunkIn, Keyed<ChunkKey, Emb>>;
 pub type MetaSink = Map<
-    fn(&ChunkRec) -> Keyed<Vec<Word>, ChunkKey>,
+    fn(&ChunkIn) -> Keyed<Vec<Word>, ChunkKey>,
     InvertedIndex<Vec<Word>, ChunkKey>,
-    ChunkRec,
+    ChunkIn,
     Keyed<Vec<Word>, ChunkKey>,
 >;
 pub type ManifestSink = Map<
-    fn(&ChunkRec) -> Keyed<ChunkKey, String>,
+    fn(&ChunkIn) -> Keyed<ChunkKey, String>,
     InvertedIndex<ChunkKey, String>,
-    ChunkRec,
+    ChunkIn,
     Keyed<ChunkKey, String>,
 >;
-pub type TermSink = FlatMap<fn(&ChunkRec) -> Vec<String>, TermDict, ChunkRec, String>;
+pub type TermSink = FlatMap<fn(&ChunkIn) -> Vec<String>, TermDict, ChunkIn, String>;
 
 pub type Graph = ((LexSink, VecSink), ((MetaSink, ManifestSink), TermSink));
-pub type Library = Stream<ChunkRec, Graph>;
+pub type Library = KeyedStream<ChunkKey, ChunkRec, Graph>;
 
 pub type Readers<'tx, R> = (
     (
@@ -222,51 +244,51 @@ pub type Readers<'tx, R> = (
 );
 
 pub fn graph() -> Graph {
-    fn to_lex(c: &ChunkRec) -> Keyed<ChunkKey, String> {
-        Keyed::new(c.key.clone(), c.text())
+    fn to_lex(c: &ChunkIn) -> Keyed<ChunkKey, String> {
+        Keyed::new(c.key.clone(), c.val.text())
     }
-    fn to_vec(c: &ChunkRec) -> Keyed<ChunkKey, Emb> {
-        Keyed::new(c.key.clone(), c.emb)
+    fn to_vec(c: &ChunkIn) -> Keyed<ChunkKey, Emb> {
+        Keyed::new(c.key.clone(), c.val.emb)
     }
-    fn to_meta(c: &ChunkRec) -> Keyed<Vec<Word>, ChunkKey> {
-        Keyed::new(c.words.clone(), c.key.clone())
+    fn to_meta(c: &ChunkIn) -> Keyed<Vec<Word>, ChunkKey> {
+        Keyed::new(c.val.words.clone(), c.key.clone())
     }
-    fn to_manifest(c: &ChunkRec) -> Keyed<ChunkKey, String> {
+    fn to_manifest(c: &ChunkIn) -> Keyed<ChunkKey, String> {
         Keyed::new(c.key.clone(), c.key.doc.clone())
     }
-    fn to_terms(c: &ChunkRec) -> Vec<String> {
-        tokenize(&c.text())
+    fn to_terms(c: &ChunkIn) -> Vec<String> {
+        tokenize(&c.val.text())
     }
 
     (
         (
             Map::new(
-                to_lex as fn(&ChunkRec) -> Keyed<ChunkKey, String>,
+                to_lex as fn(&ChunkIn) -> Keyed<ChunkKey, String>,
                 Bm25::with_tokenizer("lex", lex_tokenize as LexTok),
             ),
             Map::new(
-                to_vec as fn(&ChunkRec) -> Keyed<ChunkKey, Emb>,
+                to_vec as fn(&ChunkIn) -> Keyed<ChunkKey, Emb>,
                 VecIndex::new("vec", Cosine, 42),
             ),
         ),
         (
             (
                 Map::new(
-                    to_meta as fn(&ChunkRec) -> Keyed<Vec<Word>, ChunkKey>,
+                    to_meta as fn(&ChunkIn) -> Keyed<Vec<Word>, ChunkKey>,
                     InvertedIndex::new("meta"),
                 ),
                 Map::new(
-                    to_manifest as fn(&ChunkRec) -> Keyed<ChunkKey, String>,
+                    to_manifest as fn(&ChunkIn) -> Keyed<ChunkKey, String>,
                     InvertedIndex::new("manifest"),
                 ),
             ),
-            FlatMap::new(to_terms as fn(&ChunkRec) -> Vec<String>, TermDict::new("terms")),
+            FlatMap::new(to_terms as fn(&ChunkIn) -> Vec<String>, TermDict::new("terms")),
         ),
     )
 }
 
 pub fn open(path: impl AsRef<std::path::Path>) -> Library {
-    Stream::new(path, graph())
+    KeyedStream::new(path, graph())
 }
 
 // ---------------------------------------------------------------------------
@@ -371,34 +393,38 @@ pub struct ImageKey {
 /// Normalized [x, y, w, h], top-left origin, 0..1.
 pub type Bbox = [f32; 4];
 
-/// The record pushed through the image graph. `emb` may be zeroed on removal
-/// (the HNSW sink keys off `key` for negative deltas).
-#[derive(Clone)]
+/// The record stored under an [`ImageKey`] in the image store's primary-key
+/// table and pushed through the graph as `Keyed<ImageKey, ImageRec>`.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ImageRec {
     pub key: ImageKey,
     pub bbox: Bbox,
+    #[serde(with = "f32_array")]
     pub emb: ClipEmb,
 }
 
 pub type ImgVecIndex = Hnsw<ImageKey, f32, Cosine, CLIP_DIM, 32, 40, 80, 80, 16>;
 
+/// What the image store's table feeds the graph.
+pub type ImageIn = Keyed<ImageKey, ImageRec>;
+
 pub type ImgVecSink =
-    Map<fn(&ImageRec) -> Keyed<ImageKey, ClipEmb>, ImgVecIndex, ImageRec, Keyed<ImageKey, ClipEmb>>;
+    Map<fn(&ImageIn) -> Keyed<ImageKey, ClipEmb>, ImgVecIndex, ImageIn, Keyed<ImageKey, ClipEmb>>;
 pub type ImgMetaSink = Map<
-    fn(&ImageRec) -> Keyed<Bbox, ImageKey>,
+    fn(&ImageIn) -> Keyed<Bbox, ImageKey>,
     InvertedIndex<Bbox, ImageKey>,
-    ImageRec,
+    ImageIn,
     Keyed<Bbox, ImageKey>,
 >;
 pub type ImgManifestSink = Map<
-    fn(&ImageRec) -> Keyed<ImageKey, String>,
+    fn(&ImageIn) -> Keyed<ImageKey, String>,
     InvertedIndex<ImageKey, String>,
-    ImageRec,
+    ImageIn,
     Keyed<ImageKey, String>,
 >;
 
 pub type ImgGraph = (ImgVecSink, (ImgMetaSink, ImgManifestSink));
-pub type Images = Stream<ImageRec, ImgGraph>;
+pub type Images = KeyedStream<ImageKey, ImageRec, ImgGraph>;
 
 pub type ImgReaders<'tx, R> = (
     HnswReader<'tx, R, ImageKey, f32, Cosine, CLIP_DIM, 32, 40, 80, 80, 16>,
@@ -409,28 +435,28 @@ pub type ImgReaders<'tx, R> = (
 );
 
 pub fn img_graph() -> ImgGraph {
-    fn to_vec(r: &ImageRec) -> Keyed<ImageKey, ClipEmb> {
-        Keyed::new(r.key.clone(), r.emb)
+    fn to_vec(r: &ImageIn) -> Keyed<ImageKey, ClipEmb> {
+        Keyed::new(r.key.clone(), r.val.emb)
     }
-    fn to_meta(r: &ImageRec) -> Keyed<Bbox, ImageKey> {
-        Keyed::new(r.bbox, r.key.clone())
+    fn to_meta(r: &ImageIn) -> Keyed<Bbox, ImageKey> {
+        Keyed::new(r.val.bbox, r.key.clone())
     }
-    fn to_manifest(r: &ImageRec) -> Keyed<ImageKey, String> {
+    fn to_manifest(r: &ImageIn) -> Keyed<ImageKey, String> {
         Keyed::new(r.key.clone(), r.key.doc.clone())
     }
 
     (
         Map::new(
-            to_vec as fn(&ImageRec) -> Keyed<ImageKey, ClipEmb>,
+            to_vec as fn(&ImageIn) -> Keyed<ImageKey, ClipEmb>,
             ImgVecIndex::new("imgvec", Cosine, 42),
         ),
         (
             Map::new(
-                to_meta as fn(&ImageRec) -> Keyed<Bbox, ImageKey>,
+                to_meta as fn(&ImageIn) -> Keyed<Bbox, ImageKey>,
                 InvertedIndex::new("imgmeta"),
             ),
             Map::new(
-                to_manifest as fn(&ImageRec) -> Keyed<ImageKey, String>,
+                to_manifest as fn(&ImageIn) -> Keyed<ImageKey, String>,
                 InvertedIndex::new("imgmanifest"),
             ),
         ),
@@ -438,7 +464,7 @@ pub fn img_graph() -> ImgGraph {
 }
 
 pub fn open_images(path: impl AsRef<std::path::Path>) -> Images {
-    Stream::new(path, img_graph())
+    KeyedStream::new(path, img_graph())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -472,29 +498,3 @@ pub fn image_search<R: Readable>(
         .collect()
 }
 
-/// The old image records for a doc, reconstructed for atomic retract+insert.
-pub fn old_image_records<R: Readable>(r: &ImgReaders<'_, R>, doc: &str) -> Vec<ImageRec> {
-    let (_, (meta, manifest)) = r;
-    manifest
-        .search(&doc.to_string())
-        .into_iter()
-        .filter_map(|key| {
-            let bbox = meta.search(&key).into_iter().next()?;
-            Some(ImageRec { key, bbox, emb: [0.0; CLIP_DIM] })
-        })
-        .collect()
-}
-
-/// Everything needed to atomically replace (or retire) a document's chunks:
-/// the old records, reconstructed from the meta store with zeroed embeddings.
-pub fn old_records<R: Readable>(r: &Readers<'_, R>, doc: &str) -> Vec<ChunkRec> {
-    let (_, ((meta, manifest), _)) = r;
-    manifest
-        .search(&doc.to_string())
-        .into_iter()
-        .filter_map(|key| {
-            let words = meta.search(&key).into_iter().next()?;
-            Some(ChunkRec { key, words, emb: [0.0; EMB_DIM] })
-        })
-        .collect()
-}

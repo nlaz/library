@@ -7,7 +7,7 @@
 //!
 //!   add_pdf        copy the source PDF into data/pdfs (the library owns it)
 //!   prepare_text   render + OCR (Apple Vision) -> chunk -> embed    (no store)
-//!   commit_text    retract old chunks, insert new, checkpoint      (&mut Library)
+//!   commit_text    upsert new chunks, remove vanished keys         (&mut Library)
 //!   prepare_figures  layout detect -> subdivide -> CLIP embed       (no store)
 //!   commit_figures   same swap for the figure index                (&mut Images)
 //!
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use fastembed::{ImageEmbedding, ImageEmbeddingModel, ImageInitOptions};
 use library_core::{
-    Bbox, ChunkKey, ChunkRec, ClipEmb, Emb, ImageKey, ImageRec, Images, Library, Word,
+    Bbox, ChunkKey, ChunkRec, ClipEmb, Emb, FxHashSet, ImageKey, ImageRec, Images, Library, Word,
 };
 use serde::{Deserialize, Serialize};
 
@@ -262,21 +262,30 @@ pub fn prepare_text(
         .collect())
 }
 
-/// Atomic swap: retract the doc's old chunks, insert the new, checkpoint.
+/// Atomic swap: upsert the doc's new chunks, remove keys that vanished,
+/// checkpoint. The table retracts replaced records itself and byte-equal
+/// upserts skip the graph, so an unchanged chunk costs one point read.
 /// The only text-pipeline step that needs exclusive store access.
-/// Returns (removed, added).
+/// Returns (removed, added) — removed counts keys actually deleted.
 pub fn commit_text(st: &mut Library, doc: &str, recs: &[ChunkRec]) -> (usize, usize) {
-    let old = st.rtx(|r| library_core::old_records(&r, doc));
-    st.wtx(|tx| {
-        for rec in &old {
-            tx.remove(rec);
-        }
+    let counts = st.wtx(|tx| {
+        let old: Vec<ChunkKey> =
+            tx.rtx(|(_, ((_, manifest), _))| manifest.search(&doc.to_string()));
+        let new: FxHashSet<&ChunkKey> = recs.iter().map(|r| &r.key).collect();
         for rec in recs {
-            tx.insert(rec);
+            tx.upsert(&rec.key, rec);
         }
+        let mut removed = 0;
+        for key in old {
+            if !new.contains(&key) {
+                tx.remove(&key);
+                removed += 1;
+            }
+        }
+        (removed, recs.len())
     });
     st.checkpoint();
-    (old.len(), recs.len())
+    counts
 }
 
 // ---------------------------------------------------------------------------
@@ -426,19 +435,26 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
     Ok(recs)
 }
 
-/// Atomic swap for the figure index. Returns (removed, added).
+/// Atomic swap for the figure index; see [`commit_text`].
+/// Returns (removed, added).
 pub fn commit_figures(st: &mut Images, doc: &str, recs: &[ImageRec]) -> (usize, usize) {
-    let old = st.rtx(|r| library_core::old_image_records(&r, doc));
-    st.wtx(|tx| {
-        for rec in &old {
-            tx.remove(rec);
-        }
+    let counts = st.wtx(|tx| {
+        let old: Vec<ImageKey> = tx.rtx(|(_, (_, manifest))| manifest.search(&doc.to_string()));
+        let new: FxHashSet<&ImageKey> = recs.iter().map(|r| &r.key).collect();
         for rec in recs {
-            tx.insert(rec);
+            tx.upsert(&rec.key, rec);
         }
+        let mut removed = 0;
+        for key in old {
+            if !new.contains(&key) {
+                tx.remove(&key);
+                removed += 1;
+            }
+        }
+        (removed, recs.len())
     });
     st.checkpoint();
-    (old.len(), recs.len())
+    counts
 }
 
 #[cfg(test)]

@@ -1,7 +1,9 @@
-//! Render PDF pages to JPEG and OCR them with Apple Vision, in-process.
+//! Render PDF pages to JPEG and extract their words, in-process. Pages with
+//! an embedded text layer (see `pdftext`) skip OCR entirely; the rest go
+//! through Apple Vision. Work fans out across a small worker pool — Vision
+//! and the renderer are the ingest's long pole, and pages are independent.
 //!
-//! A direct port of the old `tools/ocr_pdf.py` (pyobjc) helper; the on-disk
-//! contract is unchanged so existing caches stay valid:
+//! The on-disk contract is unchanged so existing caches stay valid:
 //!
 //!   <pages_dir>/page-NNNN.jpg    rendered page image, `width` px wide
 //!   <ocr_dir>/page-NNNN.json     {"page": N, "words": [{"t","x","y","w","h"}]}
@@ -11,6 +13,8 @@
 //! skipped, so re-runs are incremental.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 
 use anyhow::{Context, Result, bail};
 use library_core::Word;
@@ -29,58 +33,124 @@ use objc2_vision::{
     VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel,
 };
 
-use crate::{PageOcr, Progress, ProgressFn};
+use crate::{PageOcr, Progress, ProgressFn, pdftext};
 
 const JPEG_QUALITY: f64 = 0.8;
 
-/// Render + OCR every page of `pdf` (or the first `limit`). Cached pages are
-/// skipped; `Progress::Ocr { done: page, total }` is reported per processed
-/// page, with a final `Progress::Log` summary line.
+/// Pages in flight at once. Vision serializes its own recognition work
+/// internally (measured: 6 workers is no faster than 3), so extra workers
+/// only exist to hide render/encode/write latency behind it; each holds
+/// one page bitmap, so more just costs memory.
+const OCR_WORKERS: usize = 3;
+
+/// Render + extract words for every page of `pdf` (or the first `limit`).
+/// Cached pages are skipped; `Progress::Ocr` counts completed pages, with a
+/// final `Progress::Log` summary line. With `text_layer`, pages carrying an
+/// embedded text layer skip Vision (the residual pages still OCR).
 pub fn ocr_pdf(
     pdf: &Path,
     pages_dir: &Path,
     ocr_dir: &Path,
     width: u32,
     limit: Option<usize>,
+    text_layer: bool,
     progress: ProgressFn,
 ) -> Result<()> {
     std::fs::create_dir_all(pages_dir)?;
     std::fs::create_dir_all(ocr_dir)?;
 
-    let url = CFURL::from_file_path(pdf).context("bad pdf path")?;
-    let doc = CGPDFDocument::with_url(Some(&url))
-        .with_context(|| format!("cannot open {}", pdf.display()))?;
-    let mut n = CGPDFDocument::number_of_pages(Some(&doc));
+    let mut n = {
+        let url = CFURL::from_file_path(pdf).context("bad pdf path")?;
+        let doc = CGPDFDocument::with_url(Some(&url))
+            .with_context(|| format!("cannot open {}", pdf.display()))?;
+        CGPDFDocument::number_of_pages(Some(&doc))
+    };
     if let Some(lim) = limit {
         n = n.min(lim);
     }
 
-    let (mut done, mut skipped) = (0usize, 0usize);
-    for i in 1..=n {
-        let jpg = pages_dir.join(format!("page-{i:04}.jpg"));
-        let js = ocr_dir.join(format!("page-{i:04}.json"));
-        if js.exists() && jpg.exists() {
-            skipped += 1;
-            continue;
+    let todo: Vec<usize> = (1..=n)
+        .filter(|i| {
+            !(ocr_dir.join(format!("page-{i:04}.json")).exists()
+                && pages_dir.join(format!("page-{i:04}.jpg")).exists())
+        })
+        .collect();
+    let skipped = n - todo.len();
+
+    let next = AtomicUsize::new(0);
+    let (tx, rx) = mpsc::channel::<Result<bool>>();
+    let (mut done, mut layered) = (0usize, 0usize);
+    std::thread::scope(|s| -> Result<()> {
+        for _ in 0..OCR_WORKERS.min(todo.len()) {
+            let tx = tx.clone();
+            let (next, todo) = (&next, &todo);
+            s.spawn(move || {
+                // per-worker documents: CGPDFDocument's thread safety is
+                // undocumented, and reopening is nothing next to a page of
+                // OCR. The progress callback isn't Send, so results go back
+                // over the channel and the caller's thread reports them.
+                let Some(doc) = CFURL::from_file_path(pdf)
+                    .and_then(|url| CGPDFDocument::with_url(Some(&url)))
+                else {
+                    let _ = tx.send(Err(anyhow::anyhow!("cannot open {}", pdf.display())));
+                    return;
+                };
+                let text = text_layer.then(|| pdftext::TextLayer::open(pdf)).flatten();
+                loop {
+                    let k = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&i) = todo.get(k) else { break };
+                    let res = process_page(&doc, text.as_ref(), i, width, pages_dir, ocr_dir);
+                    if tx.send(res).is_err() {
+                        break; // receiver bailed on an earlier error
+                    }
+                }
+            });
         }
-        // drain autoreleased CGImages/Vision buffers every page, or a long
-        // run accumulates hundreds of page bitmaps and exhausts memory
-        let words = autoreleasepool(|_| -> Result<Vec<Word>> {
-            let img = render_page(&doc, i, width)?;
-            save_jpeg(&img, &jpg)?;
-            ocr_words(&img)
-        })?;
-        // tmp + rename so a crash can't leave a half-written page json
-        let tmp = js.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&PageOcr { page: i as u32, words })?)?;
-        std::fs::rename(&tmp, &js)?;
-        done += 1;
-        progress(Progress::Ocr { done: i as u32, total: n as u32 });
-    }
+        drop(tx);
+        // moving `rx` into the loop makes an early `?` drop it, which stops
+        // the workers at their next send instead of running out the queue
+        for msg in rx {
+            layered += usize::from(msg?);
+            done += 1;
+            progress(Progress::Ocr { done: (skipped + done) as u32, total: n as u32 });
+        }
+        Ok(())
+    })?;
     progress(Progress::Log(format!(
-        "ocr complete: {done} processed, {skipped} cached, {n} total"
+        "ocr complete: {layered} text-layer, {} ocr'd, {skipped} cached, {n} total",
+        done - layered
     )));
     Ok(())
+}
+
+/// Render page `i` (1-based), write its JPEG, and write its words — from
+/// the text layer when usable, else Vision. Returns whether the layer was
+/// used.
+fn process_page(
+    doc: &CGPDFDocument,
+    text: Option<&pdftext::TextLayer>,
+    i: usize,
+    width: u32,
+    pages_dir: &Path,
+    ocr_dir: &Path,
+) -> Result<bool> {
+    let jpg = pages_dir.join(format!("page-{i:04}.jpg"));
+    let js = ocr_dir.join(format!("page-{i:04}.json"));
+    // drain autoreleased CGImages/Vision buffers every page, or a long
+    // run accumulates hundreds of page bitmaps and exhausts memory
+    let (words, layered) = autoreleasepool(|_| -> Result<(Vec<Word>, bool)> {
+        let img = render_page(doc, i, width)?;
+        save_jpeg(&img, &jpg)?;
+        match text.and_then(|t| t.words(i)) {
+            Some(words) => Ok((words, true)),
+            None => Ok((ocr_words(&img)?, false)),
+        }
+    })?;
+    // tmp + rename so a crash can't leave a half-written page json
+    let tmp = js.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(&PageOcr { page: i as u32, words })?)?;
+    std::fs::rename(&tmp, &js)?;
+    Ok(layered)
 }
 
 /// Rasterize page `i` (1-based) to `width` px wide, white background.
@@ -187,7 +257,7 @@ fn ocr_words(img: &CGImage) -> Result<Vec<Word>> {
 }
 
 /// Whitespace-split `line`, yielding each token with its byte offset.
-fn split_tokens(line: &str) -> impl Iterator<Item = (usize, &str)> {
+pub(crate) fn split_tokens(line: &str) -> impl Iterator<Item = (usize, &str)> {
     line.split_whitespace()
         .scan(0usize, |pos, tok| {
             let loc = line[*pos..].find(tok).expect("token comes from this line") + *pos;
@@ -196,11 +266,11 @@ fn split_tokens(line: &str) -> impl Iterator<Item = (usize, &str)> {
         })
 }
 
-fn utf16_len(s: &str) -> usize {
+pub(crate) fn utf16_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
-fn round5(v: f64) -> f32 {
+pub(crate) fn round5(v: f64) -> f32 {
     ((v * 1e5).round() / 1e5) as f32
 }
 

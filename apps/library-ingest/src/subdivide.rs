@@ -8,7 +8,7 @@
 //!
 //! The server groups hits per page afterwards, so parts never spam results.
 
-use image::DynamicImage;
+use image::GrayImage;
 use library_core::Bbox;
 
 /// Figures below this fraction of the page stay whole (single diagrams).
@@ -29,13 +29,15 @@ const VALLEY_MIN_RUN: f32 = 0.015;
 const MAX_DEPTH: u32 = 2;
 
 /// Component parts of a figure (page-normalized bboxes). Does not include
-/// `bbox` itself; may be empty for simple figures.
-pub fn subdivide(page: &DynamicImage, bbox: Bbox) -> Vec<Bbox> {
+/// `bbox` itself; may be empty for simple figures. Darkness profiles read
+/// `luma`, the page's shared grayscale downscale; `full` is the render's
+/// pixel dimensions, which the part-size gates are calibrated against.
+pub fn subdivide(luma: &GrayImage, full: (u32, u32), bbox: Bbox) -> Vec<Bbox> {
     if bbox[2] * bbox[3] < SPLIT_MIN_AREA {
         return Vec::new();
     }
     let mut parts = Vec::new();
-    split_rec(page, bbox, MAX_DEPTH, &mut parts);
+    split_rec(luma, bbox, MAX_DEPTH, &mut parts);
     if parts.is_empty() && bbox[2] * bbox[3] >= TILE_MIN_AREA {
         // tier 2: 2x2 overlapping tiles (60% size, 40% stride)
         for oy in [0.0f32, 0.4] {
@@ -49,45 +51,43 @@ pub fn subdivide(page: &DynamicImage, bbox: Bbox) -> Vec<Bbox> {
             }
         }
     }
-    let (iw, ih) = (page.width() as f32, page.height() as f32);
+    let (iw, ih) = (full.0 as f32, full.1 as f32);
     parts.retain(|b| {
         b[2] * b[3] >= PART_MIN_AREA && b[2] * iw >= PART_MIN_PX && b[3] * ih >= PART_MIN_PX
     });
     parts
 }
 
-fn split_rec(page: &DynamicImage, bbox: Bbox, depth: u32, out: &mut Vec<Bbox>) {
+fn split_rec(luma: &GrayImage, bbox: Bbox, depth: u32, out: &mut Vec<Bbox>) {
     if depth == 0 {
         return;
     }
-    for cell in split_once(page, bbox) {
+    for cell in split_once(luma, bbox) {
         out.push(cell);
-        split_rec(page, cell, depth - 1, out);
+        split_rec(luma, cell, depth - 1, out);
     }
 }
 
 /// One XY-cut: split `bbox` along the axis with the most whitespace valleys.
 /// Empty when no interior valley exists.
-fn split_once(page: &DynamicImage, bbox: Bbox) -> Vec<Bbox> {
-    let (iw, ih) = (page.width() as f32, page.height() as f32);
-    let crop = page.crop_imm(
-        (bbox[0] * iw) as u32,
-        (bbox[1] * ih) as u32,
-        ((bbox[2] * iw) as u32).max(1),
-        ((bbox[3] * ih) as u32).max(1),
-    );
-    let small = crop.thumbnail(512, 512).into_luma8();
-    let (w, h) = (small.width() as usize, small.height() as usize);
+fn split_once(luma: &GrayImage, bbox: Bbox) -> Vec<Bbox> {
+    let (lw, lh) = (luma.width(), luma.height());
+    let x0 = ((bbox[0] * lw as f32) as u32).min(lw.saturating_sub(1));
+    let y0 = ((bbox[1] * lh as f32) as u32).min(lh.saturating_sub(1));
+    let w = ((bbox[2] * lw as f32) as u32).clamp(1, lw - x0) as usize;
+    let h = ((bbox[3] * lh as f32) as u32).clamp(1, lh - y0) as usize;
     if w < 8 || h < 8 {
         return Vec::new();
     }
 
     let mut cols = vec![0f32; w];
     let mut rows = vec![0f32; h];
-    for (x, y, p) in small.enumerate_pixels() {
-        let d = (255 - p.0[0]) as f32;
-        cols[x as usize] += d;
-        rows[y as usize] += d;
+    for y in 0..h {
+        for x in 0..w {
+            let d = (255 - luma.get_pixel(x0 + x as u32, y0 + y as u32).0[0]) as f32;
+            cols[x] += d;
+            rows[y] += d;
+        }
     }
     for c in cols.iter_mut() {
         *c /= h as f32;
@@ -174,4 +174,58 @@ fn segments(cuts: &[usize], len: usize) -> Vec<(usize, usize)> {
     }
     out.push((a, len));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FULL: (u32, u32) = (1000, 800);
+
+    /// A white page with dark rectangles (page-normalized boxes), downscaled
+    /// the way `prepare_figures` feeds this module.
+    fn page(blocks: &[Bbox]) -> GrayImage {
+        let (w, h) = FULL;
+        let mut img = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
+        for b in blocks {
+            let (x0, y0) = ((b[0] * w as f32) as u32, (b[1] * h as f32) as u32);
+            let (x1, y1) = (((b[0] + b[2]) * w as f32) as u32, ((b[1] + b[3]) * h as f32) as u32);
+            for y in y0..y1.min(h) {
+                for x in x0..x1.min(w) {
+                    img.put_pixel(x, y, image::Luma([0u8]));
+                }
+            }
+        }
+        image::DynamicImage::ImageLuma8(img)
+            .thumbnail(crate::PAGE_LUMA_PX, crate::PAGE_LUMA_PX)
+            .into_luma8()
+    }
+
+    #[test]
+    fn splits_two_columns_at_the_gutter() {
+        // two solid blocks with a 10%-wide gutter between them
+        let luma = page(&[[0.05, 0.125, 0.40, 0.75], [0.55, 0.125, 0.40, 0.75]]);
+        let parts = subdivide(&luma, FULL, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(parts.len(), 2, "one vertical cut -> two parts: {parts:?}");
+        // cut lands inside the gutter
+        assert!(parts[0][0] == 0.0 && (0.45..=0.55).contains(&parts[0][2]), "{parts:?}");
+        assert!((0.45..=0.55).contains(&parts[1][0]), "{parts:?}");
+        // parts span the bbox on the uncut axis
+        assert!(parts.iter().all(|p| p[1] == 0.0 && p[3] == 1.0), "{parts:?}");
+    }
+
+    #[test]
+    fn featureless_figure_gets_tiles() {
+        // a uniformly dark full-page figure: no valleys -> 2x2 tile fallback
+        let luma = page(&[[0.0, 0.0, 1.0, 1.0]]);
+        let parts = subdivide(&luma, FULL, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(parts.len(), 4, "{parts:?}");
+        assert!(parts.iter().all(|p| (p[2] - 0.6).abs() < 1e-4 && (p[3] - 0.6).abs() < 1e-4));
+    }
+
+    #[test]
+    fn small_figures_stay_whole() {
+        let luma = page(&[[0.1, 0.1, 0.3, 0.3]]);
+        assert!(subdivide(&luma, FULL, [0.1, 0.1, 0.3, 0.3]).is_empty());
+    }
 }

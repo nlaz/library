@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use library_core::{FxHashSet, Word, tokenize};
 use serde::Deserialize;
 
-use crate::{PageOcr, Progress, ProgressFn, read_ocr};
+use crate::{PageOcr, Progress, ProgressFn, read_ocr, read_pages};
 
 #[derive(Deserialize)]
 struct Edit {
@@ -44,13 +44,14 @@ pub fn clean_tool() -> Option<PathBuf> {
 }
 
 /// Run the helper (if installed) and apply its edits. Returns the number of
-/// pages that changed. Progress: `Progress::Clean` while the model runs.
-pub fn clean_doc(data: &Path, doc: &str, progress: ProgressFn) -> Result<usize> {
+/// pages that changed plus the doc's final pages (so callers don't re-read
+/// the whole doc). Progress: `Progress::Clean` while the model runs.
+pub fn clean_doc(data: &Path, doc: &str, progress: ProgressFn) -> Result<(usize, Vec<PageOcr>)> {
     let Some(tool) = clean_tool() else {
         progress(Progress::Log(
             "cleanup skipped: tools/clean-pages not built (see tools/build.sh)".into(),
         ));
-        return Ok(0);
+        return Ok((0, read_pages(data, doc)?));
     };
     let edits_dir = data.join("edits").join(doc);
 
@@ -79,7 +80,7 @@ pub fn clean_doc(data: &Path, doc: &str, progress: ProgressFn) -> Result<usize> 
         // model unavailable (Apple Intelligence off) or helper failure:
         // report and carry on with raw OCR — cleanup is best-effort
         progress(Progress::Log(format!("cleanup skipped: {} exited {status}", tool.display())));
-        return Ok(0);
+        return Ok((0, read_pages(data, doc)?));
     }
 
     apply_edits(data, doc, progress)
@@ -88,7 +89,9 @@ pub fn clean_doc(data: &Path, doc: &str, progress: ProgressFn) -> Result<usize> 
 /// Apply cached edits (`data/edits/<doc>`) to the raw OCR, writing changed
 /// pages to `data/clean/<doc>`. Separated from the model run so edits can be
 /// re-applied (e.g. after a gate change) without touching the model.
-pub fn apply_edits(data: &Path, doc: &str, progress: ProgressFn) -> Result<usize> {
+/// Returns the changed-page count plus every final page, fused and edited —
+/// what `read_pages` would hand back, without re-reading the doc.
+pub fn apply_edits(data: &Path, doc: &str, progress: ProgressFn) -> Result<(usize, Vec<PageOcr>)> {
     let pages = read_ocr(&data.join("ocr").join(doc))?;
     let edits_dir = data.join("edits").join(doc);
     let clean_dir = data.join("clean").join(doc);
@@ -100,10 +103,12 @@ pub fn apply_edits(data: &Path, doc: &str, progress: ProgressFn) -> Result<usize
         .flat_map(|w| tokenize(&w.t))
         .collect();
 
+    let total = pages.len();
+    let mut out_pages: Vec<PageOcr> = Vec::with_capacity(total);
     let mut changed = 0usize;
     let mut rejected: Vec<String> = Vec::new();
     let mut applied = 0usize;
-    for page in &pages {
+    for page in pages {
         let mut words = fuse_hyphens(&page.words, &vocab);
         let fused = words.len() != page.words.len();
 
@@ -126,23 +131,24 @@ pub fn apply_edits(data: &Path, doc: &str, progress: ProgressFn) -> Result<usize
             }
         }
 
+        let rec = PageOcr { page: page.page, words };
         if fused || edited {
             let out = clean_dir.join(format!("page-{:04}.json", page.page));
             let tmp = out.with_extension("json.tmp");
-            std::fs::write(&tmp, serde_json::to_vec(&PageOcr { page: page.page, words })?)?;
+            std::fs::write(&tmp, serde_json::to_vec(&rec)?)?;
             std::fs::rename(&tmp, &out)?;
             changed += 1;
         }
+        out_pages.push(rec);
     }
     if !rejected.is_empty() {
         std::fs::write(edits_dir.join("rejected.log"), rejected.join("\n") + "\n")?;
     }
     progress(Progress::Log(format!(
-        "cleanup: {applied} edits applied, {} rejected, {changed}/{} pages changed",
+        "cleanup: {applied} edits applied, {} rejected, {changed}/{total} pages changed",
         rejected.len(),
-        pages.len()
     )));
-    Ok(changed)
+    Ok((changed, out_pages))
 }
 
 /// Fuse hyphenated line breaks in the word list itself (the helper saw the

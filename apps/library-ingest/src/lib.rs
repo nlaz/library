@@ -6,7 +6,8 @@
 //! atomic swap:
 //!
 //!   add_pdf        copy the source PDF into data/pdfs (the library owns it)
-//!   prepare_text   render + OCR (Apple Vision) -> chunk -> embed    (no store)
+//!   prepare_text   render + words (embedded text layer, else Apple Vision
+//!                  OCR) -> chunk -> embed                          (no store)
 //!   commit_text    upsert new chunks, remove vanished keys         (&mut Library)
 //!   prepare_figures  layout detect -> subdivide -> CLIP embed       (no store)
 //!   commit_figures   same swap for the figure index                (&mut Images)
@@ -19,6 +20,7 @@
 pub mod clean;
 pub mod layout;
 pub mod ocr;
+pub mod pdftext;
 pub mod subdivide;
 pub mod textout;
 
@@ -41,6 +43,12 @@ const FIG_MIN_H: f32 = 0.07;
 /// Fraction of dark pixels a candidate region must contain.
 const FIG_MIN_INK: f64 = 0.01;
 const CLIP_BATCH: usize = 8;
+/// Longest edge of the per-page grayscale downscale that ink checks and
+/// subdivision profiles read — full-res pixels are only touched for crops.
+pub const PAGE_LUMA_PX: u32 = 768;
+/// Longest edge of a stored figure crop. CLIP resizes to 224px anyway;
+/// keeping crops at render resolution swaps an 8GB machine on art books.
+const CROP_MAX_PX: u32 = 448;
 
 /// Everything the pipeline needs besides the stores and models. `data`
 /// should be absolute when the caller's CWD is not the repo root (a .app
@@ -56,6 +64,9 @@ pub struct IngestCtx {
     /// Cached edits (data/edits) are applied either way — that part is
     /// cheap, local, and model-free.
     pub clean: bool,
+    /// Prefer embedded PDF text layers over Vision OCR, page by page. On
+    /// by default; turn off for PDFs whose producer embedded garbage OCR.
+    pub text_layer: bool,
 }
 
 /// Pipeline progress, reported as work happens.
@@ -192,41 +203,42 @@ pub fn add_pdf(ctx: &IngestCtx, pdf: &Path, name: Option<String>) -> Result<(Str
     Ok((doc, dest))
 }
 
-/// Render + OCR (cached per page), chunk, and embed a doc.
-/// Touches no store — safe to run while searches are live.
+/// Render + extract words (cached per page), chunk, and embed a doc.
+/// Touches no store — safe to run while searches are live. Also returns
+/// the doc's pages (cleaned where cleanup ran, raw elsewhere) so callers
+/// like the markdown edition don't re-read the whole doc.
 pub fn prepare_text(
     ctx: &IngestCtx,
     pdf: &Path,
     doc: &str,
     limit: Option<usize>,
     progress: ProgressFn,
-) -> Result<Vec<ChunkRec>> {
+) -> Result<(Vec<ChunkRec>, Vec<PageOcr>)> {
     let pages_dir = ctx.data.join("pages").join(doc);
     let ocr_dir = ctx.data.join("ocr").join(doc);
     std::fs::create_dir_all(&pages_dir)?;
     std::fs::create_dir_all(&ocr_dir)?;
 
-    // 1. render + OCR (cached: pages that already have JSON are skipped)
-    ocr::ocr_pdf(pdf, &pages_dir, &ocr_dir, ctx.width, limit, progress)?;
+    // 1. render + words (cached: pages that already have JSON are skipped)
+    ocr::ocr_pdf(pdf, &pages_dir, &ocr_dir, ctx.width, limit, ctx.text_layer, progress)?;
 
-    // 2. OCR cleanup. The model pass is opt-in (ctx.clean) — it parks a
-    // ~2GB model in memory for the whole run. Cached edits always get
-    // (re)applied: that's file-local and costs nothing.
-    if ctx.clean {
-        clean::clean_doc(&ctx.data, doc, progress)?;
+    // 2. OCR cleanup + read. The model pass is opt-in (ctx.clean) — it
+    // parks a ~2GB model in memory for the whole run. Cached edits always
+    // get (re)applied: that's file-local and costs nothing. Both cleanup
+    // paths hand back the final pages, so the doc is read exactly once.
+    let pages = if ctx.clean {
+        clean::clean_doc(&ctx.data, doc, progress)?.1
     } else if ctx.data.join("edits").join(doc).is_dir() {
-        clean::apply_edits(&ctx.data, doc, progress)?;
-    }
+        clean::apply_edits(&ctx.data, doc, progress)?.1
+    } else {
+        read_pages(&ctx.data, doc)?
+    };
 
-    // 3. read pages (cleaned where the cleanup pass ran, raw elsewhere)
-    let mut pages = read_pages(&ctx.data, doc)?;
-    if let Some(n) = limit {
-        pages.truncate(n);
-    }
-
-    // 4. chunk: page-bounded sliding windows in reading order
+    // 3. chunk: page-bounded sliding windows in reading order. Only the
+    // first `limit` pages chunk; the full set is still returned.
+    let upto = limit.unwrap_or(pages.len()).min(pages.len());
     let mut chunks: Vec<(ChunkKey, Vec<Word>)> = Vec::new();
-    for page in &pages {
+    for page in &pages[..upto] {
         let mut idx = 0u32;
         let mut start = 0usize;
         while start < page.words.len() {
@@ -243,7 +255,7 @@ pub fn prepare_text(
         }
     }
 
-    // 5. embed (ese: compile-time static embeddings, no model to load),
+    // 4. embed (ese: compile-time static embeddings, no model to load),
     // batched so progress stays visible
     let mut embs: Vec<Emb> = Vec::with_capacity(chunks.len());
     for batch in chunks.chunks(EMBED_BATCH) {
@@ -255,11 +267,12 @@ pub fn prepare_text(
         progress(Progress::Embed { done: embs.len(), total: chunks.len() });
     }
 
-    Ok(chunks
+    let recs = chunks
         .into_iter()
         .zip(embs)
         .map(|((key, words), emb)| ChunkRec { key, words, emb })
-        .collect())
+        .collect();
+    Ok((recs, pages))
 }
 
 /// Atomic swap: upsert the doc's new chunks, remove keys that vanished,
@@ -333,104 +346,165 @@ fn inter_area(a: Bbox, b: Bbox) -> f32 {
     w.max(0.0) * h.max(0.0)
 }
 
-/// Crop `bbox` out of the page render, keeping it only if it contains ink
-/// (scans are full of legitimately blank gaps).
-fn crop_if_inked(page: &image::DynamicImage, bbox: Bbox) -> Option<image::DynamicImage> {
+/// Whether `bbox` contains ink, judged on the page's shared grayscale
+/// downscale (scans are full of legitimately blank gaps).
+fn region_inked(luma: &image::GrayImage, bbox: Bbox) -> bool {
+    let (lw, lh) = (luma.width() as f32, luma.height() as f32);
+    let x0 = (bbox[0] * lw) as u32;
+    let y0 = (bbox[1] * lh) as u32;
+    let x1 = (((bbox[0] + bbox[2]) * lw).ceil() as u32).min(luma.width());
+    let y1 = (((bbox[1] + bbox[3]) * lh).ceil() as u32).min(luma.height());
+    if x1 <= x0 || y1 <= y0 {
+        return false;
+    }
+    let mut dark = 0usize;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            dark += usize::from(luma.get_pixel(x, y).0[0] < 160);
+        }
+    }
+    dark as f64 / ((x1 - x0) as u64 * (y1 - y0) as u64) as f64 >= FIG_MIN_INK
+}
+
+/// Crop `bbox` for CLIP, downscaled right away: the encoder resizes to
+/// 224px, so render-resolution crops are pure memory pressure.
+fn crop_for_clip(page: &image::DynamicImage, bbox: Bbox) -> image::DynamicImage {
     let (iw, ih) = (page.width() as f32, page.height() as f32);
-    let crop = page.crop_imm(
+    page.crop_imm(
         (bbox[0] * iw) as u32,
         (bbox[1] * ih) as u32,
         (bbox[2] * iw).max(1.0) as u32,
         (bbox[3] * ih).max(1.0) as u32,
-    );
-    let small = crop.thumbnail(96, 96).into_luma8();
-    let dark = small.pixels().filter(|p| p.0[0] < 160).count();
-    let frac = dark as f64 / (small.width() * small.height()).max(1) as f64;
-    (frac >= FIG_MIN_INK).then_some(crop)
+    )
+    .thumbnail(CROP_MAX_PX, CROP_MAX_PX)
+}
+
+/// One page's contribution to the figure index, produced off-thread.
+struct PageFigures {
+    keys: Vec<(ImageKey, Bbox)>,
+    crops: Vec<image::DynamicImage>,
+    log: Option<String>,
+}
+
+fn page_figures(
+    doc: &str,
+    pages_dir: &Path,
+    model: Option<&layout::LayoutModel>,
+    page: &PageOcr,
+) -> PageFigures {
+    let mut out = PageFigures { keys: Vec::new(), crops: Vec::new(), log: None };
+    let jpg = pages_dir.join(format!("page-{:04}.jpg", page.page));
+    let (img, regions): (image::DynamicImage, Vec<Bbox>) = match model {
+        Some(m) => {
+            let Ok(img) = image::open(&jpg) else { return out };
+            let mut dets: Vec<layout::Detection> = match m.detect(&img) {
+                Ok(d) => d,
+                Err(e) => {
+                    out.log = Some(format!("layout failed on p.{}: {e:#}", page.page));
+                    return out;
+                }
+            };
+            dets.retain(|d| d.class.is_figure() && d.bbox[2] * d.bbox[3] >= layout::AREA_MIN);
+            let mut regions: Vec<Bbox> = dets.into_iter().map(|d| d.bbox).collect();
+            // union: keep heuristic gap-bands the model didn't cover, so a
+            // whiffed full-bleed spread still gets indexed
+            for hb in detect_regions(&page.words) {
+                let covered =
+                    regions.iter().any(|mb| inter_area(hb, *mb) > 0.3 * (hb[2] * hb[3]));
+                if !covered {
+                    regions.push(hb);
+                }
+            }
+            (img, regions)
+        }
+        None => {
+            let regions = detect_regions(&page.words);
+            if regions.is_empty() {
+                return out;
+            }
+            let Ok(img) = image::open(&jpg) else { return out };
+            (img, regions)
+        }
+    };
+    // ink checks and subdivision profiles read this shared downscale;
+    // full-res pixels are only touched for accepted crops
+    let luma = img.thumbnail(PAGE_LUMA_PX, PAGE_LUMA_PX).into_luma8();
+    let full = (img.width(), img.height());
+    // whole figures AND their component parts get indexed; the server
+    // groups per page at query time so parts don't spam results
+    let mut with_parts = regions.clone();
+    for r in &regions {
+        with_parts.extend(subdivide::subdivide(&luma, full, *r));
+    }
+    let mut regions = with_parts;
+    // stable idx assignment in reading order
+    regions.sort_by(|a, b| (a[1], a[0]).partial_cmp(&(b[1], b[0])).unwrap());
+    let mut idx = 0u32;
+    for bbox in regions {
+        if region_inked(&luma, bbox) {
+            out.keys.push((ImageKey { doc: doc.to_string(), page: page.page, idx }, bbox));
+            out.crops.push(crop_for_clip(&img, bbox));
+            idx += 1;
+        }
+    }
+    out
 }
 
 /// Detect and CLIP-embed a doc's figure regions from its cached OCR + page
-/// renders. Touches no store. Loads the CLIP image encoder for the duration
-/// of the call and drops it after (it's ~350MB resident).
+/// renders. Touches no store. Loads the CLIP image encoder only when there
+/// is something to embed and drops it after (it's ~350MB resident).
 pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Result<Vec<ImageRec>> {
+    use rayon::prelude::*;
+
     let pages = read_ocr(&ctx.data.join("ocr").join(doc))?;
     let pages_dir = ctx.data.join("pages").join(doc);
     let model = layout::LayoutModel::load(&ctx.data)?;
 
-    // 1. detect + crop
+    // 1. detect + crop, page-parallel (ort sessions run concurrently).
+    // Chunked because the progress callback isn't Send: workers hand
+    // results back and this thread reports between batches.
+    let chunk = 2 * rayon::current_num_threads().max(1);
     let mut keys: Vec<(ImageKey, Bbox)> = Vec::new();
     let mut crops: Vec<image::DynamicImage> = Vec::new();
-    for (pi, page) in pages.iter().enumerate() {
-        progress(Progress::Figures { done: pi, total: pages.len() });
-        let jpg = pages_dir.join(format!("page-{:04}.jpg", page.page));
-        let (img, regions): (image::DynamicImage, Vec<Bbox>) = match &model {
-            Some(m) => {
-                let Ok(img) = image::open(&jpg) else { continue };
-                let mut dets: Vec<layout::Detection> = match m.detect(&img) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        progress(Progress::Log(format!("layout failed on p.{}: {e:#}", page.page)));
-                        continue;
-                    }
-                };
-                dets.retain(|d| d.class.is_figure() && d.bbox[2] * d.bbox[3] >= layout::AREA_MIN);
-                let mut regions: Vec<Bbox> = dets.into_iter().map(|d| d.bbox).collect();
-                // union: keep heuristic gap-bands the model didn't cover, so a
-                // whiffed full-bleed spread still gets indexed
-                for hb in detect_regions(&page.words) {
-                    let covered = regions
-                        .iter()
-                        .any(|mb| inter_area(hb, *mb) > 0.3 * (hb[2] * hb[3]));
-                    if !covered {
-                        regions.push(hb);
-                    }
-                }
-                (img, regions)
+    let mut done = 0usize;
+    for group in pages.chunks(chunk) {
+        progress(Progress::Figures { done, total: pages.len() });
+        let results: Vec<PageFigures> = group
+            .par_iter()
+            .map(|page| page_figures(doc, &pages_dir, model.as_ref(), page))
+            .collect();
+        for mut r in results {
+            if let Some(line) = r.log.take() {
+                progress(Progress::Log(line));
             }
-            None => {
-                let regions = detect_regions(&page.words);
-                if regions.is_empty() {
-                    continue;
-                }
-                let Ok(img) = image::open(&jpg) else { continue };
-                (img, regions)
-            }
-        };
-        // whole figures AND their component parts get indexed; the server
-        // groups per page at query time so parts don't spam results
-        let mut with_parts = regions.clone();
-        for r in &regions {
-            with_parts.extend(subdivide::subdivide(&img, *r));
+            keys.append(&mut r.keys);
+            crops.append(&mut r.crops);
         }
-        let mut regions = with_parts;
-        // stable idx assignment in reading order
-        regions.sort_by(|a, b| (a[1], a[0]).partial_cmp(&(b[1], b[0])).unwrap());
-        let mut idx = 0u32;
-        for bbox in regions {
-            if let Some(crop) = crop_if_inked(&img, bbox) {
-                keys.push((ImageKey { doc: doc.to_string(), page: page.page, idx }, bbox));
-                crops.push(crop);
-                idx += 1;
-            }
-        }
+        done += group.len();
     }
     progress(Progress::Figures { done: pages.len(), total: pages.len() });
 
-    // 2. embed
+    if crops.is_empty() {
+        return Ok(Vec::new()); // nothing to embed: skip the CLIP load
+    }
+
+    // 2. embed, draining so crops free as batches complete
     let model = ImageEmbedding::try_new(
         ImageInitOptions::new(ImageEmbeddingModel::ClipVitB32)
             .with_cache_dir(ctx.data.join("models"))
             .with_show_download_progress(true),
     )?;
+    let total = crops.len();
     let mut recs: Vec<ImageRec> = Vec::with_capacity(keys.len());
     let mut it = keys.into_iter();
-    for batch in crops.chunks(CLIP_BATCH) {
-        for e in model.embed_images(batch.to_vec())? {
+    while !crops.is_empty() {
+        let batch: Vec<_> = crops.drain(..CLIP_BATCH.min(crops.len())).collect();
+        for e in model.embed_images(batch)? {
             let (key, bbox) = it.next().unwrap();
             let emb: ClipEmb = e.try_into().expect("CLIP emits 512-dim vectors");
             recs.push(ImageRec { key, bbox, emb });
         }
-        progress(Progress::Clip { done: recs.len(), total: crops.len() });
+        progress(Progress::Clip { done: recs.len(), total });
     }
     Ok(recs)
 }

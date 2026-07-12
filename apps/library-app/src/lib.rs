@@ -101,7 +101,7 @@ fn save_settings(app: &AppHandle, s: &Settings) -> Result<(), String> {
 fn ingest_ctx(s: &Settings) -> IngestCtx {
     // clean: false — the in-app ingest must never park the ~2GB on-device
     // model in memory implicitly; cached edits still get applied
-    IngestCtx { data: s.data.clone(), width: s.width, clean: false }
+    IngestCtx { data: s.data.clone(), width: s.width, clean: false, text_layer: true }
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +453,7 @@ fn run_job(app: &AppHandle, job: &Job) -> anyhow::Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(200));
     };
 
-    let recs = library_ingest::prepare_text(&ctx, &job.pdf, doc, None, &mut |p| {
+    let (recs, _pages) = library_ingest::prepare_text(&ctx, &job.pdf, doc, None, &mut |p| {
         emit_progress(app, doc, p)
     })?;
 

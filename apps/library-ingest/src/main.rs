@@ -64,6 +64,10 @@ enum Cli {
         /// YOLO layout over every page and is the most expensive stage.
         #[arg(long)]
         text_only: bool,
+        /// OCR every page even when the PDF embeds a text layer (for PDFs
+        /// whose producer embedded garbage OCR).
+        #[arg(long)]
+        no_text_layer: bool,
     },
     /// Add an already-ingested doc to a collection (creates it if needed).
     Collect {
@@ -137,7 +141,7 @@ enum Cli {
 }
 
 fn ctx(data: &Path, width: u32) -> IngestCtx {
-    IngestCtx { data: data.to_path_buf(), width, clean: false }
+    IngestCtx { data: data.to_path_buf(), width, clean: false, text_layer: true }
 }
 
 /// Render pipeline progress the way the old monolithic CLI did.
@@ -170,11 +174,11 @@ fn print_progress(p: Progress) {
 
 fn main() -> Result<()> {
     match Cli::parse() {
-        Cli::Ingest { pdf, data, limit, width, name, collection, hot, clean, text_only } => {
+        Cli::Ingest { pdf, data, limit, width, name, collection, hot, clean, text_only, no_text_layer } => {
             if !hot {
                 be_gentle();
             }
-            ingest(&pdf, &data, limit, width, name, collection, clean, text_only)
+            ingest(&pdf, &data, limit, width, name, collection, clean, text_only, no_text_layer)
         }
         Cli::Collect { collection, doc, data } => {
             collect(&data, &collection, &doc)?;
@@ -188,7 +192,7 @@ fn main() -> Result<()> {
             ingest_images(&doc, &data)
         }
         Cli::Clean { doc, data, apply_only } => {
-            let changed = if apply_only {
+            let (changed, _) = if apply_only {
                 library_ingest::clean::apply_edits(&data, &doc, &mut print_progress)?
             } else {
                 library_ingest::clean::clean_doc(&data, &doc, &mut print_progress)?
@@ -245,26 +249,15 @@ fn ingest(
     collection: Option<String>,
     clean: bool,
     text_only: bool,
+    no_text_layer: bool,
 ) -> Result<()> {
-    let ctx = ctx(data, width);
+    let mut ctx = ctx(data, width);
+    ctx.clean = clean;
+    ctx.text_layer = !no_text_layer;
     let (doc, pdf) = add_pdf(&ctx, pdf, name)?;
 
-    // The model pass runs before anything else touches ort: prepare_text
-    // then just re-applies the cached edits.
-    if clean {
-        library_ingest::ocr::ocr_pdf(
-            &pdf,
-            &data.join("pages").join(&doc),
-            &data.join("ocr").join(&doc),
-            width,
-            limit,
-            &mut print_progress,
-        )?;
-        library_ingest::clean::clean_doc(data, &doc, &mut print_progress)?;
-    }
-
     let t = Instant::now();
-    let recs = prepare_text(&ctx, &pdf, &doc, limit, &mut print_progress)?;
+    let (recs, pages) = prepare_text(&ctx, &pdf, &doc, limit, &mut print_progress)?;
     println!("prepared: {} chunks in {:?}", recs.len(), t.elapsed());
 
     let t = Instant::now();
@@ -281,7 +274,7 @@ fn ingest(
         ingest_images(&doc, data)?;
     }
 
-    let md = library_ingest::textout::write_doc(&data, &doc)?;
+    let md = library_ingest::textout::write_doc_pages(data, &doc, &pages)?;
     println!("text edition: {}", md.display());
 
     if let Some(col) = collection {
@@ -320,10 +313,11 @@ fn layout_debug(doc: &str, pages: &str, data: &Path, out: &Path) -> Result<()> {
         println!("\n{doc} p.{page} — {} detections in {:?}", dets.len(), t.elapsed());
 
         // subdivision preview for each figure (needs &img before into_rgb8)
+        let luma = img.thumbnail(library_ingest::PAGE_LUMA_PX, library_ingest::PAGE_LUMA_PX).into_luma8();
         let mut parts: Vec<library_core::Bbox> = Vec::new();
         for d in &dets {
             if d.class.is_figure() && d.bbox[2] * d.bbox[3] >= layout::AREA_MIN {
-                parts.extend(subdivide::subdivide(&img, d.bbox));
+                parts.extend(subdivide::subdivide(&luma, (img.width(), img.height()), d.bbox));
             }
         }
 

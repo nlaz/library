@@ -28,8 +28,13 @@ const PARA_INDENT: f32 = 0.015;
 
 /// Write `data/text/<doc>.md` and return its path.
 pub fn write_doc(data: &Path, doc: &str) -> Result<PathBuf> {
-    let pages = read_pages(data, doc)?;
-    let md = markdown(doc, &pages);
+    write_doc_pages(data, doc, &read_pages(data, doc)?)
+}
+
+/// [`write_doc`] from already-loaded pages (e.g. the set `prepare_text`
+/// returns), skipping the re-read of the whole doc.
+pub fn write_doc_pages(data: &Path, doc: &str, pages: &[PageOcr]) -> Result<PathBuf> {
+    let md = markdown(doc, pages);
     let dir = data.join("text");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{doc}.md"));

@@ -1,0 +1,229 @@
+//! Render PDF pages to JPEG and OCR them with Apple Vision, in-process.
+//!
+//! A direct port of the old `tools/ocr_pdf.py` (pyobjc) helper; the on-disk
+//! contract is unchanged so existing caches stay valid:
+//!
+//!   <pages_dir>/page-NNNN.jpg    rendered page image, `width` px wide
+//!   <ocr_dir>/page-NNNN.json     {"page": N, "words": [{"t","x","y","w","h"}]}
+//!
+//! Boxes are normalized 0..1 with a TOP-LEFT origin (Vision's bottom-left
+//! coordinates are flipped here). Pages whose JSON and JPEG both exist are
+//! skipped, so re-runs are incremental.
+
+use std::path::Path;
+
+use anyhow::{Context, Result, bail};
+use library_core::Word;
+use objc2::AnyThread;
+use objc2::rc::autoreleasepool;
+use objc2_core_foundation::{
+    CFDictionary, CFNumber, CFRetained, CFString, CFURL, CGPoint, CGRect, CGSize,
+};
+use objc2_core_graphics::{
+    CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGContext, CGImage,
+    CGImageAlphaInfo, CGPDFBox, CGPDFDocument, CGPDFPage,
+};
+use objc2_foundation::{NSArray, NSDictionary, NSRange};
+use objc2_image_io::{CGImageDestination, kCGImageDestinationLossyCompressionQuality};
+use objc2_vision::{
+    VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel,
+};
+
+use crate::{PageOcr, Progress, ProgressFn};
+
+const JPEG_QUALITY: f64 = 0.8;
+
+/// Render + OCR every page of `pdf` (or the first `limit`). Cached pages are
+/// skipped; `Progress::Ocr { done: page, total }` is reported per processed
+/// page, with a final `Progress::Log` summary line.
+pub fn ocr_pdf(
+    pdf: &Path,
+    pages_dir: &Path,
+    ocr_dir: &Path,
+    width: u32,
+    limit: Option<usize>,
+    progress: ProgressFn,
+) -> Result<()> {
+    std::fs::create_dir_all(pages_dir)?;
+    std::fs::create_dir_all(ocr_dir)?;
+
+    let url = CFURL::from_file_path(pdf).context("bad pdf path")?;
+    let doc = CGPDFDocument::with_url(Some(&url))
+        .with_context(|| format!("cannot open {}", pdf.display()))?;
+    let mut n = CGPDFDocument::number_of_pages(Some(&doc));
+    if let Some(lim) = limit {
+        n = n.min(lim);
+    }
+
+    let (mut done, mut skipped) = (0usize, 0usize);
+    for i in 1..=n {
+        let jpg = pages_dir.join(format!("page-{i:04}.jpg"));
+        let js = ocr_dir.join(format!("page-{i:04}.json"));
+        if js.exists() && jpg.exists() {
+            skipped += 1;
+            continue;
+        }
+        // drain autoreleased CGImages/Vision buffers every page, or a long
+        // run accumulates hundreds of page bitmaps and exhausts memory
+        let words = autoreleasepool(|_| -> Result<Vec<Word>> {
+            let img = render_page(&doc, i, width)?;
+            save_jpeg(&img, &jpg)?;
+            ocr_words(&img)
+        })?;
+        // tmp + rename so a crash can't leave a half-written page json
+        let tmp = js.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&PageOcr { page: i as u32, words })?)?;
+        std::fs::rename(&tmp, &js)?;
+        done += 1;
+        progress(Progress::Ocr { done: i as u32, total: n as u32 });
+    }
+    progress(Progress::Log(format!(
+        "ocr complete: {done} processed, {skipped} cached, {n} total"
+    )));
+    Ok(())
+}
+
+/// Rasterize page `i` (1-based) to `width` px wide, white background.
+fn render_page(doc: &CGPDFDocument, i: usize, width: u32) -> Result<CFRetained<CGImage>> {
+    let page = CGPDFDocument::page(Some(doc), i).context("no such page")?;
+    let media = CGPDFPage::box_rect(Some(&page), CGPDFBox::MediaBox);
+    let rot = CGPDFPage::rotation_angle(Some(&page)).rem_euclid(360);
+    let (mut pw, mut ph) = (media.size.width, media.size.height);
+    if rot % 180 == 90 {
+        (pw, ph) = (ph, pw);
+    }
+    let scale = width as f64 / pw;
+    let (w, h) = ((pw * scale) as usize, (ph * scale) as usize);
+
+    let cs = CGColorSpace::new_device_rgb().context("no device RGB colorspace")?;
+    let ctx = unsafe {
+        CGBitmapContextCreate(
+            std::ptr::null_mut(),
+            w,
+            h,
+            8,
+            0,
+            Some(&cs),
+            CGImageAlphaInfo::NoneSkipLast.0,
+        )
+    }
+    .context("cannot create bitmap context")?;
+    let rect = CGRect {
+        origin: CGPoint { x: 0.0, y: 0.0 },
+        size: CGSize { width: w as f64, height: h as f64 },
+    };
+    CGContext::set_rgb_fill_color(Some(&ctx), 1.0, 1.0, 1.0, 1.0);
+    CGContext::fill_rect(Some(&ctx), rect);
+    let tf = CGPDFPage::drawing_transform(Some(&page), CGPDFBox::MediaBox, rect, 0, true);
+    CGContext::concat_ctm(Some(&ctx), tf);
+    CGContext::draw_pdf_page(Some(&ctx), Some(&page));
+    CGBitmapContextCreateImage(Some(&ctx)).context("cannot snapshot bitmap context")
+}
+
+fn save_jpeg(img: &CGImage, path: &Path) -> Result<()> {
+    let url = CFURL::from_file_path(path).context("bad jpeg path")?;
+    let quality = CFNumber::new_f64(JPEG_QUALITY);
+    let opts = CFDictionary::from_slices(
+        &[unsafe { kCGImageDestinationLossyCompressionQuality }],
+        &[&*quality],
+    );
+    let dest = unsafe {
+        CGImageDestination::with_url(&url, &CFString::from_static_str("public.jpeg"), 1, None)
+    }
+    .context("cannot create jpeg destination")?;
+    unsafe { dest.add_image(img, Some(opts.as_opaque())) };
+    if !unsafe { dest.finalize() } {
+        bail!("failed to write {}", path.display());
+    }
+    Ok(())
+}
+
+/// OCR one rendered page. Word boxes come back normalized with a top-left
+/// origin; recognized lines are split on whitespace with per-token boxes via
+/// `boundingBoxForRange` (Vision ranges are UTF-16 code units).
+fn ocr_words(img: &CGImage) -> Result<Vec<Word>> {
+    let handler = unsafe {
+        VNImageRequestHandler::initWithCGImage_options(
+            VNImageRequestHandler::alloc(),
+            img,
+            &NSDictionary::new(),
+        )
+    };
+    let req = VNRecognizeTextRequest::new();
+    req.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
+    req.setUsesLanguageCorrection(true);
+    let reqs: [&VNRequest; 1] = [&req];
+    handler
+        .performRequests_error(&NSArray::from_slice(&reqs))
+        .map_err(|e| anyhow::anyhow!("vision request failed: {e}"))?;
+
+    let mut words = Vec::new();
+    let Some(observations) = req.results() else {
+        return Ok(words);
+    };
+    for obs in &observations {
+        let cands = obs.topCandidates(1);
+        let Some(cand) = cands.firstObject() else {
+            continue;
+        };
+        let line = cand.string().to_string();
+        for (loc, tok) in split_tokens(&line) {
+            let range = NSRange::new(utf16_len(&line[..loc]), utf16_len(tok));
+            let Ok(rect_obs) = (unsafe { cand.boundingBoxForRange_error(range) }) else {
+                continue;
+            };
+            let bb = unsafe { rect_obs.boundingBox() };
+            words.push(Word {
+                t: tok.to_string(),
+                x: round5(bb.origin.x),
+                // flip to top-left origin
+                y: round5(1.0 - bb.origin.y - bb.size.height),
+                w: round5(bb.size.width),
+                h: round5(bb.size.height),
+            });
+        }
+    }
+    Ok(words)
+}
+
+/// Whitespace-split `line`, yielding each token with its byte offset.
+fn split_tokens(line: &str) -> impl Iterator<Item = (usize, &str)> {
+    line.split_whitespace()
+        .scan(0usize, |pos, tok| {
+            let loc = line[*pos..].find(tok).expect("token comes from this line") + *pos;
+            *pos = loc + tok.len();
+            Some((loc, tok))
+        })
+}
+
+fn utf16_len(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
+fn round5(v: f64) -> f32 {
+    ((v * 1e5).round() / 1e5) as f32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokens_carry_byte_offsets() {
+        let toks: Vec<_> = split_tokens("  naïve fiancé  x").collect();
+        assert_eq!(toks, vec![(2, "naïve"), (9, "fiancé"), (18, "x")]);
+    }
+
+    #[test]
+    fn utf16_offsets_match_python() {
+        // python: len("naïve ".encode("utf-16-le")) // 2 == 6
+        assert_eq!(utf16_len("naïve "), 6);
+        assert_eq!(utf16_len("𝄞 clef "), 8); // surrogate pair counts as 2
+    }
+
+    #[test]
+    fn round5_matches_contract() {
+        assert_eq!(round5(0.123456789), 0.12346);
+        assert_eq!(round5(1.0), 1.0);
+    }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "library-server"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+library-core = { path = "../library-core" }
+fold = { workspace = true }
+ese = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+fastembed = "4"
+tokio = { version = "1", features = ["full"] }
+wtransport = { version = "0.6", features = ["self-signed"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs", "cors"] }

@@ -1,6 +1,26 @@
 [workspace]
 resolver = "3"
-members = ["fold", "anny", "ese", "examples/*"]
+members = [
+    "fold",
+    "anny",
+    "ese",
+    "examples/*",
+    "apps/library-core",
+    "apps/library-ingest",
+    "apps/library-server",
+    "apps/library-app",
+]
+
+[workspace.dependencies]
+fold = { path = "fold" }
+anny = { path = "anny" }
+ese = { path = "ese", features = ["dim-512", "quant-8"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+fxhash = "0"
+postcard = { version = "1", features = ["use-std"] }
+fjall = { version = "3", default-features = false }
+anyhow = "1"
 
 # hoisted from fold; applies workspace-wide
 [profile.release]

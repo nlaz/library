@@ -1,3 +1,8 @@
-/target
 target/
 .DS_Store
+/data
+node_modules/
+apps/web/dist/
+apps/library-app/gen/
+tools/clean-pages/clean-pages
+layout-debug/

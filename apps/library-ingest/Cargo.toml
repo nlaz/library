@@ -1,0 +1,24 @@
+[package]
+name = "library-ingest"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+library-core = { path = "../library-core" }
+fold = { workspace = true }
+ese = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+fastembed = "4"
+image = "0.25"
+libc = "0.2"
+ndarray = "0.16"
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-foundation = "0.3"
+objc2-image-io = "0.3"
+objc2-vision = { version = "0.3", features = ["objc2-core-graphics"] }
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["ndarray"] }

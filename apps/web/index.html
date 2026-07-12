@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>The Library</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">The&nbsp;Library</div>
+      <nav id="cols" role="group" title="Collections">
+        <button data-col="" class="on">Everything</button>
+      </nav>
+      <div id="kind" role="group" title="Result type">
+        <button data-kind="" class="on">All</button>
+        <button data-kind="text">Text</button>
+        <button data-kind="images">Images</button>
+      </div>
+      <input
+        id="q"
+        type="search"
+        placeholder="Search the library…"
+        autocomplete="off"
+        autofocus
+      />
+      <button id="add-btn" title="Add PDFs to the library" hidden>+ Add</button>
+      <div id="status"></div>
+    </header>
+    <main>
+      <div id="home"></div>
+      <div id="results" hidden></div>
+    </main>
+    <section id="reader" hidden>
+      <div id="reader-top">
+        <button id="reader-back" title="Back (Esc)">←</button>
+        <div id="reader-title"></div>
+        <div id="reader-pageno"></div>
+      </div>
+      <div id="reader-scroll">
+        <div id="reader-pages"></div>
+      </div>
+    </section>
+    <div id="overlay" hidden>
+      <aside id="viewer">
+        <div id="viewer-top">
+          <div id="viewer-label"></div>
+          <div class="viewer-actions">
+            <button id="viewer-read" hidden>Open in reader</button>
+            <button id="viewer-close" title="Close (Esc)">✕</button>
+          </div>
+        </div>
+        <div id="page-wrap">
+          <img id="page-img" alt="" />
+          <div id="page-hl"></div>
+        </div>
+      </aside>
+    </div>
+    <div id="dropzone" hidden>
+      <div class="dz-inner">Drop PDFs to add them to the library</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

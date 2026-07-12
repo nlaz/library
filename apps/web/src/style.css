@@ -1,0 +1,667 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+:root {
+  --bg: #0a0a0a;
+  --panel: #111113;
+  --border: #26262a;
+  --text: #e8e8ea;
+  --dim: #86868e;
+  --accent: #facc15;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+#cols {
+  display: flex;
+  gap: 4px;
+}
+
+#cols button {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#cols button:hover {
+  color: var(--text);
+}
+
+#cols button.on {
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+#cols button .n {
+  color: var(--dim);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  margin-left: 6px;
+}
+
+#kind {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+#kind button {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+#kind button + button {
+  border-left: 1px solid var(--border);
+}
+
+#kind button.on {
+  background: var(--panel);
+  color: var(--text);
+}
+
+#q {
+  flex: 1;
+  max-width: 720px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  padding: 9px 14px;
+  outline: none;
+}
+
+#q:focus {
+  border-color: #3f3f46;
+}
+
+#status {
+  color: var(--dim);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+main {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+#add-btn {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+
+#add-btn:hover {
+  border-color: #52525b;
+}
+
+/* --- home: shelves of books ------------------------------------------- */
+
+#home {
+  padding: 20px 24px 40px;
+}
+
+.shelf + .shelf {
+  margin-top: 28px;
+}
+
+.shelf h2 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--dim);
+  margin-bottom: 12px;
+  letter-spacing: 0.02em;
+}
+
+.books {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 18px;
+}
+
+.book {
+  cursor: pointer;
+}
+
+.book.processing {
+  cursor: default;
+}
+
+.book .cover {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.12s, transform 0.12s;
+}
+
+.book:not(.processing):hover .cover {
+  border-color: #52525b;
+  transform: translateY(-2px);
+}
+
+.book .cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.book.processing .cover img {
+  filter: grayscale(1) brightness(0.6);
+}
+
+.book .btitle {
+  margin-top: 8px;
+  font-size: 13px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.book .bsub {
+  color: var(--dim);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.progress {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  height: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress .fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.25s;
+}
+
+/* --- reader ------------------------------------------------------------ */
+
+#reader {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  z-index: 8;
+}
+
+#reader[hidden] {
+  display: none;
+}
+
+#reader-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+#reader-back {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 10px;
+}
+
+#reader-back:hover {
+  color: var(--text);
+  border-color: #52525b;
+}
+
+#reader-title {
+  flex: 1;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#reader-pageno {
+  color: var(--dim);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+#reader-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+#reader-pages {
+  width: min(860px, 94vw);
+  margin: 0 auto;
+  padding: 18px 0 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.rpage {
+  aspect-ratio: 3 / 4; /* placeholder until the render's real ratio loads */
+  background: #141416;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  content-visibility: auto;
+}
+
+.rpage img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #fff;
+  border-radius: 4px;
+}
+
+/* --- drop target --------------------------------------------------------- */
+
+#dropzone {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 10, 10, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  padding: 32px;
+  pointer-events: none;
+}
+
+#dropzone[hidden] {
+  display: none;
+}
+
+.dz-inner {
+  border: 2px dashed var(--accent);
+  border-radius: 16px;
+  color: var(--accent);
+  font-size: 18px;
+  padding: 60px 80px;
+}
+
+.viewer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+#viewer-read {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 10px;
+}
+
+#viewer-read:hover {
+  color: var(--text);
+  border-color: #52525b;
+}
+
+#results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  padding: 16px 20px;
+}
+
+.empty {
+  color: var(--dim);
+  padding: 24px 4px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.card:hover {
+  border-color: #52525b;
+}
+
+.card.img .preview {
+  height: 240px; /* figures deserve a taller window than text strips */
+}
+
+.preview {
+  position: relative;
+  height: 190px; /* keep in sync with PREVIEW_H in main.ts */
+  overflow: hidden;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+}
+
+.pv-inner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%; /* until place() measures the crop */
+}
+
+.pv-inner img {
+  width: 100%;
+  display: block;
+}
+
+.card .meta {
+  padding: 10px 12px;
+}
+
+.card .loc {
+  color: var(--dim);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card .snip {
+  color: #c9c9cf;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+mark {
+  background: rgba(250, 204, 21, 0.22);
+  color: var(--accent);
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+#overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 10;
+}
+
+#overlay[hidden] {
+  display: none;
+}
+
+#viewer {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(920px, 94vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  padding: 14px 18px 18px;
+}
+
+#viewer-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: -14px; /* cancel #viewer's top padding */
+  margin: -14px -18px 10px;
+  padding: 10px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  z-index: 1;
+}
+
+#viewer-label {
+  color: var(--dim);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+#viewer-close {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 8px;
+}
+
+#viewer-close:hover {
+  color: var(--text);
+  border-color: #52525b;
+}
+
+#page-wrap {
+  position: relative;
+  width: 100%;
+}
+
+#page-img {
+  width: 100%;
+  display: block;
+  border-radius: 6px;
+  background: #fff;
+}
+
+#page-img:not([src]) {
+  display: none;
+}
+
+.hl {
+  position: absolute;
+  outline: 2px solid rgba(250, 204, 21, 0.9);
+  background: rgba(250, 204, 21, 0.22);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* book-card "…" menu (rename / collections / delete) */
+
+.book {
+  position: relative;
+}
+
+.bmenu {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(10, 10, 10, 0.8);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.book:hover .bmenu,
+.book .book-menu ~ .bmenu,
+.bmenu:focus-visible {
+  opacity: 1;
+}
+
+.book-menu {
+  position: absolute;
+  top: 30px;
+  right: 6px;
+  z-index: 6;
+  min-width: 170px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+
+.book-menu button {
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.book-menu button:hover {
+  background: var(--border);
+}
+
+.book-menu button.danger {
+  color: #f87171;
+}
+
+.book-menu .mcols {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.book-menu .mcols label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.book-menu .mcols input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.book-menu input[type="text"] {
+  margin: 0 2px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.brename {
+  width: 100%;
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+/* reader text layer: invisible selectable text over the page scan */
+
+.tlayer {
+  position: absolute;
+  inset: 0;
+  container-type: size;
+  user-select: text;
+  cursor: text;
+}
+
+.tlayer .tw {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  line-height: 1;
+  overflow: hidden;
+}
+
+.tlayer .tw::selection {
+  background: rgba(250, 204, 21, 0.35);
+}
+
+.rpage {
+  position: relative;
+}
+
+.rpage img {
+  user-select: none;
+}

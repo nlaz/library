@@ -27,7 +27,7 @@ const K_IMG_BLEND: usize = 6;
 pub struct Engine {
     lib: RwLock<Library>,
     images: RwLock<Images>,
-    bge: TextEmbedding,
+    /// CLIP text encoder for figure search; text queries embed with ese.
     clip_text: TextEmbedding,
 }
 
@@ -137,22 +137,19 @@ fn init_engine(app: AppHandle) {
 
     let t = Instant::now();
     let models = settings.data.join("models");
-    let bge = TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::BGESmallENV15).with_cache_dir(models.clone()),
-    );
-    let clip_text = TextEmbedding::try_new(
+    // text queries embed with ese (no model object); only the CLIP text
+    // encoder (shared space with figure crops) still loads
+    let clip_text = match TextEmbedding::try_new(
         InitOptions::new(EmbeddingModel::ClipVitB32).with_cache_dir(models),
-    );
-    let (bge, clip_text) = match (bge, clip_text) {
-        (Ok(b), Ok(c)) => (b, c),
-        (Err(e), _) | (_, Err(e)) => return fail(format!("embedding models failed to load: {e}")),
+    ) {
+        Ok(c) => c,
+        Err(e) => return fail(format!("embedding model failed to load: {e}")),
     };
-    println!("embedding models ready in {:?}", t.elapsed());
+    println!("embedding model ready in {:?}", t.elapsed());
 
     let engine = std::sync::Arc::new(Engine {
         lib: RwLock::new(lib),
         images: RwLock::new(images),
-        bge,
         clip_text,
     });
     *app.state::<AppState>().engine.write().unwrap() = Some(engine);
@@ -202,15 +199,7 @@ fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
     let mut hits: Vec<WireHit> = Vec::new();
 
     if want_text {
-        let qemb: Option<Emb> = (q.mode == "full")
-            .then(|| {
-                eng.bge
-                    .embed(vec![q.q.clone()], None)
-                    .ok()
-                    .and_then(|mut v| v.pop())
-                    .and_then(|v| v.try_into().ok())
-            })
-            .flatten();
+        let qemb: Option<Emb> = (q.mode == "full").then(|| ese::encode_single(&q.q));
         if qemb.is_some() {
             phase = "hybrid";
         }
@@ -464,7 +453,7 @@ fn run_job(app: &AppHandle, job: &Job) -> anyhow::Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(200));
     };
 
-    let recs = library_ingest::prepare_text(&ctx, &job.pdf, doc, None, &eng.bge, &mut |p| {
+    let recs = library_ingest::prepare_text(&ctx, &job.pdf, doc, None, &mut |p| {
         emit_progress(app, doc, p)
     })?;
 

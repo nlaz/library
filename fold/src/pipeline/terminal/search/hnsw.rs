@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::sync::{Arc, RwLock};
 
 use anny::metric::{Metric, Scalar};
 use fjall::Readable;
@@ -30,7 +30,10 @@ fn chunk_key(i: u32) -> [u8; 5] {
 // The in-memory side of the sink, shared with readers. `ids`/`keys` tie the
 // persisted rows to anny's ephemeral node ids; `stale` marks the graph as
 // diverged from the store (an aborted transaction cannot un-mutate it), to
-// be rebuilt from the persisted vectors on next use.
+// be rebuilt from the persisted vectors on next use. Arc<RwLock> rather
+// than Rc<RefCell>: hosts share streams across threads (e.g. a server
+// answering searches from a blocking pool), and reads only contend when a
+// stale graph must be rebuilt.
 struct State<
     K,
     T,
@@ -163,7 +166,7 @@ pub struct Hnsw<
     // of the last-written graph blob (u64::MAX: no blob matches the graph)
     generation: u64,
     saved_generation: u64,
-    state: Rc<RefCell<State<K, T, M, DIM, M0, TOP_K, EF_SEARCH, EF_BUILD, MAX_LEVEL>>>,
+    state: Arc<RwLock<State<K, T, M, DIM, M0, TOP_K, EF_SEARCH, EF_BUILD, MAX_LEVEL>>>,
     // encoded key -> (key, latest embedding, net delta this tx)
     pending: FxHashMap<Vec<u8>, (K, [T; DIM], i64)>,
     vec_buf: Vec<u8>,
@@ -199,7 +202,7 @@ where
             seed,
             generation: 0,
             saved_generation: 0,
-            state: Rc::new(RefCell::new(State {
+            state: Arc::new(RwLock::new(State {
                 index: anny::hnsw::Hnsw::new(metric, seed),
                 ids: FxHashMap::default(),
                 keys: FxHashMap::default(),
@@ -263,7 +266,7 @@ where
         if index.len() != pairs.len() {
             return false;
         }
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.write().unwrap();
         state.ids = pairs
             .iter()
             .map(|(id, k)| (postcard::to_stdvec(k).unwrap(), *id))
@@ -310,7 +313,7 @@ where
         } else {
             // no blob / stale blob: recover the graph from the vectors
             // persisted by earlier runs
-            self.state.borrow_mut().rebuild(
+            self.state.write().unwrap().rebuild(
                 self.metric,
                 self.seed,
                 rtx.iter(&ks).map(|kv| {
@@ -342,7 +345,7 @@ where
             return;
         }
         let ks = self.ks.clone().unwrap();
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.write().unwrap();
         if state.stale {
             // the previous transaction aborted: this one sees clean
             // committed state, so resync the graph before applying
@@ -385,7 +388,7 @@ where
     fn abort(&mut self) {
         self.pending.clear();
         // graph mutations from any mid-tx flush cannot be undone in place
-        self.state.borrow_mut().stale = true;
+        self.state.write().unwrap().stale = true;
         // the tx's GEN_KEY writes roll back while the in-memory counter
         // stays bumped, and the post-abort rebuild matches no stored blob:
         // force the next checkpoint to rewrite
@@ -401,7 +404,7 @@ where
         }
         let ks = self.ks.clone().unwrap();
         let gks = self.graph_ks.clone().unwrap();
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.write().unwrap();
         if state.stale {
             // never checkpoint a stale graph: resync from committed rows
             let entries = tx.iter(&ks).map(|kv| {
@@ -445,7 +448,7 @@ where
             ks: self.ks.clone().unwrap(),
             metric: self.metric,
             seed: self.seed,
-            state: Rc::clone(&self.state),
+            state: Arc::clone(&self.state),
         }
     }
 }
@@ -468,7 +471,7 @@ pub struct HnswReader<
     ks: fjall::SingleWriterTxKeyspace,
     metric: M,
     seed: u64,
-    state: Rc<RefCell<State<K, T, M, DIM, M0, TOP_K, EF_SEARCH, EF_BUILD, MAX_LEVEL>>>,
+    state: Arc<RwLock<State<K, T, M, DIM, M0, TOP_K, EF_SEARCH, EF_BUILD, MAX_LEVEL>>>,
 }
 
 impl<
@@ -492,17 +495,25 @@ where
 {
     fn with_state<Ret>(
         &self,
-        f: impl FnOnce(&mut State<K, T, M, DIM, M0, TOP_K, EF_SEARCH, EF_BUILD, MAX_LEVEL>) -> Ret,
+        f: impl FnOnce(&State<K, T, M, DIM, M0, TOP_K, EF_SEARCH, EF_BUILD, MAX_LEVEL>) -> Ret,
     ) -> Ret {
-        let mut state = self.state.borrow_mut();
+        // fast path: concurrent readers share the lock
+        {
+            let state = self.state.read().unwrap();
+            if !state.stale {
+                return f(&state);
+            }
+        }
+        let mut state = self.state.write().unwrap();
         if state.stale {
+            // re-check: another reader may have rebuilt while we waited
             let entries = self.tx.iter(&self.ks).map(|kv| {
                 let (k, v) = kv.into_inner().unwrap();
                 (k.to_vec(), v.to_vec())
             });
             state.rebuild(self.metric, self.seed, entries);
         }
-        f(&mut state)
+        f(&state)
     }
 
     /// The up-to-`TOP_K` approximately nearest keys to `q`, ascending by

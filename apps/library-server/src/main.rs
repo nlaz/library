@@ -34,7 +34,7 @@ struct Args {
     #[arg(long, default_value = "data")]
     data: PathBuf,
     /// Directory of built web assets to serve at `/`.
-    #[arg(long, default_value = "web/dist")]
+    #[arg(long, default_value = "apps/web/dist")]
     web: PathBuf,
     #[arg(long, default_value_t = 4433)]
     wt_port: u16,
@@ -60,7 +60,8 @@ struct Query {
 struct App {
     lib: Library,
     images: Images,
-    model: TextEmbedding,
+    /// CLIP text encoder: embeds queries into the shared text/image space
+    /// for figure search. Text-chunk queries use ese (no model object).
     clip: TextEmbedding,
     data: PathBuf,
 }
@@ -85,15 +86,7 @@ impl App {
         let mut hits: Vec<WireHit> = Vec::new();
 
         if want_text {
-            let qemb: Option<Emb> = (q.mode == "full")
-                .then(|| {
-                    self.model
-                        .embed(vec![q.q.clone()], None)
-                        .ok()
-                        .and_then(|mut v| v.pop())
-                        .and_then(|v| v.try_into().ok())
-                })
-                .flatten();
+            let qemb: Option<Emb> = (q.mode == "full").then(|| ese::encode_single(&q.q));
             if qemb.is_some() {
                 phase = "hybrid";
             }
@@ -140,15 +133,12 @@ async fn main() -> Result<()> {
     println!("image store open: {n} figures, {:?}", t.elapsed());
 
     let t = Instant::now();
-    let model = TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::BGESmallENV15).with_cache_dir(args.data.join("models")),
-    )?;
     let clip = TextEmbedding::try_new(
         InitOptions::new(EmbeddingModel::ClipVitB32).with_cache_dir(args.data.join("models")),
     )?;
-    println!("embedding models ready (bge + clip-text): {:?}", t.elapsed());
+    println!("embedding model ready (clip-text; ese needs no load): {:?}", t.elapsed());
 
-    let app = Arc::new(App { lib, images, model, clip, data: args.data.clone() });
+    let app = Arc::new(App { lib, images, clip, data: args.data.clone() });
 
     // --- WebTransport endpoint ---------------------------------------------
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])?;

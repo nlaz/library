@@ -1,17 +1,21 @@
 //! Shared types, the fold graph, and hybrid search for The Library.
 
-use fold::anny::metric::Cosine;
-use fold::terminals::{
-    Bm25, Bm25Reader, Hnsw, HnswReader, InvertedIndex, InvertedIndexReader,
-};
-use fold::{FlatMap, Map, NodeInitializer, Push, Readable, Stream, WriteTx};
+use anny::metric::Cosine;
+use fold::pipeline::terminal::search::{Bm25, Bm25Reader, Hnsw, HnswReader};
+use fold::pipeline::terminal::{InvertedIndex, InvertedIndexReader};
+use fold::pipeline::{FlatMap, Keyed, Map, Push};
+use fold::stream::{PipelineInitCtx, Readable, Stream, WriteTx};
 use fxhash::FxHashMap;
 pub use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 pub mod wire;
 
-pub const EMB_DIM: usize = 384;
+/// Text embeddings come from ese's compile-time static model; the dimension
+/// follows its `dim-*` cargo feature. NOTE: with `dim-512` this equals
+/// CLIP_DIM, so the type system no longer catches a text/CLIP embedding
+/// mix-up — keep the two paths visibly separate.
+pub const EMB_DIM: usize = ese::DIMENSIONS;
 pub type Emb = [f32; EMB_DIM];
 
 /// CLIP ViT-B/32 shared text/image space.
@@ -72,6 +76,19 @@ pub fn tokenize(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// [`tokenize`] in fold's Bm25 buffer convention (`\0`-terminated tokens).
+/// The Bm25 sink MUST tokenize exactly like [`tokenize`]: TermDict's
+/// completion terms come from it, and prefix-expanded query terms only match
+/// postings produced the same way. fold's default tokenizer is ASCII-only
+/// and keeps 1-char tokens, so it would silently disagree.
+pub fn lex_tokenize(text: &str, tokens: &mut Vec<u8>) {
+    tokens.clear();
+    for t in tokenize(text) {
+        tokens.extend_from_slice(t.as_bytes());
+        tokens.push(0);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TermDict: a fold terminal holding every live term under raw UTF-8 keys, so
 // the trailing (partial) token of a query can be expanded with a prefix scan.
@@ -113,7 +130,7 @@ impl<R: Readable> TermDictReader<'_, R> {
 impl Push<String> for TermDict {
     type Reader<'tx, R: Readable + 'tx> = TermDictReader<'tx, R>;
 
-    fn init(&mut self, init: &mut NodeInitializer<'_>) {
+    fn init(&mut self, init: &mut PipelineInitCtx<'_>) {
         self.ks = Some(init.keyspace(&self.name));
     }
 
@@ -162,18 +179,37 @@ impl Push<String> for TermDict {
 // graphs (the persisted blob validates DIM/M_0/MAX_LEVEL).
 pub type VecIndex = Hnsw<ChunkKey, f32, Cosine, EMB_DIM, 32, 40, 80, 80, 16>;
 
-pub type LexSink = Map<fn(&ChunkRec) -> (ChunkKey, Vec<String>), Bm25<ChunkKey, String>>;
-pub type VecSink = Map<fn(&ChunkRec) -> (ChunkKey, Emb), VecIndex>;
-pub type MetaSink = Map<fn(&ChunkRec) -> (Vec<Word>, ChunkKey), InvertedIndex<Vec<Word>, ChunkKey>>;
-pub type ManifestSink = Map<fn(&ChunkRec) -> (ChunkKey, String), InvertedIndex<ChunkKey, String>>;
-pub type TermSink = FlatMap<fn(&ChunkRec) -> Vec<String>, TermDict>;
+/// The Bm25 sink's tokenizer type: a plain fn pointer keeps it nameable.
+pub type LexTok = fn(&str, &mut Vec<u8>);
+
+pub type LexSink = Map<
+    fn(&ChunkRec) -> Keyed<ChunkKey, String>,
+    Bm25<ChunkKey, String>,
+    ChunkRec,
+    Keyed<ChunkKey, String>,
+>;
+pub type VecSink =
+    Map<fn(&ChunkRec) -> Keyed<ChunkKey, Emb>, VecIndex, ChunkRec, Keyed<ChunkKey, Emb>>;
+pub type MetaSink = Map<
+    fn(&ChunkRec) -> Keyed<Vec<Word>, ChunkKey>,
+    InvertedIndex<Vec<Word>, ChunkKey>,
+    ChunkRec,
+    Keyed<Vec<Word>, ChunkKey>,
+>;
+pub type ManifestSink = Map<
+    fn(&ChunkRec) -> Keyed<ChunkKey, String>,
+    InvertedIndex<ChunkKey, String>,
+    ChunkRec,
+    Keyed<ChunkKey, String>,
+>;
+pub type TermSink = FlatMap<fn(&ChunkRec) -> Vec<String>, TermDict, ChunkRec, String>;
 
 pub type Graph = ((LexSink, VecSink), ((MetaSink, ManifestSink), TermSink));
 pub type Library = Stream<ChunkRec, Graph>;
 
 pub type Readers<'tx, R> = (
     (
-        Bm25Reader<'tx, R, ChunkKey, String>,
+        Bm25Reader<'tx, R, ChunkKey, LexTok>,
         HnswReader<'tx, R, ChunkKey, f32, Cosine, EMB_DIM, 32, 40, 80, 80, 16>,
     ),
     (
@@ -186,17 +222,17 @@ pub type Readers<'tx, R> = (
 );
 
 pub fn graph() -> Graph {
-    fn to_lex(c: &ChunkRec) -> (ChunkKey, Vec<String>) {
-        (c.key.clone(), tokenize(&c.text()))
+    fn to_lex(c: &ChunkRec) -> Keyed<ChunkKey, String> {
+        Keyed::new(c.key.clone(), c.text())
     }
-    fn to_vec(c: &ChunkRec) -> (ChunkKey, Emb) {
-        (c.key.clone(), c.emb)
+    fn to_vec(c: &ChunkRec) -> Keyed<ChunkKey, Emb> {
+        Keyed::new(c.key.clone(), c.emb)
     }
-    fn to_meta(c: &ChunkRec) -> (Vec<Word>, ChunkKey) {
-        (c.words.clone(), c.key.clone())
+    fn to_meta(c: &ChunkRec) -> Keyed<Vec<Word>, ChunkKey> {
+        Keyed::new(c.words.clone(), c.key.clone())
     }
-    fn to_manifest(c: &ChunkRec) -> (ChunkKey, String) {
-        (c.key.clone(), c.key.doc.clone())
+    fn to_manifest(c: &ChunkRec) -> Keyed<ChunkKey, String> {
+        Keyed::new(c.key.clone(), c.key.doc.clone())
     }
     fn to_terms(c: &ChunkRec) -> Vec<String> {
         tokenize(&c.text())
@@ -204,30 +240,27 @@ pub fn graph() -> Graph {
 
     (
         (
-            Map {
-                func: to_lex as fn(&ChunkRec) -> (ChunkKey, Vec<String>),
-                next: Bm25::new("lex"),
-            },
-            Map {
-                func: to_vec as fn(&ChunkRec) -> (ChunkKey, Emb),
-                next: VecIndex::new("vec", Cosine, 42),
-            },
+            Map::new(
+                to_lex as fn(&ChunkRec) -> Keyed<ChunkKey, String>,
+                Bm25::with_tokenizer("lex", lex_tokenize as LexTok),
+            ),
+            Map::new(
+                to_vec as fn(&ChunkRec) -> Keyed<ChunkKey, Emb>,
+                VecIndex::new("vec", Cosine, 42),
+            ),
         ),
         (
             (
-                Map {
-                    func: to_meta as fn(&ChunkRec) -> (Vec<Word>, ChunkKey),
-                    next: InvertedIndex::new("meta"),
-                },
-                Map {
-                    func: to_manifest as fn(&ChunkRec) -> (ChunkKey, String),
-                    next: InvertedIndex::new("manifest"),
-                },
+                Map::new(
+                    to_meta as fn(&ChunkRec) -> Keyed<Vec<Word>, ChunkKey>,
+                    InvertedIndex::new("meta"),
+                ),
+                Map::new(
+                    to_manifest as fn(&ChunkRec) -> Keyed<ChunkKey, String>,
+                    InvertedIndex::new("manifest"),
+                ),
             ),
-            FlatMap {
-                func: to_terms as fn(&ChunkRec) -> Vec<String>,
-                next: TermDict::new("terms"),
-            },
+            FlatMap::new(to_terms as fn(&ChunkRec) -> Vec<String>, TermDict::new("terms")),
         ),
     )
 }
@@ -286,23 +319,27 @@ pub fn search<R: Readable>(
         return Vec::new();
     }
 
+    // the expanded tokens are already normalized, so re-tokenizing the
+    // joined query inside Bm25 is a no-op
+    let expanded = toks.join(" ");
+
     // give RRF headroom beyond the final k
     let fetch = k.max(64);
     let lexical: Vec<ChunkKey> = match filter {
         Some(f) => lex
-            .search_filtered(&toks, fetch, |key: &ChunkKey| f.contains(&key.doc))
+            .search_filtered(&expanded, fetch, |key: &ChunkKey| f.contains(&key.doc))
             .into_iter()
-            .map(|(_, k)| k)
+            .map(|h| h.val)
             .collect(),
-        None => lex.search_top_k(&toks, fetch).into_iter().map(|(_, k)| k).collect(),
+        None => lex.search(&expanded, fetch).into_iter().map(|h| h.val).collect(),
     };
     let semantic: Vec<ChunkKey> = match (qemb, filter) {
         (Some(e), Some(f)) => vec
             .search_filtered(e, |key: &ChunkKey| f.contains(&key.doc))
             .into_iter()
-            .map(|(_, k)| k)
+            .map(|h| h.val)
             .collect(),
-        (Some(e), None) => vec.search(e).into_iter().map(|(_, k)| k).collect(),
+        (Some(e), None) => vec.search(e).into_iter().map(|h| h.val).collect(),
         (None, _) => Vec::new(),
     };
 
@@ -345,9 +382,20 @@ pub struct ImageRec {
 
 pub type ImgVecIndex = Hnsw<ImageKey, f32, Cosine, CLIP_DIM, 32, 40, 80, 80, 16>;
 
-pub type ImgVecSink = Map<fn(&ImageRec) -> (ImageKey, ClipEmb), ImgVecIndex>;
-pub type ImgMetaSink = Map<fn(&ImageRec) -> (Bbox, ImageKey), InvertedIndex<Bbox, ImageKey>>;
-pub type ImgManifestSink = Map<fn(&ImageRec) -> (ImageKey, String), InvertedIndex<ImageKey, String>>;
+pub type ImgVecSink =
+    Map<fn(&ImageRec) -> Keyed<ImageKey, ClipEmb>, ImgVecIndex, ImageRec, Keyed<ImageKey, ClipEmb>>;
+pub type ImgMetaSink = Map<
+    fn(&ImageRec) -> Keyed<Bbox, ImageKey>,
+    InvertedIndex<Bbox, ImageKey>,
+    ImageRec,
+    Keyed<Bbox, ImageKey>,
+>;
+pub type ImgManifestSink = Map<
+    fn(&ImageRec) -> Keyed<ImageKey, String>,
+    InvertedIndex<ImageKey, String>,
+    ImageRec,
+    Keyed<ImageKey, String>,
+>;
 
 pub type ImgGraph = (ImgVecSink, (ImgMetaSink, ImgManifestSink));
 pub type Images = Stream<ImageRec, ImgGraph>;
@@ -361,30 +409,30 @@ pub type ImgReaders<'tx, R> = (
 );
 
 pub fn img_graph() -> ImgGraph {
-    fn to_vec(r: &ImageRec) -> (ImageKey, ClipEmb) {
-        (r.key.clone(), r.emb)
+    fn to_vec(r: &ImageRec) -> Keyed<ImageKey, ClipEmb> {
+        Keyed::new(r.key.clone(), r.emb)
     }
-    fn to_meta(r: &ImageRec) -> (Bbox, ImageKey) {
-        (r.bbox, r.key.clone())
+    fn to_meta(r: &ImageRec) -> Keyed<Bbox, ImageKey> {
+        Keyed::new(r.bbox, r.key.clone())
     }
-    fn to_manifest(r: &ImageRec) -> (ImageKey, String) {
-        (r.key.clone(), r.key.doc.clone())
+    fn to_manifest(r: &ImageRec) -> Keyed<ImageKey, String> {
+        Keyed::new(r.key.clone(), r.key.doc.clone())
     }
 
     (
-        Map {
-            func: to_vec as fn(&ImageRec) -> (ImageKey, ClipEmb),
-            next: ImgVecIndex::new("imgvec", Cosine, 42),
-        },
+        Map::new(
+            to_vec as fn(&ImageRec) -> Keyed<ImageKey, ClipEmb>,
+            ImgVecIndex::new("imgvec", Cosine, 42),
+        ),
         (
-            Map {
-                func: to_meta as fn(&ImageRec) -> (Bbox, ImageKey),
-                next: InvertedIndex::new("imgmeta"),
-            },
-            Map {
-                func: to_manifest as fn(&ImageRec) -> (ImageKey, String),
-                next: InvertedIndex::new("imgmanifest"),
-            },
+            Map::new(
+                to_meta as fn(&ImageRec) -> Keyed<Bbox, ImageKey>,
+                InvertedIndex::new("imgmeta"),
+            ),
+            Map::new(
+                to_manifest as fn(&ImageRec) -> Keyed<ImageKey, String>,
+                InvertedIndex::new("imgmanifest"),
+            ),
         ),
     )
 }
@@ -416,10 +464,10 @@ pub fn image_search<R: Readable>(
     found
         .into_iter()
         .take(k)
-        .filter_map(|(dist, key)| {
-            let bbox = meta.search(&key).into_iter().next()?;
+        .filter_map(|hit| {
+            let bbox = meta.search(&hit.val).into_iter().next()?;
             // cosine distance -> similarity, so higher is better like text
-            Some(ImageHit { score: 1.0 - dist, key, bbox })
+            Some(ImageHit { score: 1.0 - hit.score, key: hit.val, bbox })
         })
         .collect()
 }

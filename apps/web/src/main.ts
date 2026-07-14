@@ -19,13 +19,20 @@ const $pageImg = document.getElementById("page-img") as HTMLImageElement;
 const $pageHl = document.getElementById("page-hl")!;
 const $dropzone = document.getElementById("dropzone")!;
 
-const FULL_DEBOUNCE_MS = 120;
+const FULL_DEBOUNCE_MS = 60;
+// once the query first reaches this many characters, fire the hybrid/image
+// query immediately instead of waiting out the debounce — the first
+// meaningful result set shows up sooner, and typing further still debounces
+// normally off this point
+const FULL_FLUSH_CHARS = 3;
 const PREVIEW_H = 190; // px, keep in sync with .preview height in style.css
 
 let seq = 0;
 let rendered = 0; // highest seq drawn; anything older is stale
 let instantSeq = 0; // seq of the in-flight instant query; 0 = none
 let instantDirty = false; // input changed while an instant was in flight
+// dev-only: seq -> performance.now() at send, for round-trip logging
+const sentAt = new Map<number, number>();
 let transport: Transport;
 let desktop: typeof import("./tauri") | null = null;
 let docList: DocInfo[] = [];
@@ -532,9 +539,19 @@ function render(msg: WireResponse) {
     ? `${msg.hits.length} hits · ${msg.phase} · ${(msg.us / 1000).toFixed(1)}ms`
     : "searching…";
 
+  const t0 = import.meta.env.DEV ? performance.now() : 0;
   const cards = msg.hits.map(card);
   $results.replaceChildren(...cards.map((c) => c.el));
-  requestAnimationFrame(() => cards.forEach((c) => c.place()));
+  if (import.meta.env.DEV) {
+    console.debug(`[perf] seq=${msg.seq} dom_build=${(performance.now() - t0).toFixed(1)}ms (${cards.length} cards)`);
+  }
+  requestAnimationFrame(() => {
+    const t1 = import.meta.env.DEV ? performance.now() : 0;
+    cards.forEach((c) => c.place());
+    if (import.meta.env.DEV) {
+      console.debug(`[perf] seq=${msg.seq} place=${(performance.now() - t1).toFixed(1)}ms`);
+    }
+  });
 
   if (settled && msg.hits.length === 0) {
     const empty = document.createElement("div");
@@ -601,6 +618,12 @@ async function main() {
   loadCollections();
   renderHome().then(route); // route needs page counts for #/read links
 
+  // query text of the last "full" (hybrid+image) request sent, so a
+  // catch-up "instant" — resent once a stale in-flight instant finally
+  // resolves — doesn't fire (and later render over) a full response the
+  // current text has already gotten
+  let lastFullQuery = "";
+
   const send = (mode: "instant" | "full") => {
     const q = $q.value.trim();
     if (!q) {
@@ -632,16 +655,33 @@ async function main() {
       }
       instantSeq = seq + 1;
     }
+    if (mode === "full") lastFullQuery = q;
     $stats.textContent = "searching…";
+    if (import.meta.env.DEV) sentAt.set(seq + 1, performance.now());
     // "" = search all kinds — the UI has no text/images toggle
     transport.send({ seq: ++seq, q, mode, col, kind: "" });
   };
 
   transport.onResponse((msg) => {
+    if (import.meta.env.DEV) {
+      const t0 = sentAt.get(msg.seq);
+      if (t0 !== undefined) {
+        sentAt.delete(msg.seq);
+        const roundtrip = performance.now() - t0;
+        // roundtrip - server = time spent in IPC/transport + queuing, not
+        // computing the answer — that's the "is the UI choked" signal
+        console.debug(
+          `[perf] seq=${msg.seq} roundtrip=${roundtrip.toFixed(1)}ms server=${(msg.us / 1000).toFixed(1)}ms transport=${(roundtrip - msg.us / 1000).toFixed(1)}ms`,
+        );
+      }
+    }
     if (msg.seq === instantSeq) {
       instantSeq = 0;
-      if (instantDirty) {
-        instantDirty = false;
+      const dirty = instantDirty;
+      instantDirty = false;
+      // a full response for the current text is already in flight (or
+      // rendered) — a lex-only catch-up would only regress what's on screen
+      if (dirty && $q.value.trim() !== lastFullQuery) {
         send("instant"); // the box changed while we were waiting
       }
     }
@@ -651,10 +691,18 @@ async function main() {
   });
 
   let fullTimer: ReturnType<typeof setTimeout>;
+  let flushedLen = 0; // query length we last eagerly flushed at; 0 = not yet
   $q.addEventListener("input", () => {
     if (location.hash.startsWith("#/read/")) location.hash = "#/";
+    const q = $q.value.trim();
     send("instant"); // lexical, every keystroke
     clearTimeout(fullTimer);
+    if (!q.length) {
+      flushedLen = 0;
+    } else if (!flushedLen && q.length >= FULL_FLUSH_CHARS) {
+      flushedLen = q.length;
+      send("full"); // enough to search meaningfully — don't wait for the pause
+    }
     fullTimer = setTimeout(() => send("full"), FULL_DEBOUNCE_MS); // hybrid, on pause
   });
   $cols.addEventListener("click", (e) => {

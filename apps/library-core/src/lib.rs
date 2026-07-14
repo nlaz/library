@@ -212,12 +212,6 @@ pub type LexSink = Map<
 >;
 pub type VecSink =
     Map<fn(&ChunkIn) -> Keyed<ChunkKey, Emb>, VecIndex, ChunkIn, Keyed<ChunkKey, Emb>>;
-pub type MetaSink = Map<
-    fn(&ChunkIn) -> Keyed<Vec<Word>, ChunkKey>,
-    InvertedIndex<Vec<Word>, ChunkKey>,
-    ChunkIn,
-    Keyed<Vec<Word>, ChunkKey>,
->;
 pub type ManifestSink = Map<
     fn(&ChunkIn) -> Keyed<ChunkKey, String>,
     InvertedIndex<ChunkKey, String>,
@@ -226,7 +220,7 @@ pub type ManifestSink = Map<
 >;
 pub type TermSink = FlatMap<fn(&ChunkIn) -> Vec<String>, TermDict, ChunkIn, String>;
 
-pub type Graph = ((LexSink, VecSink), ((MetaSink, ManifestSink), TermSink));
+pub type Graph = ((LexSink, VecSink), (ManifestSink, TermSink));
 pub type Library = KeyedStream<ChunkKey, ChunkRec, Graph>;
 
 pub type Readers<'tx, R> = (
@@ -234,13 +228,7 @@ pub type Readers<'tx, R> = (
         Bm25Reader<'tx, R, ChunkKey, LexTok>,
         HnswReader<'tx, R, ChunkKey, f32, Cosine, EMB_DIM, 32, 40, 80, 80, 16>,
     ),
-    (
-        (
-            InvertedIndexReader<'tx, R, Vec<Word>, ChunkKey>,
-            InvertedIndexReader<'tx, R, ChunkKey, String>,
-        ),
-        TermDictReader<'tx, R>,
-    ),
+    (InvertedIndexReader<'tx, R, ChunkKey, String>, TermDictReader<'tx, R>),
 );
 
 pub fn graph() -> Graph {
@@ -249,9 +237,6 @@ pub fn graph() -> Graph {
     }
     fn to_vec(c: &ChunkIn) -> Keyed<ChunkKey, Emb> {
         Keyed::new(c.key.clone(), c.val.emb)
-    }
-    fn to_meta(c: &ChunkIn) -> Keyed<Vec<Word>, ChunkKey> {
-        Keyed::new(c.val.words.clone(), c.key.clone())
     }
     fn to_manifest(c: &ChunkIn) -> Keyed<ChunkKey, String> {
         Keyed::new(c.key.clone(), c.key.doc.clone())
@@ -272,15 +257,9 @@ pub fn graph() -> Graph {
             ),
         ),
         (
-            (
-                Map::new(
-                    to_meta as fn(&ChunkIn) -> Keyed<Vec<Word>, ChunkKey>,
-                    InvertedIndex::new("meta"),
-                ),
-                Map::new(
-                    to_manifest as fn(&ChunkIn) -> Keyed<ChunkKey, String>,
-                    InvertedIndex::new("manifest"),
-                ),
+            Map::new(
+                to_manifest as fn(&ChunkIn) -> Keyed<ChunkKey, String>,
+                InvertedIndex::new("manifest"),
             ),
             FlatMap::new(to_terms as fn(&ChunkIn) -> Vec<String>, TermDict::new("terms")),
         ),
@@ -323,18 +302,29 @@ fn rrf(lists: &[Vec<ChunkKey>]) -> Vec<(f32, ChunkKey)> {
 }
 
 /// Lexical (with trailing-prefix expansion) + optional semantic, RRF-fused,
-/// metadata resolved — all under the one snapshot `r` was taken from.
-/// `filter`, when set, restricts every ranker to the given doc ids *inside*
-/// the search (filtering after truncation would starve results).
+/// metadata resolved via `resolve` (see below) — all under the one snapshot
+/// `r` was taken from. `filter`, when set, restricts every ranker to the
+/// given doc ids *inside* the search (filtering after truncation would
+/// starve results).
+///
+/// `resolve` fetches a chunk's words given its key; callers should back it
+/// with [`Library::get`] (a cheap primary-table point-read) rather than the
+/// `meta` sink's reverse index — `meta` stores each chunk's full `Vec<Word>`
+/// as part of its fjall *key* (needed to answer "what key maps to this
+/// value"), so looking words up through it means every hit pays for
+/// comparing against huge keys. `Library::get` reads the same words back out
+/// of a value instead, which is what point-reads are fast at.
 pub fn search<R: Readable>(
     r: &Readers<'_, R>,
     query: &str,
     qemb: Option<&Emb>,
     k: usize,
     filter: Option<&FxHashSet<String>>,
+    resolve: impl Fn(&ChunkKey) -> Option<Vec<Word>>,
 ) -> Vec<Hit> {
-    let ((lex, vec), ((meta, _), terms)) = r;
+    let ((lex, vec), (_, terms)) = r;
 
+    let t = std::time::Instant::now();
     let mut toks = tokenize(query);
     if let Some(last) = toks.last().cloned() {
         for t in terms.complete(&last, 5) {
@@ -342,6 +332,9 @@ pub fn search<R: Readable>(
                 toks.push(t);
             }
         }
+    }
+    if cfg!(debug_assertions) {
+        eprintln!("[perf] term_complete elapsed={}us", t.elapsed().as_micros());
     }
     if toks.is_empty() {
         return Vec::new();
@@ -353,6 +346,7 @@ pub fn search<R: Readable>(
 
     // give RRF headroom beyond the final k
     let fetch = k.max(64);
+    let t = std::time::Instant::now();
     let lexical: Vec<ChunkKey> = match filter {
         Some(f) => lex
             .search_filtered(&expanded, fetch, |key: &ChunkKey| f.contains(&key.doc))
@@ -361,6 +355,10 @@ pub fn search<R: Readable>(
             .collect(),
         None => lex.search(&expanded, fetch).into_iter().map(|h| h.val).collect(),
     };
+    if cfg!(debug_assertions) {
+        eprintln!("[perf] lex_search elapsed={}us hits={}", t.elapsed().as_micros(), lexical.len());
+    }
+    let t = std::time::Instant::now();
     let semantic: Vec<ChunkKey> = match (qemb, filter) {
         (Some(e), Some(f)) => vec
             .search_filtered(e, |key: &ChunkKey| f.contains(&key.doc))
@@ -370,15 +368,23 @@ pub fn search<R: Readable>(
         (Some(e), None) => vec.search(e).into_iter().map(|h| h.val).collect(),
         (None, _) => Vec::new(),
     };
+    if cfg!(debug_assertions) {
+        eprintln!("[perf] vec_search elapsed={}us hits={}", t.elapsed().as_micros(), semantic.len());
+    }
 
-    rrf(&[lexical, semantic])
+    let t = std::time::Instant::now();
+    let hits: Vec<Hit> = rrf(&[lexical, semantic])
         .into_iter()
         .take(k)
         .filter_map(|(score, key)| {
-            let words = meta.search(&key).into_iter().next()?;
+            let words = resolve(&key)?;
             Some(Hit { score, key, words })
         })
-        .collect()
+        .collect();
+    if cfg!(debug_assertions) {
+        eprintln!("[perf] rrf_and_resolve elapsed={}us hits={}", t.elapsed().as_micros(), hits.len());
+    }
+    hits
 }
 
 // ---------------------------------------------------------------------------

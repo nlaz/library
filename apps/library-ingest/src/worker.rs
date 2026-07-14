@@ -219,7 +219,7 @@ pub fn backfill_ready_with(
 
 /// Whether `doc` has chunks in the library's manifest.
 pub fn manifest_has(st: &Library, doc: &str) -> bool {
-    st.rtx(|(_, ((_, manifest), _))| !manifest.search(&doc.to_string()).is_empty())
+    st.rtx(|(_, (manifest, _))| !manifest.search(&doc.to_string()).is_empty())
 }
 
 /// [`backfill_ready_with`] for a process that doesn't hold the store open.

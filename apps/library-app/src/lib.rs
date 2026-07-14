@@ -236,40 +236,72 @@ fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
     let mut phase = "lex";
     let mut text_hits: Vec<WireHit> = Vec::new();
     let mut img_hits: Vec<WireHit> = Vec::new();
+    // dev-only per-stage breakdown, see the eprintln! at the bottom
+    let mut stages: Vec<(&'static str, u128)> = Vec::new();
 
     if want_text {
+        let t = Instant::now();
         let qemb: Option<Emb> = (q.mode == "full").then(|| ese::encode_single(&q.q));
+        if cfg!(debug_assertions) {
+            stages.push(("ese_embed", t.elapsed().as_micros()));
+        }
         if qemb.is_some() {
             phase = "hybrid";
         }
         let qtoks = tokenize(&q.q);
-        let found = eng.lib.read().unwrap().rtx(|r| {
-            library_core::search(&r, &q.q, qemb.as_ref(), K, member.as_ref())
+        let t = Instant::now();
+        let lib = eng.lib.read().unwrap();
+        let found = lib.rtx(|r| {
+            library_core::search(&r, &q.q, qemb.as_ref(), K, member.as_ref(), |key| {
+                lib.get(key).map(|rec| rec.words)
+            })
         });
+        if cfg!(debug_assertions) {
+            stages.push(("lex+rrf", t.elapsed().as_micros()));
+        }
         text_hits.extend(found.iter().map(|h| wire::wire_hit(h, &qtoks)));
     }
 
     if want_imgs {
         let k = if q.kind == "images" { K } else { K_IMG_BLEND };
+        let t = Instant::now();
         let qemb: Option<ClipEmb> = eng
             .clip_text
             .embed(vec![q.q.clone()], None)
             .ok()
             .and_then(|mut v| v.pop())
             .and_then(|v| v.try_into().ok());
+        if cfg!(debug_assertions) {
+            stages.push(("clip_embed", t.elapsed().as_micros()));
+        }
         if let Some(e) = qemb {
             phase = if want_text { "hybrid+img" } else { "img" };
+            let t = Instant::now();
             let found = eng
                 .images
                 .read()
                 .unwrap()
                 .rtx(|r| library_core::image_search(&r, &e, 40, member.as_ref()));
+            if cfg!(debug_assertions) {
+                stages.push(("image_search", t.elapsed().as_micros()));
+            }
             img_hits.extend(wire::group_image_hits(&found, k));
         }
     }
 
+    let t = Instant::now();
     let hits = wire::blend(text_hits, img_hits);
-    Response { seq: q.seq, phase, us: start.elapsed().as_micros(), hits }
+    if cfg!(debug_assertions) {
+        stages.push(("blend", t.elapsed().as_micros()));
+    }
+
+    let total = start.elapsed().as_micros();
+    if cfg!(debug_assertions) {
+        let breakdown: String =
+            stages.iter().map(|(n, us)| format!("{n}={us}us")).collect::<Vec<_>>().join(" ");
+        eprintln!("[perf] search {:?} mode={} phase={phase} : {breakdown} total={total}us", q.q, q.mode);
+    }
+    Response { seq: q.seq, phase, us: total, hits }
 }
 
 #[tauri::command]
@@ -736,7 +768,11 @@ pub fn run() {
                 .settings
                 .data
                 .clone();
-            std::thread::spawn(move || {
+            // a search response can carry ~20-26 hits, each firing a page-image
+            // request — spawn_blocking uses tokio's bounded, reused blocking
+            // pool instead of a raw OS thread per request, which used to mean
+            // a burst of thread creations on every keystroke's re-render
+            tauri::async_runtime::spawn_blocking(move || {
                 responder.respond(serve_static(data.join("pages"), "image/jpeg", request))
             });
         })
@@ -747,7 +783,7 @@ pub fn run() {
                 .settings
                 .data
                 .clone();
-            std::thread::spawn(move || {
+            tauri::async_runtime::spawn_blocking(move || {
                 responder.respond(serve_static(data.join("ocr"), "application/json", request))
             });
         })

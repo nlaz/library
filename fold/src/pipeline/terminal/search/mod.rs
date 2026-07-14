@@ -1,7 +1,12 @@
 //! Ranked search sinks: full-text relevance ([`Bm25`]) and vector
 //! nearest-neighbor ([`Hnsw`]).
 
-use std::{cell::RefCell, collections::hash_map::Entry, marker::PhantomData};
+use std::{
+    cell::RefCell,
+    collections::hash_map::Entry,
+    marker::PhantomData,
+    sync::{Arc, RwLock},
+};
 
 use fjall::Readable;
 use fxhash::{FxHashMap, FxHashSet};
@@ -88,6 +93,13 @@ pub struct Bm25<K, V, T = fn(&str, &mut Vec<u8>)> {
     doc_lens: FxHashMap<Vec<u8>, i64>,
     docs: i64,
     len: i64,
+    // in-memory mirror of the DOCLEN keyspace (encoded key -> length),
+    // shared with every reader. Scoring touches one entry per matched
+    // document, and a random point-read per doc was the dominant query cost
+    // for common terms (hundreds of postings = hundreds of synchronous
+    // reads); kept in sync by `commit`, warmed lazily by the first read via
+    // one sequential scan instead of N random gets.
+    doc_len_cache: Arc<RwLock<Option<FxHashMap<Vec<u8>, i64>>>>,
     _p: PhantomData<(K, V)>,
 }
 
@@ -117,6 +129,7 @@ impl<K, V, T> Bm25<K, V, T> {
             doc_lens: FxHashMap::default(),
             docs: 0,
             len: 0,
+            doc_len_cache: Arc::new(RwLock::new(None)),
             _p: PhantomData,
         }
     }
@@ -198,7 +211,27 @@ where
         }
         let ks = self.ks.clone().unwrap();
         fold(tx, &ks, &mut self.postings);
-        fold(tx, &ks, &mut self.doc_lens);
+
+        // fold doc_lens into fjall AND mirror the same net-delta semantics
+        // into doc_len_cache, so search never needs a point-read to learn a
+        // document's length
+        {
+            let mut cache = self.doc_len_cache.write().unwrap();
+            let cache = cache.get_or_insert_with(FxHashMap::default);
+            for (key, delta) in self.doc_lens.drain() {
+                match delta {
+                    1.. => {
+                        tx.insert(&ks, &key, delta.to_be_bytes());
+                        cache.insert(key, delta);
+                    }
+                    0 => {}
+                    _ => {
+                        tx.remove(&ks, &key);
+                        cache.remove(&key);
+                    }
+                }
+            }
+        }
 
         let (mut n, mut l) = tx
             .get(&ks, [STATS])
@@ -238,6 +271,7 @@ where
             tok: self.tok.clone(),
             k1: self.k1,
             b: self.b,
+            doc_len_cache: self.doc_len_cache.clone(),
             _p: PhantomData,
         }
     }
@@ -250,6 +284,7 @@ pub struct Bm25Reader<'tx, R: Readable, K, T> {
     tok: T,
     k1: f64,
     b: f64,
+    doc_len_cache: Arc<RwLock<Option<FxHashMap<Vec<u8>, i64>>>>,
     _p: PhantomData<K>,
 }
 
@@ -271,6 +306,27 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
     /// The number of live documents.
     pub fn doc_count(&self) -> i64 {
         self.stats().0
+    }
+
+    /// Length (in tokens) of the document under encoded `doclen_key`
+    /// (tag byte + postcard(K)). Reads through the shared in-memory cache;
+    /// a miss means it's never been warmed (first search since the store
+    /// opened), so it's filled with one sequential scan of the whole
+    /// DOCLEN keyspace rather than a random point-read per call — the cache
+    /// is then correct for every later search, updated incrementally by
+    /// `Bm25::commit`.
+    fn doc_len(&self, doclen_key: &[u8]) -> f64 {
+        if let Some(map) = self.doc_len_cache.read().unwrap().as_ref() {
+            return map.get(doclen_key).copied().unwrap_or(0) as f64;
+        }
+        let mut map = FxHashMap::default();
+        for kv in self.tx.prefix(&self.ks, [DOCLEN]) {
+            let (key, val) = kv.into_inner().unwrap();
+            map.insert(key.to_vec(), i64::from_be_bytes(*val.as_array::<8>().unwrap()));
+        }
+        let dl = map.get(doclen_key).copied().unwrap_or(0) as f64;
+        *self.doc_len_cache.write().unwrap() = Some(map);
+        dl
     }
 
     /// The top `limit` document keys by BM25 relevance to `query`, scored
@@ -328,6 +384,7 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
                 bufs.key.push(POSTING);
                 postcard::to_io(term, &mut bufs.key).unwrap();
                 let plen = bufs.key.len();
+                let t = if cfg!(debug_assertions) { Some(std::time::Instant::now()) } else { None };
                 bufs.postings
                     .extend(self.tx.prefix(&self.ks, &bufs.key[..]).map(|kv| {
                         let (key, val) = kv.into_inner().unwrap();
@@ -359,18 +416,20 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
                             bufs.key.clear();
                             bufs.key.push(DOCLEN);
                             bufs.key.extend_from_slice(e.key());
-                            let dl = self
-                                .tx
-                                .get(&self.ks, &bufs.key)
-                                .unwrap()
-                                .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()) as f64)
-                                .unwrap_or(0.0);
+                            let dl = self.doc_len(&bufs.key);
                             e.insert((0.0, dl))
                         }
                     };
                     let tf = tf as f64;
                     let norm = self.k1 * (1.0 - self.b + self.b * *dl / avgdl);
                     *score += idf * tf * (self.k1 + 1.0) / (tf + norm);
+                }
+                if let Some(t) = t {
+                    eprintln!(
+                        "[perf] bm25 term={:?} df={df} elapsed={}us",
+                        String::from_utf8_lossy(term),
+                        t.elapsed().as_micros(),
+                    );
                 }
             }
 

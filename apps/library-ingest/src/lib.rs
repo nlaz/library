@@ -355,7 +355,7 @@ pub fn prepare_text_cached(
 pub fn commit_text(st: &mut Library, doc: &str, recs: &[ChunkRec]) -> (usize, usize) {
     let counts = st.wtx(|tx| {
         let old: Vec<ChunkKey> =
-            tx.rtx(|(_, ((_, manifest), _))| manifest.search(&doc.to_string()));
+            tx.rtx(|(_, (manifest, _))| manifest.search(&doc.to_string()));
         let new: FxHashSet<&ChunkKey> = recs.iter().map(|r| &r.key).collect();
         for rec in recs {
             tx.upsert(&rec.key, rec);

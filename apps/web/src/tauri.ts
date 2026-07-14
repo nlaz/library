@@ -51,8 +51,28 @@ export function docs(): Promise<DocInfo[]> {
   return invoke<DocInfo[]>("docs");
 }
 
-export function ingestPaths(paths: string[], collection: string | null): Promise<string[]> {
-  return invoke<string[]>("ingest_paths", { paths, collection });
+export function ingestPaths(
+  paths: string[],
+  collection: string | null,
+  mode: "move" | "copy" = "copy",
+): Promise<string[]> {
+  return invoke<string[]>("ingest_paths", { paths, collection, mode });
+}
+
+/** Ask before relocating files into the library folder. */
+export function confirmMove(names: string[], destDir: string): Promise<boolean> {
+  const what =
+    names.length === 1 ? `“${names[0]}”` : `${names.length} PDFs`;
+  return confirmDialog(
+    `This will move ${what} into your library folder (${destDir}). Move ${names.length === 1 ? "it" : "them"}?`,
+    { title: "Add to library", kind: "info" },
+  );
+}
+
+export type AppSettings = { data: string; width: number };
+
+export function getSettings(): Promise<AppSettings> {
+  return invoke<AppSettings>("get_settings");
 }
 
 /** Set (empty string clears) a doc's display title. */
@@ -70,6 +90,11 @@ export function deleteDoc(doc: string): Promise<void> {
   return invoke("delete_doc", { doc });
 }
 
+/** Re-queue a doc whose ingest failed. */
+export function retryDoc(doc: string): Promise<void> {
+  return invoke("retry_doc", { doc });
+}
+
 export function confirmDelete(title: string): Promise<boolean> {
   return confirmDialog(
     `Remove “${title}” from the library? Its pages and search entries are deleted; the PDF is kept.`,
@@ -83,6 +108,11 @@ export function onIngestProgress(cb: (e: IngestEvent) => void): void {
 
 export function onAppError(cb: (msg: string) => void): void {
   listen<string>("app:error", (e) => cb(e.payload));
+}
+
+/** Engine start is stalled (e.g. the background indexer is mid-commit). */
+export function onAppWaiting(cb: (msg: string) => void): void {
+  listen<string>("app:waiting", (e) => cb(e.payload));
 }
 
 /** Native file drop. `over` fires on enter/hover, `leave` on exit/drop. */

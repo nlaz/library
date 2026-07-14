@@ -64,6 +64,7 @@ function buildPages(doc: string, pages: number) {
         if (e.isIntersecting) {
           if (!el.firstElementChild) {
             const img = document.createElement("img");
+            img.decoding = "async"; // keep JPEG decode off the scroll path
             img.src = pageImg(doc, Number(el.dataset.page));
             img.addEventListener("load", () => {
               // real aspect ratio, so placeholder heights stop drifting
@@ -142,17 +143,24 @@ async function attachTextLayer(el: HTMLElement, doc: string, page: number) {
 }
 
 // Squeeze each span's glyphs into its box so selection targets line up with
-// the printed words. One layout pass per page, once the true size is known.
+// the printed words. Reads and writes are batched into separate passes: a
+// dense catalog page carries ~2400 spans, and interleaving a measure with a
+// style write forces a full reflow per span — seconds of jank per page.
+// Batched, it's one reflow (transform writes are compositor-only).
 function fitTextLayer(el: HTMLElement) {
   const spans = el.querySelectorAll<HTMLElement>(".tw");
-  for (const s of spans) {
-    s.style.transform = "";
-    const k = s.offsetWidth / (s.scrollWidth || 1);
+  for (const s of spans) s.style.transform = "";
+  const ks = new Float64Array(spans.length);
+  spans.forEach((s, i) => {
+    ks[i] = s.offsetWidth / (s.scrollWidth || 1);
+  });
+  spans.forEach((s, i) => {
+    const k = ks[i];
     if (k < 1 || k > 1.15) {
       s.style.transform = `scaleX(${k})`;
       s.style.transformOrigin = "0 0";
     }
-  }
+  });
 }
 
 $back.addEventListener("click", () => {

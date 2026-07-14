@@ -42,6 +42,8 @@ const PREVIEW_H = 190; // px, keep in sync with .preview height in style.css
 
 let seq = 0;
 let rendered = 0; // highest seq drawn; anything older is stale
+let instantSeq = 0; // seq of the in-flight instant query; 0 = none
+let instantDirty = false; // input changed while an instant was in flight
 let transport: Transport;
 let desktop: typeof import("./tauri") | null = null;
 let docList: DocInfo[] = [];
@@ -163,6 +165,30 @@ function bookCard(d: DocInfo, cols: Collections): HTMLElement {
 
   el.append(cover, title, sub);
 
+  const state = d.status?.state;
+  if (state === "failed") {
+    // error badge + retry; the card stays otherwise inert
+    el.classList.add("failed");
+    sub.textContent = "indexing failed";
+    if (d.status?.error) el.title = d.status.error;
+    const retry = document.createElement("button");
+    retry.className = "bretry";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        await desktop!.retryDoc(d.id);
+        $status.textContent = `retrying ${displayTitle(d)}`;
+      } catch (err) {
+        $status.textContent = `retry: ${err}`;
+      }
+      renderHome();
+    });
+    cover.append(retry);
+    if (desktop) el.append(bookMenu(el, d, cols));
+    return el;
+  }
+
   if (d.processing) {
     el.classList.add("processing");
     const bar = document.createElement("div");
@@ -171,8 +197,15 @@ function bookCard(d: DocInfo, cols: Collections): HTMLElement {
     fill.className = "fill";
     bar.append(fill);
     cover.append(bar);
-    updateBookProgress(el, ingesting.get(d.id));
+    // a live event wins; the persisted status seeds the initial render
+    updateBookProgress(el, ingesting.get(d.id) ?? statusEvent(d));
   } else {
+    // text_ready reads and searches fine — figures are still indexing, so
+    // keep a quiet badge but leave the card fully usable
+    if (state === "text_ready") {
+      el.classList.add("finishing");
+      sub.textContent = `${d.pages} pp. · indexing figures…`;
+    }
     el.addEventListener("click", () => {
       location.hash = `#/read/${encodeURIComponent(d.id)}`;
     });
@@ -311,11 +344,23 @@ function renameInline(card: HTMLElement, d: DocInfo) {
 
 const STAGE_LABEL: Record<string, string> = {
   ocr: "reading pages",
+  clean: "cleaning text",
   embed: "indexing text",
   figures: "finding figures",
   clip: "indexing figures",
   indexing: "committing",
+  queued: "queued",
+  staged: "waiting to index",
 };
+
+/** Progress-shaped view of a persisted status, for cards with no live
+ * event yet (e.g. right after launch while the doc is mid-ingest). */
+function statusEvent(d: DocInfo): IngestEvent | undefined {
+  const s = d.status;
+  if (!s) return undefined;
+  const stage = s.state === "preparing" ? (s.stage ?? "queued") : s.state;
+  return { doc: d.id, stage: stage as IngestEvent["stage"], done: s.done, total: s.total, message: "" };
+}
 
 function updateBookProgress(el: Element, e?: IngestEvent) {
   const sub = el.querySelector(".bsub");
@@ -331,12 +376,18 @@ function updateBookProgress(el: Element, e?: IngestEvent) {
 // ingest wiring (desktop only)
 // ---------------------------------------------------------------------------
 
+let libraryDir = ""; // <data>/pdfs, for the move-confirm dialog
+
 async function queuePdfs(paths: string[]) {
   if (!desktop) return;
   const pdfs = paths.filter((p) => p.toLowerCase().endsWith(".pdf"));
   if (!pdfs.length) return;
+  // the library owns its documents: adding a PDF MOVES it into the
+  // library folder, and that never happens without the user saying so
+  const names = pdfs.map((p) => p.split("/").pop() ?? p);
+  if (!(await desktop.confirmMove(names, libraryDir))) return;
   try {
-    const queued = await desktop.ingestPaths(pdfs, col || null);
+    const queued = await desktop.ingestPaths(pdfs, col || null, "move");
     $status.textContent = queued.length
       ? `queued: ${queued.join(", ")}`
       : "already in the queue";
@@ -348,6 +399,10 @@ async function queuePdfs(paths: string[]) {
 
 function wireDesktop() {
   if (!desktop) return;
+  desktop
+    .getSettings()
+    .then((s) => (libraryDir = `${s.data}/pdfs`))
+    .catch(() => {});
   $addBtn.hidden = false;
   $addBtn.addEventListener("click", async () => {
     queuePdfs(await desktop!.pickPdfs());
@@ -373,6 +428,9 @@ function wireDesktop() {
     else renderHome(); // first event for a doc we haven't drawn yet
   });
   desktop.onAppError((msg) => {
+    $status.textContent = msg;
+  });
+  desktop.onAppWaiting((msg) => {
     $status.textContent = msg;
   });
 }
@@ -432,20 +490,33 @@ function card(hit: WireHit): { el: HTMLElement; place: () => void } {
   el.addEventListener("click", () => openViewer(hit));
 
   // zoom so the chunk's text block (server-provided crop, which excludes the
-  // scan's white margins) fills the card width, then pan the first match to
-  // the vertical center; needs the card in the DOM and the image loaded
+  // scan's white margins) fills the card width, then CENTER the first match
+  // in the window — clamped first to the content crop (so an edge match
+  // zooms/pans instead of dragging margin white into view), then to the
+  // page. Needs the card in the DOM and the image loaded.
   const place = () => {
     const w = pv.clientWidth;
     const pvH = pv.clientHeight || PREVIEW_H;
     if (!w || !img.naturalWidth) return;
-    const [cx, cy, cw] = hit.crop;
-    const dispW = w / Math.min(Math.max(cw, 0.05), 1);
+    const [cx, cy, cw, ch] = hit.crop;
+    const box = hit.boxes[0];
+    // fill the card with the crop, but never so tight the match box (plus
+    // some context) would overflow the window
+    let z = Math.min(Math.max(cw, 0.05), 1);
+    if (box) z = Math.min(Math.max(z, box[2] * 1.3), 1);
+    const dispW = w / z;
     const dispH = dispW * (img.naturalHeight / img.naturalWidth);
     inner.style.width = `${dispW}px`;
     inner.style.height = `${dispH}px`;
-    const yc = hit.boxes.length ? hit.boxes[0][1] + hit.boxes[0][3] / 2 : cy + 0.1;
-    const offY = Math.max(0, Math.min(yc * dispH - pvH / 2, dispH - pvH));
-    const offX = Math.max(0, Math.min(cx * dispW, dispW - w));
+    // want: match centered; lo..hi: window stays inside the crop (when the
+    // crop is smaller than the window, pin to its leading edge); 0..max:
+    // and always inside the page
+    const win = (want: number, lo: number, hi: number, max: number) =>
+      Math.min(Math.max(Math.min(Math.max(want, lo), Math.max(lo, hi)), 0), max);
+    const xc = box ? box[0] + box[2] / 2 : cx + cw / 2;
+    const yc = box ? box[1] + box[3] / 2 : cy + 0.1;
+    const offX = win(xc * dispW - w / 2, cx * dispW, (cx + cw) * dispW - w, dispW - w);
+    const offY = win(yc * dispH - pvH / 2, cy * dispH, (cy + ch) * dispH - pvH, dispH - pvH);
     inner.style.transform = `translate(${-offX}px, ${-offY}px)`;
   };
   if (!img.complete) img.addEventListener("load", place);
@@ -456,15 +527,20 @@ function render(msg: WireResponse) {
   const q = $q.value.trim();
   if (!q) return;
 
-  $status.textContent = `${msg.hits.length} hits · ${msg.phase} · ${(
-    msg.us / 1000
-  ).toFixed(1)}ms`;
+  // "settled" = this response answers what's in the box right now; an older
+  // query's empty answer must not flash "no matches" over a pending one
+  const settled = msg.seq >= seq;
+  if (!settled && msg.hits.length === 0) return;
+
+  $status.textContent = settled
+    ? `${msg.hits.length} hits · ${msg.phase} · ${(msg.us / 1000).toFixed(1)}ms`
+    : "searching…";
 
   const cards = msg.hits.map(card);
   $results.replaceChildren(...cards.map((c) => c.el));
   requestAnimationFrame(() => cards.forEach((c) => c.place()));
 
-  if (msg.hits.length === 0) {
+  if (settled && msg.hits.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty";
     empty.textContent = "no matches";
@@ -531,16 +607,13 @@ async function main() {
   $status.textContent = "ready";
   loadCollections();
   renderHome().then(route); // route needs page counts for #/read links
-  transport.onResponse((msg) => {
-    if (msg.seq < rendered) return; // superseded while in flight
-    rendered = msg.seq;
-    render(msg);
-  });
 
   const send = (mode: "instant" | "full") => {
     const q = $q.value.trim();
     if (!q) {
       rendered = ++seq;
+      instantSeq = 0;
+      instantDirty = false;
       $status.textContent = "ready";
       $results.replaceChildren();
       showSearch(false);
@@ -548,8 +621,41 @@ async function main() {
       return;
     }
     showSearch(true);
+    // single chars tokenize to nothing server-side — don't round-trip,
+    // and don't let a stale in-flight answer render over this state
+    if (q.length < 2) {
+      rendered = ++seq;
+      instantDirty = false;
+      $results.replaceChildren();
+      $status.textContent = "searching…";
+      return;
+    }
+    // at most one instant query in flight: a burst of keystrokes must not
+    // stack concurrent scans on the engine — mark dirty and catch up when
+    // the pending answer lands
+    if (mode === "instant") {
+      if (instantSeq > rendered) {
+        instantDirty = true;
+        return;
+      }
+      instantSeq = seq + 1;
+    }
+    $status.textContent = "searching…";
     transport.send({ seq: ++seq, q, mode, col, kind });
   };
+
+  transport.onResponse((msg) => {
+    if (msg.seq === instantSeq) {
+      instantSeq = 0;
+      if (instantDirty) {
+        instantDirty = false;
+        send("instant"); // the box changed while we were waiting
+      }
+    }
+    if (msg.seq < rendered) return; // superseded while in flight
+    rendered = msg.seq;
+    render(msg);
+  });
 
   let fullTimer: ReturnType<typeof setTimeout>;
   $q.addEventListener("input", () => {

@@ -10,6 +10,8 @@ ese = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+fjall = { workspace = true }
+postcard = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 fastembed = "4"
 image = "0.25"

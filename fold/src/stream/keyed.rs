@@ -67,17 +67,21 @@ where
     /// Open (or create) the store at `path` and initialize the pipeline;
     /// see [`Stream::new`].
     pub fn new(path: impl AsRef<Path>, pipeline: P) -> Self {
-        let inner = Stream::new(path, pipeline);
+        Self::try_new(path, pipeline).unwrap()
+    }
+
+    /// Fallible [`new`](KeyedStream::new); see [`Stream::try_new`].
+    pub fn try_new(path: impl AsRef<Path>, pipeline: P) -> Result<Self, fjall::Error> {
+        let inner = Stream::try_new(path, pipeline)?;
         let table = inner
             .store()
-            .keyspace("keyed_root", fjall::KeyspaceCreateOptions::default)
-            .unwrap();
-        KeyedStream {
+            .keyspace("keyed_root", fjall::KeyspaceCreateOptions::default)?;
+        Ok(KeyedStream {
             inner,
             table,
             key_buf: Default::default(),
             val_buf: Default::default(),
-        }
+        })
     }
 
     /// Run a write transaction over the table and the pipeline: every

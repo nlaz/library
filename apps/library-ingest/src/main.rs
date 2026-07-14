@@ -127,6 +127,24 @@ enum Cli {
         #[arg(long, default_value = "layout-debug")]
         out: PathBuf,
     },
+    /// Process every pending PDF in data/pdfs (safe to run from launchd:
+    /// exits immediately if the app holds the stores). A PDF is pending
+    /// when its status file (data/status/<doc>.json) is absent or
+    /// non-terminal — drop a PDF into data/pdfs and run this.
+    Worker {
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+        /// Run at full priority instead of background QoS.
+        #[arg(long)]
+        hot: bool,
+    },
+    /// Install (or repair) the launchd agent that runs `worker` in the
+    /// background: on login, every 15 minutes, and whenever a file lands
+    /// in data/pdfs. The app does this automatically on startup.
+    InstallAgent {
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+    },
     /// Hybrid search against the store.
     Search {
         query: String,
@@ -169,6 +187,7 @@ fn print_progress(p: Progress) {
                 println!("  clip {done}/{total}");
             }
         }
+        Progress::Indexing => println!("  indexing"),
     }
 }
 
@@ -235,9 +254,64 @@ fn main() -> Result<()> {
             println!("images.db checkpointed in {:?}", t.elapsed());
             Ok(())
         }
+        Cli::Worker { data, hot } => {
+            if !hot {
+                be_gentle();
+            }
+            worker(&data)
+        }
+        Cli::InstallAgent { data } => {
+            // launchd needs absolute paths; "data" relative to the repo
+            // would resolve against / when the agent fires
+            let data = std::path::absolute(&data)?;
+            let bin = std::env::current_exe()?;
+            let path = library_ingest::agent::install(&bin, &data)?;
+            println!("agent loaded: {}", path.display());
+            println!("logs: {}/logs/ingest.log", data.display());
+            println!("disable with: launchctl bootout gui/$UID/{}", library_ingest::agent::LABEL);
+            Ok(())
+        }
         Cli::LayoutDebug { doc, pages, data, out } => layout_debug(&doc, &pages, &data, &out),
         Cli::Search { query, data, k, lex_only } => search(&query, &data, k, lex_only),
     }
+}
+
+/// Drain the pending queue. Exit 0 without touching anything when another
+/// process (the app) holds the stores — the lock holder owns ingestion and
+/// runs this same loop itself.
+fn worker(data: &Path) -> Result<()> {
+    use library_ingest::worker::{self, Outcome, ProcessCommitter};
+
+    let mut pend = worker::pending(data);
+    if pend.is_empty() {
+        println!("nothing to ingest");
+        return Ok(());
+    }
+
+    // Pre-status-era docs are already indexed but have no status file;
+    // mark them ready before treating "no status" as work. This open also
+    // doubles as the cheap lock probe: locked -> the app is running.
+    if !worker::backfill_ready(data, &pend)? {
+        println!("stores locked (app running) — its worker owns the queue");
+        return Ok(());
+    }
+    pend = worker::pending(data);
+
+    let mut committer = ProcessCommitter { data: data.to_path_buf() };
+    for doc in pend {
+        println!("→ {doc}");
+        match worker::process_doc(&ctx(data, 1600), &doc, &mut committer, &mut print_progress) {
+            Outcome::Ready => println!("done: {doc}"),
+            Outcome::Staged => {
+                println!("stores locked mid-run — staged '{doc}' for the app; exiting");
+                return Ok(());
+            }
+            Outcome::Skipped => println!("skipped (another process has it): {doc}"),
+            // keep going: one bad PDF must not wedge the queue
+            Outcome::Failed => eprintln!("failed: {doc} (see data/status/{doc}.json)"),
+        }
+    }
+    Ok(())
 }
 
 fn ingest(

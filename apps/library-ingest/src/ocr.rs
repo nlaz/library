@@ -184,7 +184,16 @@ fn render_page(doc: &CGPDFDocument, i: usize, width: u32) -> Result<CFRetained<C
     };
     CGContext::set_rgb_fill_color(Some(&ctx), 1.0, 1.0, 1.0, 1.0);
     CGContext::fill_rect(Some(&ctx), rect);
-    let tf = CGPDFPage::drawing_transform(Some(&page), CGPDFBox::MediaBox, rect, 0, true);
+    // scale the CTM ourselves: drawing_transform never scales a page UP, so
+    // a media box narrower than `width` points would render at natural size,
+    // a small island centered in a white canvas. With the context pre-scaled,
+    // the transform's only job is rotation + origin (an exact fit, no scaling).
+    CGContext::scale_ctm(Some(&ctx), scale, scale);
+    let natural = CGRect {
+        origin: CGPoint { x: 0.0, y: 0.0 },
+        size: CGSize { width: pw, height: ph },
+    };
+    let tf = CGPDFPage::drawing_transform(Some(&page), CGPDFBox::MediaBox, natural, 0, true);
     CGContext::concat_ctm(Some(&ctx), tf);
     CGContext::draw_pdf_page(Some(&ctx), Some(&page));
     CGBitmapContextCreateImage(Some(&ctx)).context("cannot snapshot bitmap context")

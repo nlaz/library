@@ -5,16 +5,23 @@
 //! worker does OCR/embedding lock-free and takes the write lock only for the
 //! brief atomic swap — so the app can search while it ingests, and the fjall
 //! single-writer lock is never contended.
+//!
+//! Ingest state is NOT held here: the queue is the filesystem
+//! (`data/pdfs/` + `data/status/`, see `library_ingest::worker`), shared
+//! with the `library-ingest worker` CLI that launchd runs while the app is
+//! closed. The app's worker thread sweeps that same queue — holding the
+//! stores makes it the owner — and picks up anything the CLI staged.
 
 use std::collections::HashSet;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock, mpsc};
-use std::time::Instant;
+use std::sync::{RwLock, mpsc};
+use std::time::{Duration, Instant};
 
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use library_core::wire::{self, Response, WireHit};
 use library_core::{ClipEmb, Emb, FxHashSet, Images, Library, tokenize};
+use library_ingest::status::{self, DocState, DocStatus};
+use library_ingest::worker::{self, CommitErr, Committer, Outcome};
 use library_ingest::{IngestCtx, Progress};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
@@ -43,18 +50,12 @@ fn default_width() -> u32 {
     1600
 }
 
-struct Job {
-    pdf: PathBuf,
-    doc: String,
-    collection: Option<String>,
-}
-
 pub struct AppState {
     settings: Settings,
     engine: RwLock<Option<std::sync::Arc<Engine>>>,
-    jobs: mpsc::Sender<Job>,
-    /// Doc ids queued or mid-ingest; read by `docs`, guards double drops.
-    pending: Mutex<HashSet<String>>,
+    /// Wakes the worker thread for an immediate sweep; what to ingest
+    /// comes from the status files, not the channel.
+    wake: mpsc::Sender<()>,
 }
 
 // ---------------------------------------------------------------------------
@@ -116,21 +117,37 @@ fn init_engine(app: AppHandle) {
     };
 
     let t = Instant::now();
-    // fjall panics with `Locked` if another process (e.g. a dev
-    // library-server) holds the store — turn that into a message, not a crash
-    let opened = catch_unwind(AssertUnwindSafe(|| {
-        let lib = library_core::open(settings.data.join("library.db"));
-        let images = library_core::open_images(settings.data.join("images.db"));
-        (lib, images)
-    }));
-    let (lib, images) = match opened {
-        Ok(x) => x,
-        Err(_) => {
-            return fail(format!(
-                "could not open the library stores in {} — is another instance \
-                 or library-server running against the same data directory?",
-                settings.data.display()
-            ));
+    // `Locked` usually means the launchd ingest worker is inside one of its
+    // brief commit windows (which include an HNSW checkpoint — tens of
+    // seconds on a big library), so retry before declaring failure.
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let (lib, images) = loop {
+        let opened = library_core::try_open(settings.data.join("library.db")).and_then(|lib| {
+            library_core::try_open_images(settings.data.join("images.db"))
+                .map(|images| (lib, images))
+        });
+        match opened {
+            Ok(x) => break x,
+            Err(fjall::Error::Locked) if Instant::now() < deadline => {
+                let _ = app.emit(
+                    "app:waiting",
+                    "waiting for the background indexer to finish its commit…",
+                );
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(fjall::Error::Locked) => {
+                return fail(format!(
+                    "could not open the library stores in {} — is another instance \
+                     or library-server running against the same data directory?",
+                    settings.data.display()
+                ));
+            }
+            Err(e) => {
+                return fail(format!(
+                    "could not open the library stores in {}: {e}",
+                    settings.data.display()
+                ));
+            }
         }
     };
     println!("stores open in {:?}", t.elapsed());
@@ -154,6 +171,27 @@ fn init_engine(app: AppHandle) {
     });
     *app.state::<AppState>().engine.write().unwrap() = Some(engine);
     let _ = app.emit("app:ready", ());
+}
+
+/// Install/repair the launchd agent so ingestion continues while the app
+/// is closed. Best-effort: a missing worker binary (e.g. a bare release
+/// bundle without the sidecar) just logs and skips.
+fn install_agent(data: &Path) {
+    let candidates = [
+        // bundled sidecar next to the app binary
+        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("library-ingest"))),
+        // dev builds share the workspace target dir
+        Some(dev_root().join("target/release/library-ingest")),
+        Some(dev_root().join("target/debug/library-ingest")),
+    ];
+    let Some(bin) = candidates.into_iter().flatten().find(|p| p.is_file()) else {
+        eprintln!("library-ingest binary not found — background ingest agent not installed");
+        return;
+    };
+    match library_ingest::agent::install(&bin, data) {
+        Ok(path) => println!("ingest agent: {}", path.display()),
+        Err(e) => eprintln!("ingest agent install failed: {e:#}"),
+    }
 }
 
 fn engine(state: &AppState) -> Result<std::sync::Arc<Engine>, String> {
@@ -257,7 +295,11 @@ pub struct DocInfo {
     pub title: Option<String>,
     pub pages: u32,
     pub collections: Vec<String>,
+    /// Not yet searchable: queued, preparing, or staged.
     pub processing: bool,
+    /// Durable ingest status (`data/status/<doc>.json`); `None` for docs
+    /// that predate status tracking.
+    pub status: Option<DocStatus>,
 }
 
 /// data/titles.json: {"doc-id": "Display Title", ...}. The doc id is the
@@ -272,10 +314,7 @@ fn read_titles(data: &Path) -> Titles {
 }
 
 fn write_titles(data: &Path, titles: &Titles) -> Result<(), String> {
-    let tmp = data.join("titles.json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(titles).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, data.join("titles.json")).map_err(|e| e.to_string())
+    status::write_json_atomic(&data.join("titles.json"), titles).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -283,12 +322,19 @@ fn collections(state: State<'_, AppState>) -> wire::Collections {
     wire::read_collections(&state.settings.data)
 }
 
+fn is_processing(st: Option<&DocStatus>) -> bool {
+    matches!(
+        st.map(|s| s.state),
+        Some(DocState::Queued | DocState::Preparing | DocState::Staged)
+    )
+}
+
 #[tauri::command]
 fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
     let data = &state.settings.data;
     let cols = wire::read_collections(data);
     let titles = read_titles(data);
-    let pending = state.pending.lock().unwrap();
+    let statuses = status::scan(data);
 
     let mut out: Vec<DocInfo> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -298,6 +344,10 @@ fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
                 continue;
             }
             let id = e.file_name().to_string_lossy().into_owned();
+            let st = statuses.get(&id);
+            if st.map(|s| s.state) == Some(DocState::Deleted) {
+                continue; // tombstone: only the PDF remains
+            }
             let pages = std::fs::read_dir(e.path())
                 .map(|it| {
                     it.flatten()
@@ -318,22 +368,32 @@ fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
                     .filter(|(_, docs)| docs.iter().any(|d| *d == id))
                     .map(|(c, _)| c.clone())
                     .collect(),
-                processing: pending.contains(&id),
+                processing: is_processing(st),
+                status: st.cloned(),
                 id,
             });
         }
     }
-    // queued docs whose pages dir doesn't exist yet still get a card
-    for id in pending.iter() {
-        if !seen.contains(id) {
-            out.push(DocInfo {
-                id: id.clone(),
-                title: titles.get(id).cloned(),
-                pages: 0,
-                collections: Vec::new(),
-                processing: true,
-            });
+    // docs with a live status but no pages dir yet (just queued, or failed
+    // before rendering) still get a card
+    for (id, st) in &statuses {
+        if seen.contains(id)
+            || matches!(st.state, DocState::Ready | DocState::Deleted)
+        {
+            continue;
         }
+        out.push(DocInfo {
+            id: id.clone(),
+            title: titles.get(id).cloned(),
+            pages: 0,
+            collections: cols
+                .iter()
+                .filter(|(_, docs)| docs.iter().any(|d| d == id))
+                .map(|(c, _)| c.clone())
+                .collect(),
+            processing: is_processing(Some(st)),
+            status: Some(st.clone()),
+        });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
@@ -373,14 +433,17 @@ fn set_collections(
 
 /// Remove a doc: retract it from both indexes, delete its page renders and
 /// OCR cache, and prune it from collections/titles. The copied PDF in
-/// data/pdfs is kept so the doc can be re-ingested later.
+/// data/pdfs is kept; a `deleted` tombstone status stops the background
+/// worker from re-ingesting it (re-adding the same PDF revives it).
 #[tauri::command]
 async fn delete_doc(state: State<'_, AppState>, doc: String) -> Result<(), String> {
-    if state.pending.lock().unwrap().contains(&doc) {
+    let data = state.settings.data.clone();
+    if worker::claimed(&data, &doc)
+        || status::read(&data, &doc).map(|s| s.state) == Some(DocState::Preparing)
+    {
         return Err("still processing — try again when ingest finishes".into());
     }
     let eng = engine(&state)?;
-    let data = state.settings.data.clone();
     tauri::async_runtime::spawn_blocking(move || {
         // retract from the stores first so search can't hand out hits whose
         // page images are already gone
@@ -399,6 +462,9 @@ async fn delete_doc(state: State<'_, AppState>, doc: String) -> Result<(), Strin
                 }
             }
         }
+        worker::clear_staged(&data, &doc);
+        status::write(&data, &doc, &DocStatus::new(DocState::Deleted))
+            .map_err(|e| e.to_string())?;
         library_ingest::set_collections(&data, &doc, &[]).map_err(|e| e.to_string())?;
         let mut titles = read_titles(&data);
         if titles.remove(&doc).is_some() {
@@ -408,6 +474,18 @@ async fn delete_doc(state: State<'_, AppState>, doc: String) -> Result<(), Strin
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Re-queue a doc whose ingest failed.
+#[tauri::command]
+fn retry_doc(state: State<'_, AppState>, doc: String) -> Result<(), String> {
+    let data = &state.settings.data;
+    if status::read(data, &doc).map(|s| s.state) != Some(DocState::Failed) {
+        return Err("not in a failed state".into());
+    }
+    status::write(data, &doc, &DocStatus::new(DocState::Queued)).map_err(|e| e.to_string())?;
+    let _ = state.wake.send(());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -431,50 +509,12 @@ fn emit_progress(app: &AppHandle, doc: &str, p: Progress) {
         Progress::Embed { done, total } => ("embed", done, total, String::new()),
         Progress::Figures { done, total } => ("figures", done, total, String::new()),
         Progress::Clip { done, total } => ("clip", done, total, String::new()),
+        Progress::Indexing => ("indexing", 0, 0, String::new()),
     };
     let _ = app.emit(
         "ingest:progress",
         &IngestEvent { doc: doc.to_string(), stage, done, total, message },
     );
-}
-
-/// One PDF, start to finish. The write locks are held only around the two
-/// atomic swaps; everything slow happens against no store at all.
-fn run_job(app: &AppHandle, job: &Job) -> anyhow::Result<()> {
-    let state = app.state::<AppState>();
-    let ctx = ingest_ctx(&state.settings);
-    let doc = &job.doc;
-
-    // engine must be up before we can embed (models are shared)
-    let eng = loop {
-        if let Some(e) = state.engine.read().unwrap().clone() {
-            break e;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    };
-
-    let (recs, _pages) = library_ingest::prepare_text(&ctx, &job.pdf, doc, None, &mut |p| {
-        emit_progress(app, doc, p)
-    })?;
-
-    emit_stage(app, doc, "indexing");
-    {
-        let mut lib = eng.lib.write().unwrap();
-        library_ingest::commit_text(&mut lib, doc, &recs);
-    }
-
-    let figs = library_ingest::prepare_figures(&ctx, doc, &mut |p| emit_progress(app, doc, p))?;
-
-    emit_stage(app, doc, "indexing");
-    {
-        let mut images = eng.images.write().unwrap();
-        library_ingest::commit_figures(&mut images, doc, &figs);
-    }
-
-    if let Some(col) = &job.collection {
-        library_ingest::collect(&ctx.data, col, doc)?;
-    }
-    Ok(())
 }
 
 fn emit_stage(app: &AppHandle, doc: &str, stage: &'static str) {
@@ -484,62 +524,146 @@ fn emit_stage(app: &AppHandle, doc: &str, stage: &'static str) {
     );
 }
 
-fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<Job>) {
+/// Commits through the live engine's write locks — never `Locked`; searches
+/// keep running between swaps.
+struct EngineCommitter {
+    eng: std::sync::Arc<Engine>,
+}
+
+impl Committer for EngineCommitter {
+    fn text(
+        &mut self,
+        doc: &str,
+        recs: &[library_core::ChunkRec],
+    ) -> Result<(usize, usize), CommitErr> {
+        let mut lib = self.eng.lib.write().unwrap();
+        Ok(library_ingest::commit_text(&mut lib, doc, recs))
+    }
+
+    fn figures(
+        &mut self,
+        doc: &str,
+        recs: &[library_core::ImageRec],
+    ) -> Result<(usize, usize), CommitErr> {
+        let mut images = self.eng.images.write().unwrap();
+        Ok(library_ingest::commit_figures(&mut images, doc, recs))
+    }
+}
+
+/// Sweep the filesystem queue until it's dry, then wait for a wake-up (a
+/// new drop, a retry) or the periodic timeout. The periodic sweep is what
+/// picks up work the CLI worker staged after this app instance launched
+/// (see `library_ingest::worker` for the handoff race).
+fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
     // utility QoS for this thread only (Vision OCR and ort inherit it);
     // the GUI stays at full priority
     unsafe {
         libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
     }
-    while let Ok(job) = rx.recv() {
-        let result = run_job(&app, &job);
-        let state = app.state::<AppState>();
-        state.pending.lock().unwrap().remove(&job.doc);
-        match result {
-            Ok(()) => emit_stage(&app, &job.doc, "done"),
-            Err(e) => {
-                eprintln!("ingest '{}' failed: {e:#}", job.doc);
-                let _ = app.emit(
-                    "ingest:progress",
-                    &IngestEvent {
-                        doc: job.doc.clone(),
-                        stage: "error",
-                        done: 0,
-                        total: 0,
-                        message: format!("{e:#}"),
-                    },
-                );
+    let state = app.state::<AppState>();
+    let ctx = ingest_ctx(&state.settings);
+    let data = ctx.data.clone();
+
+    // engine must be up before we can commit (stores are shared)
+    let eng = loop {
+        if let Some(e) = state.engine.read().unwrap().clone() {
+            break e;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+
+    // startup recovery doubles as backfill: pre-status-era docs that are
+    // already in the manifest get `ready` so the sweep never re-ingests them
+    {
+        let pend = worker::pending(&data);
+        let lib = eng.lib.read().unwrap();
+        if let Err(e) = worker::backfill_ready_with(&data, &pend, |d| worker::manifest_has(&lib, d))
+        {
+            eprintln!("status backfill failed: {e:#}");
+        }
+    }
+
+    let mut committer = EngineCommitter { eng };
+    loop {
+        for doc in worker::pending(&data) {
+            let outcome = worker::process_doc(&ctx, &doc, &mut committer, &mut |p| {
+                emit_progress(&app, &doc, p)
+            });
+            match outcome {
+                Outcome::Ready => emit_stage(&app, &doc, "done"),
+                Outcome::Failed => {
+                    let msg = status::read(&data, &doc)
+                        .and_then(|s| s.error)
+                        .unwrap_or_else(|| "ingest failed".into());
+                    eprintln!("ingest '{doc}' failed: {msg}");
+                    let _ = app.emit(
+                        "ingest:progress",
+                        &IngestEvent {
+                            doc: doc.clone(),
+                            stage: "error",
+                            done: 0,
+                            total: 0,
+                            message: msg,
+                        },
+                    );
+                }
+                // Staged can't happen here (EngineCommitter never returns
+                // Locked); Skipped means someone else has the claim
+                Outcome::Staged | Outcome::Skipped => {}
             }
+        }
+        // drain buffered wake-ups so a burst of drops is one sweep
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {
+                while rx.try_recv().is_ok() {}
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
     }
 }
 
-/// Accept dropped/picked PDFs: copy each into the library and queue it.
-/// Returns the doc ids actually queued (dedup'd against in-flight jobs).
+/// Accept dropped/picked PDFs: bring each into the library (`mode:
+/// "move"` relocates the file; anything else copies), mark it queued, and
+/// wake the worker. Returns the doc ids actually queued (dedup'd against
+/// docs already in flight).
 #[tauri::command]
 fn ingest_paths(
     state: State<'_, AppState>,
     paths: Vec<String>,
     collection: Option<String>,
+    mode: Option<String>,
 ) -> Result<Vec<String>, String> {
     let ctx = ingest_ctx(&state.settings);
+    let data = &state.settings.data;
+    let mover = if mode.as_deref() == Some("move") {
+        library_ingest::move_pdf
+    } else {
+        library_ingest::add_pdf
+    };
     let mut queued = Vec::new();
     for p in paths {
         let path = PathBuf::from(&p);
         if path.extension().map(|e| !e.eq_ignore_ascii_case("pdf")).unwrap_or(true) {
             continue;
         }
-        let (doc, copy) = library_ingest::add_pdf(&ctx, &path, None).map_err(|e| e.to_string())?;
-        {
-            let mut pending = state.pending.lock().unwrap();
-            if !pending.insert(doc.clone()) {
-                continue; // already queued or mid-ingest
-            }
+        let (doc, _pdf) = mover(&ctx, &path, None).map_err(|e| e.to_string())?;
+        // in-flight docs keep their state; terminal states re-queue
+        // (deleted tombstones revive — re-adding is an explicit user act)
+        match status::read(data, &doc).map(|s| s.state) {
+            Some(DocState::Queued | DocState::Preparing | DocState::Staged) => continue,
+            Some(DocState::TextReady) => continue, // finishing figures already
+            _ => {}
         }
-        state
-            .jobs
-            .send(Job { pdf: copy, doc: doc.clone(), collection: collection.clone() })
-            .map_err(|e| e.to_string())?;
+        status::write(data, &doc, &DocStatus::new(DocState::Queued)).map_err(|e| e.to_string())?;
+        // collections apply at enqueue time: the card lands on its shelf
+        // immediately, and the shared worker loop stays collection-free
+        if let Some(col) = &collection {
+            library_ingest::collect(data, col, &doc).map_err(|e| e.to_string())?;
+        }
         queued.push(doc);
+    }
+    if !queued.is_empty() {
+        let _ = state.wake.send(());
     }
     Ok(queued)
 }
@@ -637,18 +761,25 @@ pub fn run() {
         })
         .setup(|app| {
             let settings = load_settings(app.handle());
-            let (tx, rx) = mpsc::channel::<Job>();
+            let (tx, rx) = mpsc::channel::<()>();
             app.manage(AppState {
                 settings,
                 engine: RwLock::new(None),
-                jobs: tx,
-                pending: Mutex::new(HashSet::new()),
+                wake: tx,
             });
 
             let h = app.handle().clone();
             std::thread::spawn(move || init_engine(h));
             let h = app.handle().clone();
             std::thread::spawn(move || ingest_worker(h, rx));
+            let data = app.state::<AppState>().settings.data.clone();
+            std::thread::spawn(move || {
+                // data must be absolute in the plist; dev settings may be
+                // repo-relative
+                if let Ok(abs) = std::path::absolute(&data) {
+                    install_agent(&abs);
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -659,6 +790,7 @@ pub fn run() {
             set_title,
             set_collections,
             delete_doc,
+            retry_doc,
             ingest_paths,
             get_settings,
             set_settings,

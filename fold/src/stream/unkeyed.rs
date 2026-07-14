@@ -25,17 +25,28 @@ impl<D: Clone, P: Push<D>> Stream<D, P> {
     /// # Panics
     /// Panics if the store cannot be opened or if two nodes claim the same
     /// name.
-    pub fn new(path: impl AsRef<Path>, mut pipeline: P) -> Self {
-        let store = fjall::SingleWriterTxDatabase::builder(path).open().unwrap();
+    pub fn new(path: impl AsRef<Path>, pipeline: P) -> Self {
+        Self::try_new(path, pipeline).unwrap()
+    }
+
+    /// Fallible [`new`](Stream::new): returns the store error instead of
+    /// panicking, letting callers tell a held lock
+    /// ([`fjall::Error::Locked`], another process owns the store) apart
+    /// from real failures.
+    ///
+    /// # Panics
+    /// Still panics if two nodes claim the same name.
+    pub fn try_new(path: impl AsRef<Path>, mut pipeline: P) -> Result<Self, fjall::Error> {
+        let store = fjall::SingleWriterTxDatabase::builder(path).open()?;
 
         let mut init = PipelineInitCtx::new(&store);
         pipeline.init(&mut init);
 
-        Stream {
+        Ok(Stream {
             pipeline,
             store,
             _p: PhantomData,
-        }
+        })
     }
 
     /// Run a write transaction: every delta pushed through the [`Tx`] handle

@@ -431,6 +431,43 @@ header {
   transition: width 0.25s;
 }
 
+/* failed ingest: same halftone veil, error text, a retry affordance */
+.book.failed {
+  cursor: default;
+}
+
+.book.failed .cover img {
+  filter: grayscale(1) contrast(1.05) brightness(0.9);
+}
+
+.book.failed .cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--dither-25) 0 0 / 2px 2px;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+.book.failed .bsub {
+  color: var(--ink);
+}
+
+.bretry {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+}
+
+/* text_ready: readable now, figures still indexing — just the sub hints */
+.book.finishing .bsub {
+  background: var(--dither-25) 0 0 / 2px 2px;
+}
+
 /* --- §7 book-card "⋯" menu: rename / collections / delete ------------------ */
 
 .bmenu {

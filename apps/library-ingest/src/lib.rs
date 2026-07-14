@@ -17,12 +17,15 @@
 //! caller's call (the CLI drops the whole process to background QoS, the app
 //! runs ingest on a utility-QoS worker thread that OCR and ort inherit).
 
+pub mod agent;
 pub mod clean;
 pub mod layout;
 pub mod ocr;
 pub mod pdftext;
+pub mod status;
 pub mod subdivide;
 pub mod textout;
+pub mod worker;
 
 use std::path::{Path, PathBuf};
 
@@ -82,6 +85,8 @@ pub enum Progress {
     Figures { done: usize, total: usize },
     /// CLIP embedding of figure crops.
     Clip { done: usize, total: usize },
+    /// Committing prepared records to a store (emitted by the worker loop).
+    Indexing,
 }
 
 pub type ProgressFn<'a> = &'a mut dyn FnMut(Progress);
@@ -148,10 +153,7 @@ fn load_collections(data: &Path) -> Result<Collections> {
 
 /// Written via tmp + rename: searches read this file per query.
 fn store_collections(data: &Path, cols: &Collections) -> Result<()> {
-    let tmp = data.join("collections.json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(cols)?)?;
-    std::fs::rename(&tmp, data.join("collections.json"))?;
-    Ok(())
+    status::write_json_atomic(&data.join("collections.json"), cols)
 }
 
 /// data/collections.json: {"archive": ["doc-a", "doc-b"], ...}
@@ -199,6 +201,64 @@ pub fn add_pdf(ctx: &IngestCtx, pdf: &Path, name: Option<String>) -> Result<(Str
     let dest = dir.join(format!("{doc}.pdf"));
     if pdf.canonicalize().ok() != dest.canonicalize().ok() {
         std::fs::copy(pdf, &dest).context("copying PDF into the library")?;
+    }
+    Ok((doc, dest))
+}
+
+/// Whether two files hold identical bytes (size check first).
+fn same_bytes(a: &Path, b: &Path) -> Result<bool> {
+    if std::fs::metadata(a)?.len() != std::fs::metadata(b)?.len() {
+        return Ok(false);
+    }
+    Ok(std::fs::read(a)? == std::fs::read(b)?)
+}
+
+/// Move the source PDF into `data/pdfs/<doc>.pdf` and return `(doc, dest)`.
+/// Same-volume moves are a rename; across volumes it copies to a hidden
+/// temp name, verifies, renames into place, and only then deletes the
+/// source. If the doc already exists: identical bytes leave both files
+/// alone (already in the library — the source is NOT deleted); different
+/// bytes are an error rather than a silent overwrite.
+pub fn move_pdf(ctx: &IngestCtx, pdf: &Path, name: Option<String>) -> Result<(String, PathBuf)> {
+    if !pdf.exists() {
+        bail!("no such file: {}", pdf.display());
+    }
+    let doc = name.unwrap_or_else(|| doc_id(pdf));
+    if doc.is_empty() {
+        bail!("cannot derive a doc id from {}", pdf.display());
+    }
+    let dir = ctx.data.join("pdfs");
+    std::fs::create_dir_all(&dir)?;
+    let dest = dir.join(format!("{doc}.pdf"));
+
+    if pdf.canonicalize().ok() == dest.canonicalize().ok() {
+        return Ok((doc, dest)); // already home
+    }
+    if dest.exists() {
+        if same_bytes(pdf, &dest)? {
+            return Ok((doc, dest));
+        }
+        bail!(
+            "a different '{doc}' is already in the library — rename the file and try again"
+        );
+    }
+
+    match std::fs::rename(pdf, &dest) {
+        Ok(()) => {}
+        // EXDEV: source is on another volume (drive, DMG). Copy safely,
+        // then remove the source only after the copy is in place.
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+            let tmp = dir.join(format!(".{doc}.pdf.tmp"));
+            let n = std::fs::copy(pdf, &tmp).context("copying PDF into the library")?;
+            if n != std::fs::metadata(pdf)?.len() {
+                let _ = std::fs::remove_file(&tmp);
+                bail!("short copy moving {} into the library", pdf.display());
+            }
+            std::fs::File::open(&tmp)?.sync_all()?;
+            std::fs::rename(&tmp, &dest)?;
+            std::fs::remove_file(pdf).context("removing the moved source PDF")?;
+        }
+        Err(e) => return Err(e).context("moving PDF into the library"),
     }
     Ok((doc, dest))
 }
@@ -534,6 +594,35 @@ pub fn commit_figures(st: &mut Images, doc: &str, recs: &[ImageRec]) -> (usize, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn move_pdf_relocates_dedups_and_rejects_conflicts() {
+        let dir = std::env::temp_dir().join(format!("fold-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let ctx = IngestCtx { data: dir.join("data"), width: 1600, clean: false, text_layer: true };
+
+        // move: source disappears, dest exists
+        let src = dir.join("src/My Book.pdf");
+        std::fs::write(&src, b"%PDF-alpha").unwrap();
+        let (doc, dest) = move_pdf(&ctx, &src, None).unwrap();
+        assert_eq!(doc, "my-book");
+        assert!(!src.exists());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"%PDF-alpha");
+
+        // identical bytes already in the library: no-op, source kept
+        std::fs::write(&src, b"%PDF-alpha").unwrap();
+        let (doc2, _) = move_pdf(&ctx, &src, None).unwrap();
+        assert_eq!(doc2, "my-book");
+        assert!(src.exists(), "duplicate source must not be deleted");
+
+        // different bytes under the same doc id: refuse, don't overwrite
+        std::fs::write(&src, b"%PDF-beta").unwrap();
+        assert!(move_pdf(&ctx, &src, None).is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"%PDF-alpha");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn set_collections_replaces_and_prunes() {

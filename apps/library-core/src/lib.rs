@@ -291,6 +291,12 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Library {
     KeyedStream::new(path, graph())
 }
 
+/// Fallible [`open`]: `Err(fjall::Error::Locked)` means another process
+/// holds the store.
+pub fn try_open(path: impl AsRef<std::path::Path>) -> Result<Library, fjall::Error> {
+    KeyedStream::try_new(path, graph())
+}
+
 // ---------------------------------------------------------------------------
 // Hybrid search
 // ---------------------------------------------------------------------------
@@ -465,6 +471,11 @@ pub fn img_graph() -> ImgGraph {
 
 pub fn open_images(path: impl AsRef<std::path::Path>) -> Images {
     KeyedStream::new(path, img_graph())
+}
+
+/// Fallible [`open_images`]; see [`try_open`].
+pub fn try_open_images(path: impl AsRef<std::path::Path>) -> Result<Images, fjall::Error> {
+    KeyedStream::try_new(path, img_graph())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

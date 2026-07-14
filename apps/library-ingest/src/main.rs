@@ -76,6 +76,16 @@ enum Cli {
         #[arg(long, default_value = "data")]
         data: PathBuf,
     },
+    /// Rebuild a doc's full index (text + figures + markdown) from its
+    /// cached OCR/page files alone — no source PDF needed. For docs whose
+    /// caches survive a store-schema change but whose PDF is gone.
+    Reindex {
+        doc: String,
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+        #[arg(long)]
+        hot: bool,
+    },
     /// (Re)build the figure index for an already-ingested doc from its
     /// cached OCR + page images. `ingest` runs this automatically.
     Images {
@@ -203,6 +213,12 @@ fn main() -> Result<()> {
             collect(&data, &collection, &doc)?;
             println!("collection '{collection}' += '{doc}'");
             Ok(())
+        }
+        Cli::Reindex { doc, data, hot } => {
+            if !hot {
+                be_gentle();
+            }
+            reindex(&doc, &data)
         }
         Cli::Images { doc, data, hot } => {
             if !hot {
@@ -358,6 +374,25 @@ fn ingest(
     Ok(())
 }
 
+/// Rebuild text + figure indexes and the markdown edition from caches.
+fn reindex(doc: &str, data: &Path) -> Result<()> {
+    let ctx = ctx(data, 1600);
+    let t = Instant::now();
+    let (recs, pages) = library_ingest::prepare_text_cached(&ctx, doc, None, &mut print_progress)?;
+    println!("prepared: {} chunks in {:?}", recs.len(), t.elapsed());
+
+    let mut st = library_core::open(data.join("library.db"));
+    let (removed, added) = library_ingest::commit_text(&mut st, doc, &recs);
+    println!("index: -{removed} +{added} chunks");
+    drop(st);
+
+    ingest_images(doc, data)?;
+    let md = library_ingest::textout::write_doc_pages(data, doc, &pages)?;
+    println!("text edition: {}", md.display());
+    println!("done: doc '{doc}'");
+    Ok(())
+}
+
 fn ingest_images(doc: &str, data: &Path) -> Result<()> {
     let ctx = ctx(data, 1600);
     let t = Instant::now();
@@ -458,7 +493,11 @@ fn search(query: &str, data: &Path, k: usize, lex_only: bool) -> Result<()> {
     };
 
     let t = Instant::now();
-    let hits = st.rtx(|r| library_core::search(&r, query, qemb.as_ref(), k, None));
+    let hits = st.rtx(|r| {
+        library_core::search(&r, query, qemb.as_ref(), k, None, |key| {
+            st.get(key).map(|rec| rec.words)
+        })
+    });
     let dur = t.elapsed();
 
     let qtoks = tokenize(query);

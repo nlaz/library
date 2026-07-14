@@ -282,6 +282,18 @@ pub fn prepare_text(
     // 1. render + words (cached: pages that already have JSON are skipped)
     ocr::ocr_pdf(pdf, &pages_dir, &ocr_dir, ctx.width, limit, ctx.text_layer, progress)?;
 
+    prepare_text_cached(ctx, doc, limit, progress)
+}
+
+/// [`prepare_text`] from the cached page words alone — no source PDF, no
+/// render/OCR pass. For rebuilding a doc's index entries when only the
+/// caches survive (or after a store-schema change).
+pub fn prepare_text_cached(
+    ctx: &IngestCtx,
+    doc: &str,
+    limit: Option<usize>,
+    progress: ProgressFn,
+) -> Result<(Vec<ChunkRec>, Vec<PageOcr>)> {
     // 2. OCR cleanup + read. The model pass is opt-in (ctx.clean) — it
     // parks a ~2GB model in memory for the whole run. Cached edits always
     // get (re)applied: that's file-local and costs nothing. Both cleanup

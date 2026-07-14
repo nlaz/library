@@ -10,6 +10,23 @@ use crate::{Bbox, Hit, ImageHit, Word, tokenize};
 
 pub type Collections = std::collections::BTreeMap<String, Vec<String>>;
 
+/// Number of rendered page images already in a doc's `data/pages/<doc>/`
+/// directory — every host uses this to tell the reader how far it can
+/// scroll (the reader has no other source of a doc's total page count).
+pub fn count_pages(doc_pages_dir: &std::path::Path) -> u32 {
+    std::fs::read_dir(doc_pages_dir)
+        .map(|it| {
+            it.flatten()
+                .filter(|f| {
+                    let n = f.file_name();
+                    let n = n.to_string_lossy();
+                    n.starts_with("page-") && n.ends_with(".jpg")
+                })
+                .count() as u32
+        })
+        .unwrap_or(0)
+}
+
 pub fn read_collections(data: &std::path::Path) -> Collections {
     std::fs::read(data.join("collections.json"))
         .ok()
@@ -100,6 +117,31 @@ pub fn group_image_hits(found: &[ImageHit], k: usize) -> Vec<WireHit> {
         .collect()
 }
 
+/// Text hits (RRF over lexical/semantic) and image hits (CLIP cosine) live
+/// on unrelated score scales, so blending by raw `score` would just let
+/// whichever scale happens to run bigger dominate the order. Both lists
+/// arrive best-first, so blend by each hit's rank within its own list
+/// instead — a reciprocal-rank curve, like RRF but per-modality — and give
+/// images a slight edge so a handful of strong figures land among the top
+/// text hits rather than trailing after all of them.
+const IMAGE_PREFERENCE: f32 = 1.3;
+
+pub fn blend(text: Vec<WireHit>, images: Vec<WireHit>) -> Vec<WireHit> {
+    let mut ranked: Vec<(f32, WireHit)> = text
+        .into_iter()
+        .enumerate()
+        .map(|(rank, h)| (1.0 / (1.0 + rank as f32), h))
+        .chain(
+            images
+                .into_iter()
+                .enumerate()
+                .map(|(rank, h)| (IMAGE_PREFERENCE / (1.0 + rank as f32), h)),
+        )
+        .collect();
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    ranked.into_iter().map(|(_, h)| h).collect()
+}
+
 pub fn wire_hit(hit: &Hit, qtoks: &[String]) -> WireHit {
     let matched = |w: &Word| {
         tokenize(&w.t)
@@ -150,5 +192,49 @@ pub fn wire_hit(hit: &Hit, qtoks: &[String]) -> WireHit {
         snippet,
         boxes,
         crop,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(kind: &'static str, n: u32) -> WireHit {
+        WireHit {
+            kind,
+            score: 0.0,
+            doc: "d".into(),
+            page: n,
+            idx: 0,
+            img: String::new(),
+            snippet: Vec::new(),
+            boxes: Vec::new(),
+            crop: [0.0, 0.0, 1.0, 1.0],
+        }
+    }
+
+    #[test]
+    fn blend_interleaves_instead_of_appending() {
+        let text: Vec<WireHit> = (0..20).map(|n| hit("text", n)).collect();
+        let images: Vec<WireHit> = (0..6).map(|n| hit("image", n)).collect();
+        let merged = blend(text, images);
+
+        assert_eq!(merged.len(), 26);
+        // every image trailing all 20 text hits is exactly the bug being fixed
+        let last_image_pos = merged.iter().rposition(|h| h.kind == "image").unwrap();
+        assert!(last_image_pos < merged.len() - 1, "an image should not be pinned last");
+        let first_image_pos = merged.iter().position(|h| h.kind == "image").unwrap();
+        assert!(first_image_pos < 5, "the image preference should surface one early");
+        // still interleaved, not images-then-text or text-then-images
+        assert!(merged[..10].iter().any(|h| h.kind == "text"));
+        assert!(merged[..10].iter().any(|h| h.kind == "image"));
+    }
+
+    #[test]
+    fn blend_handles_one_empty_side() {
+        let text: Vec<WireHit> = (0..5).map(|n| hit("text", n)).collect();
+        assert_eq!(blend(text.into_iter().collect(), Vec::new()).len(), 5);
+        let images: Vec<WireHit> = (0..3).map(|n| hit("image", n)).collect();
+        assert_eq!(blend(Vec::new(), images).len(), 3);
     }
 }

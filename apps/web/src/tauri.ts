@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { confirm as confirmDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import type { Transport } from "./transport";
 import type { Collections, DocInfo, IngestEvent, QueryMsg, WireResponse } from "./types";
 
@@ -129,13 +129,4 @@ export function onDragDrop(
       drop(e.payload.paths);
     }
   });
-}
-
-export async function pickPdfs(): Promise<string[]> {
-  const picked = await openDialog({
-    multiple: true,
-    filters: [{ name: "PDF", extensions: ["pdf"] }],
-  });
-  if (!picked) return [];
-  return Array.isArray(picked) ? picked : [picked];
 }

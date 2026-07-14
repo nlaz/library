@@ -5,11 +5,11 @@ import type { Collections, DocInfo, IngestEvent, WireHit, WireResponse } from ".
 
 const $q = document.getElementById("q") as HTMLInputElement;
 const $cols = document.getElementById("cols")!;
-const $kind = document.getElementById("kind")!;
 let col = ""; // "" = everything, else a collection name
-let kind = ""; // "" = all, "text", "images"
 const $status = document.getElementById("status")!;
 const $home = document.getElementById("home")!;
+const $search = document.getElementById("search")!;
+const $stats = document.getElementById("stats")!;
 const $results = document.getElementById("results")!;
 const $overlay = document.getElementById("overlay")!;
 const $viewerLabel = document.getElementById("viewer-label")!;
@@ -17,25 +17,7 @@ const $viewerRead = document.getElementById("viewer-read")!;
 const $viewerClose = document.getElementById("viewer-close")!;
 const $pageImg = document.getElementById("page-img") as HTMLImageElement;
 const $pageHl = document.getElementById("page-hl")!;
-const $addBtn = document.getElementById("add-btn")!;
-const $themeBtn = document.getElementById("theme-btn")!;
 const $dropzone = document.getElementById("dropzone")!;
-
-// ---------------------------------------------------------------------------
-// theme: light is the default; <head> set data-theme before the stylesheet
-// ---------------------------------------------------------------------------
-
-function syncThemeBtn() {
-  // the label names the destination, not the current state
-  $themeBtn.textContent = document.documentElement.dataset.theme === "dark" ? "Light" : "Dark";
-}
-$themeBtn.addEventListener("click", () => {
-  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = next;
-  localStorage.theme = next;
-  syncThemeBtn();
-});
-syncThemeBtn();
 
 const FULL_DEBOUNCE_MS = 120;
 const PREVIEW_H = 190; // px, keep in sync with .preview height in style.css
@@ -53,19 +35,32 @@ const ingesting = new Map<string, IngestEvent>();
 // routing: #/ = home (shelves) or search results; #/read/<doc>?p=N = reader
 // ---------------------------------------------------------------------------
 
-function route() {
+async function route() {
   const m = location.hash.match(/^#\/read\/([^?]+)(?:\?p=(\d+))?$/);
   if (m) {
     const doc = decodeURIComponent(m[1]);
-    const info = docList.find((d) => d.id === doc);
-    const title = info ? displayTitle(info) : prettify(doc);
     // no explicit ?p= -> the reader resumes the remembered position
-    openReader(doc, info?.pages ?? 9999, m[2] ? Number(m[2]) : undefined, title);
+    openReader(doc, await pagesOf(doc), m[2] ? Number(m[2]) : undefined, docTitle(doc));
   } else {
     closeReader();
   }
 }
 window.addEventListener("hashchange", route);
+
+/** Total page count for a doc, so the reader knows how far it can scroll.
+ * The desktop build already has this in `docList`; the web build has no
+ * such command, so it asks the server directly. */
+async function pagesOf(id: string): Promise<number> {
+  const info = docList.find((d) => d.id === id);
+  if (info) return info.pages;
+  try {
+    const res = await fetch(`/api/pages/${encodeURIComponent(id)}`);
+    if (res.ok) return (await res.json()).pages;
+  } catch {
+    // offline/unreachable — fall through to the generous fallback below
+  }
+  return 9999;
+}
 
 function prettify(id: string): string {
   return id
@@ -78,6 +73,13 @@ function displayTitle(d: DocInfo): string {
   return d.title ?? prettify(d.id);
 }
 
+/** The doc's display name (its title, or a prettified id), for any doc id
+ * shown in the UI — search results never show the raw file name. */
+function docTitle(id: string): string {
+  const d = docList.find((x) => x.id === id);
+  return d ? displayTitle(d) : prettify(id);
+}
+
 // ---------------------------------------------------------------------------
 // collections tabs
 // ---------------------------------------------------------------------------
@@ -85,23 +87,21 @@ function displayTitle(d: DocInfo): string {
 async function loadCollections() {
   const cols = await transport.collections();
   // the active collection can vanish (last doc removed) — fall back to all
-  if (col && !(col in cols)) {
-    col = "";
-    $cols.children[0]?.classList.add("on");
-  }
-  // idempotent: keep the "Everything" button, rebuild the rest
-  for (const b of [...$cols.children].slice(1)) b.remove();
-  for (const name of Object.keys(cols)) {
-    const btn = document.createElement("button");
-    btn.dataset.col = name;
-    btn.textContent = name;
-    const n = document.createElement("span");
-    n.className = "n";
-    n.textContent = String(cols[name].length);
-    btn.append(n);
-    if (name === col) btn.classList.add("on");
-    $cols.append(btn);
-  }
+  if (col && !(col in cols)) col = "";
+  // no "Everything" tab: nothing selected IS everything
+  $cols.replaceChildren(
+    ...Object.keys(cols).map((name) => {
+      const btn = document.createElement("button");
+      btn.dataset.col = name;
+      btn.textContent = name;
+      const n = document.createElement("span");
+      n.className = "n";
+      n.textContent = String(cols[name].length);
+      btn.append(n);
+      if (name === col) btn.classList.add("on");
+      return btn;
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -403,10 +403,6 @@ function wireDesktop() {
     .getSettings()
     .then((s) => (libraryDir = `${s.data}/pdfs`))
     .catch(() => {});
-  $addBtn.hidden = false;
-  $addBtn.addEventListener("click", async () => {
-    queuePdfs(await desktop!.pickPdfs());
-  });
   desktop.onDragDrop(
     () => ($dropzone.hidden = false),
     () => ($dropzone.hidden = true),
@@ -472,7 +468,7 @@ function card(hit: WireHit): { el: HTMLElement; place: () => void } {
 
   const loc = document.createElement("div");
   loc.className = "loc";
-  loc.textContent = `${hit.doc} · p.${hit.page}${isImage ? " · figure" : ""}`;
+  loc.textContent = `${docTitle(hit.doc)} · p.${hit.page}${isImage ? " · figure" : ""}`;
   const meta = document.createElement("div");
   meta.className = "meta";
   meta.append(loc);
@@ -532,7 +528,7 @@ function render(msg: WireResponse) {
   const settled = msg.seq >= seq;
   if (!settled && msg.hits.length === 0) return;
 
-  $status.textContent = settled
+  $stats.textContent = settled
     ? `${msg.hits.length} hits · ${msg.phase} · ${(msg.us / 1000).toFixed(1)}ms`
     : "searching…";
 
@@ -552,8 +548,7 @@ let viewerHit: WireHit | null = null;
 
 function openViewer(hit: WireHit) {
   viewerHit = hit;
-  $viewerLabel.textContent = `${hit.doc} · p. ${hit.page}`;
-  $viewerRead.hidden = !desktop;
+  $viewerLabel.textContent = `${docTitle(hit.doc)} · p. ${hit.page}`;
   $pageHl.replaceChildren(...hlBoxes(hit.boxes));
   const src = pageUrl(hit.img);
   const reveal = () => {
@@ -591,12 +586,11 @@ document.addEventListener("keydown", (e) => {
 // ---------------------------------------------------------------------------
 
 function showSearch(active: boolean) {
-  $results.hidden = !active;
+  $search.hidden = !active;
   $home.hidden = active;
 }
 
 async function main() {
-  $status.textContent = "connecting…";
   if (isTauri()) desktop = await import("./tauri");
   transport = await makeTransport();
   wireDesktop();
@@ -604,7 +598,6 @@ async function main() {
   renderHome();
 
   await transport.ready();
-  $status.textContent = "ready";
   loadCollections();
   renderHome().then(route); // route needs page counts for #/read links
 
@@ -614,7 +607,6 @@ async function main() {
       rendered = ++seq;
       instantSeq = 0;
       instantDirty = false;
-      $status.textContent = "ready";
       $results.replaceChildren();
       showSearch(false);
       renderHome();
@@ -627,7 +619,7 @@ async function main() {
       rendered = ++seq;
       instantDirty = false;
       $results.replaceChildren();
-      $status.textContent = "searching…";
+      $stats.textContent = "searching…";
       return;
     }
     // at most one instant query in flight: a burst of keystrokes must not
@@ -640,8 +632,9 @@ async function main() {
       }
       instantSeq = seq + 1;
     }
-    $status.textContent = "searching…";
-    transport.send({ seq: ++seq, q, mode, col, kind });
+    $stats.textContent = "searching…";
+    // "" = search all kinds — the UI has no text/images toggle
+    transport.send({ seq: ++seq, q, mode, col, kind: "" });
   };
 
   transport.onResponse((msg) => {
@@ -667,17 +660,11 @@ async function main() {
   $cols.addEventListener("click", (e) => {
     const btn = (e.target as HTMLElement).closest("button");
     if (!btn) return;
-    col = btn.dataset.col!;
-    for (const b of $cols.children) b.classList.toggle("on", b === btn);
+    // no "Everything" tab: clicking the active collection again clears it
+    col = col === btn.dataset.col ? "" : btn.dataset.col!;
+    for (const b of $cols.children) b.classList.toggle("on", b === btn && col !== "");
     if ($q.value.trim()) send("full");
     else renderHome();
-  });
-  $kind.addEventListener("click", (e) => {
-    const btn = (e.target as HTMLElement).closest("button");
-    if (!btn) return;
-    kind = btn.dataset.kind!;
-    for (const b of $kind.children) b.classList.toggle("on", b === btn);
-    send("full");
   });
 }
 

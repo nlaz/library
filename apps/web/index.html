@@ -5,10 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <title>The Library</title>
-    <script>
-      document.documentElement.dataset.theme =
-        localStorage.theme === "dark" ? "dark" : "light";
-    </script>
     <link rel="preload" href="/fonts/instrument-sans-vf.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin />
@@ -16,15 +12,7 @@
   </head>
   <body>
     <header>
-      <div class="brand">The&nbsp;Library</div>
-      <nav id="cols" role="group" title="Collections">
-        <button data-col="" class="on">Everything</button>
-      </nav>
-      <div id="kind" role="group" title="Result type">
-        <button data-kind="" class="on">All</button>
-        <button data-kind="text">Text</button>
-        <button data-kind="images">Images</button>
-      </div>
+      <nav id="cols" role="group" title="Collections"></nav>
       <input
         id="q"
         type="search"
@@ -32,13 +20,14 @@
         autocomplete="off"
         autofocus
       />
-      <button id="add-btn" title="Add PDFs to the library" hidden>+ Add</button>
-      <button id="theme-btn" title="Switch theme"></button>
       <div id="status"></div>
     </header>
     <main>
       <div id="home"></div>
-      <div id="results" hidden></div>
+      <div id="search" hidden>
+        <div id="stats"></div>
+        <div id="results"></div>
+      </div>
     </main>
     <section id="reader" hidden>
       <div id="reader-top">
@@ -55,7 +44,7 @@
         <div id="viewer-top">
           <div id="viewer-label"></div>
           <div class="viewer-actions">
-            <button id="viewer-read" hidden>Open in reader</button>
+            <button id="viewer-read">Open in reader</button>
             <button id="viewer-close" title="Close (Esc)">✕</button>
           </div>
         </div>

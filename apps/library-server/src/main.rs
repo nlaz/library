@@ -17,11 +17,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use axum::{Json, Router, routing::get};
+use axum::{Json, Router, extract::Path as UrlPath, routing::get};
 use clap::Parser;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use library_core::wire::{
-    Response, WireHit, group_image_hits, read_collections, wire_hit,
+    Response, WireHit, blend, count_pages, group_image_hits, read_collections, wire_hit,
 };
 use library_core::{ClipEmb, Emb, FxHashSet, Images, Library, tokenize};
 use serde::Deserialize;
@@ -83,7 +83,8 @@ impl App {
             .map(|docs| docs.into_iter().collect());
 
         let mut phase = "lex";
-        let mut hits: Vec<WireHit> = Vec::new();
+        let mut text_hits: Vec<WireHit> = Vec::new();
+        let mut img_hits: Vec<WireHit> = Vec::new();
 
         if want_text {
             let qemb: Option<Emb> = (q.mode == "full").then(|| ese::encode_single(&q.q));
@@ -94,7 +95,7 @@ impl App {
             let found = self
                 .lib
                 .rtx(|r| library_core::search(&r, &q.q, qemb.as_ref(), K, member.as_ref()));
-            hits.extend(found.iter().map(|h| wire_hit(h, &qtoks)));
+            text_hits.extend(found.iter().map(|h| wire_hit(h, &qtoks)));
         }
 
         if want_imgs {
@@ -110,10 +111,11 @@ impl App {
                 let found = self
                     .images
                     .rtx(|r| library_core::image_search(&r, &e, 40, member.as_ref()));
-                hits.extend(group_image_hits(&found, k));
+                img_hits.extend(group_image_hits(&found, k));
             }
         }
 
+        let hits = blend(text_hits, img_hits);
         Response { seq: q.seq, phase, us: start.elapsed().as_micros(), hits }
     }
 }
@@ -163,6 +165,17 @@ async fn main() -> Result<()> {
         .route("/api/collections", get({
             let data = args.data.clone();
             move || async move { Json(read_collections(&data)) }
+        }))
+        // the reader has no other way to learn a doc's page count in the
+        // plain-web build (the desktop build gets it for free from `docs`)
+        .route("/api/pages/{doc}", get({
+            let data = args.data.clone();
+            move |UrlPath(doc): UrlPath<String>| {
+                let data = data.clone();
+                async move {
+                    Json(serde_json::json!({ "pages": count_pages(&data.join("pages").join(doc)) }))
+                }
+            }
         }))
         .nest_service("/pages", ServeDir::new(args.data.join("pages")))
         .nest_service("/ocr", ServeDir::new(args.data.join("ocr")))

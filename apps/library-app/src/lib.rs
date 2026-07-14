@@ -234,7 +234,8 @@ fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
         .map(|docs| docs.into_iter().collect());
 
     let mut phase = "lex";
-    let mut hits: Vec<WireHit> = Vec::new();
+    let mut text_hits: Vec<WireHit> = Vec::new();
+    let mut img_hits: Vec<WireHit> = Vec::new();
 
     if want_text {
         let qemb: Option<Emb> = (q.mode == "full").then(|| ese::encode_single(&q.q));
@@ -245,7 +246,7 @@ fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
         let found = eng.lib.read().unwrap().rtx(|r| {
             library_core::search(&r, &q.q, qemb.as_ref(), K, member.as_ref())
         });
-        hits.extend(found.iter().map(|h| wire::wire_hit(h, &qtoks)));
+        text_hits.extend(found.iter().map(|h| wire::wire_hit(h, &qtoks)));
     }
 
     if want_imgs {
@@ -263,10 +264,11 @@ fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
                 .read()
                 .unwrap()
                 .rtx(|r| library_core::image_search(&r, &e, 40, member.as_ref()));
-            hits.extend(wire::group_image_hits(&found, k));
+            img_hits.extend(wire::group_image_hits(&found, k));
         }
     }
 
+    let hits = wire::blend(text_hits, img_hits);
     Response { seq: q.seq, phase, us: start.elapsed().as_micros(), hits }
 }
 
@@ -348,17 +350,7 @@ fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
             if st.map(|s| s.state) == Some(DocState::Deleted) {
                 continue; // tombstone: only the PDF remains
             }
-            let pages = std::fs::read_dir(e.path())
-                .map(|it| {
-                    it.flatten()
-                        .filter(|f| {
-                            let n = f.file_name();
-                            let n = n.to_string_lossy();
-                            n.starts_with("page-") && n.ends_with(".jpg")
-                        })
-                        .count() as u32
-                })
-                .unwrap_or(0);
+            let pages = wire::count_pages(&e.path());
             seen.insert(id.clone());
             out.push(DocInfo {
                 pages,

@@ -1,0 +1,1562 @@
+[
+  {
+    "kind": "",
+    "note": "known-item",
+    "query": "bechamel sauce",
+    "response": {
+      "hits": [
+        {
+          "doc": "larousse-gastronomique",
+          "kind": "image",
+          "page": 118,
+          "rel": 0.0,
+          "score": 0.3227936625480652,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "mastering-the-art-of-french-cooking",
+          "kind": "text",
+          "page": 71,
+          "rel": 1.0,
+          "score": 0.03253968432545662,
+          "snippet": "and many of the hot hors d’oeuvres. Sauce bechamel in the time of Louis XIV was a more elaborate sauce than it is today. Then",
+          "title": null
+        },
+        {
+          "doc": "mastering-the-art-of-french-cooking",
+          "kind": "text",
+          "page": 75,
+          "rel": 0.9636468291282654,
+          "score": 0.03201844170689583,
+          "snippet": "time, beating until each piece of butter has been absorbed into the sauce before adding the next. Spoon the sauce over the hot food, or pour the sauce into a",
+          "title": null
+        },
+        {
+          "doc": "mastering-the-art-of-french-cooking",
+          "kind": "text",
+          "page": 78,
+          "rel": 0.949795424938202,
+          "score": 0.030621785670518875,
+          "snippet": "62 CHAPTER TWO: SAUCES 2 cups of medium bechamel Bring the sauce to the boil. Remove from heat, and or veloute,",
+          "title": null
+        },
+        {
+          "doc": "il-cucchiaio-dargento-primi-piatti",
+          "kind": "image",
+          "page": 600,
+          "rel": 0.0,
+          "score": 0.31410276889801025,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "mastering-the-art-of-french-cooking",
+          "kind": "text",
+          "page": 77,
+          "rel": 0.943709909915924,
+          "score": 0.03015873208642006,
+          "snippet": "more butter by bits, is called for; use no but- ter if sauce is for a gratineed dish) SAUCES DERIVED FROM BECHAMEL AND VELOUTE Here are some of the principal",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 832185
+    }
+  },
+  {
+    "kind": "",
+    "note": "known-item",
+    "query": "geodesic dome",
+    "response": {
+      "hits": [
+        {
+          "doc": "wholeearthecolog00unse",
+          "kind": "image",
+          "page": 84,
+          "rel": 0.0,
+          "score": 0.332985520362854,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-0",
+          "kind": "text",
+          "page": 23,
+          "rel": 0.6297395825386047,
+          "score": 0.03229166567325592,
+          "snippet": "Between a Zome and a Geodesic Dome ? A geodesic dome is a structure which closely follows the shape of the sphere and",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-1",
+          "kind": "text",
+          "page": 20,
+          "rel": 1.0,
+          "score": 0.03229166567325592,
+          "snippet": "rand Land Use a : ion a Edited by Lloyd Kahn * Domebook One S A book (the first) for domebuilders, with detailed step-by- step instructions on building 7 different",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-7",
+          "kind": "text",
+          "page": 20,
+          "rel": 0.6001442074775696,
+          "score": 0.03151364624500275,
+          "snippet": "use the panels to different diameter domes—are given, but are a bit more make a tunnel geodesic of any length. complex than the simple",
+          "title": null
+        },
+        {
+          "doc": "lastwholeearthca00unse",
+          "kind": "image",
+          "page": 5,
+          "rel": 0.0,
+          "score": 0.3255664110183716,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthepilog00unse",
+          "kind": "text",
+          "page": 76,
+          "rel": 0.941475749015808,
+          "score": 0.03131881356239319,
+          "snippet": "former cost less. Dome Cookbook of Geodesic Geometry Shows actual derivation of chord factors and angles and “_. unlike Domebook One",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 423759
+    }
+  },
+  {
+    "kind": "",
+    "note": "known-item",
+    "query": "tandoori chicken",
+    "response": {
+      "hits": [
+        {
+          "doc": "dishoom-from-bombay-with-love",
+          "kind": "image",
+          "page": 543,
+          "rel": 0.0,
+          "score": 0.3354688882827759,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "mrs-balbir-singhs-indian-cookery",
+          "kind": "text",
+          "page": 57,
+          "rel": 1.0,
+          "score": 0.03333333507180214,
+          "snippet": "a salad with it. TANDOORI MURGHA Tandoori Chicken Recipe No. 2 . This method for cooking tandoori chicken is one that can",
+          "title": null
+        },
+        {
+          "doc": "mrs-balbir-singhs-indian-cookery",
+          "kind": "text",
+          "page": 57,
+          "rel": 0.8256522417068481,
+          "score": 0.03077651560306549,
+          "snippet": "pass a pointed skewer through the chicken. The skewer used should be slightly longer than the depth of the tandoor, pointed at one end",
+          "title": null
+        },
+        {
+          "doc": "madhur-jaffreys-indian-cookery",
+          "kind": "text",
+          "page": 70,
+          "rel": 0.7589303851127625,
+          "score": 0.03047794848680496,
+          "snippet": "Tandoori-style chicken Tandoori murghi I have, I think, found a way to make tandoori-style chicken without a tandoor!",
+          "title": null
+        },
+        {
+          "doc": "dishoom-from-bombay-with-love",
+          "kind": "image",
+          "page": 549,
+          "rel": 0.0,
+          "score": 0.32412707805633545,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "mrs-balbir-singhs-indian-cookery",
+          "kind": "text",
+          "page": 20,
+          "rel": 0.7581484317779541,
+          "score": 0.030017919838428497,
+          "snippet": "the actual cooking commences. A tandoor is used for the preparation of tandoori chicken, tandoori fish, seekh kabab, tandoori roti, nan, sheermal etc. It is rather difficult for housewives to",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 92801
+    }
+  },
+  {
+    "kind": "",
+    "note": "known-item",
+    "query": "clean code function arguments",
+    "response": {
+      "hits": [
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 29,
+          "rel": 0.0,
+          "score": 0.309262752532959,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 259,
+          "rel": 0.9729716777801514,
+          "score": 0.03177805617451668,
+          "snippet": "Chapter 8. Function Heuristics What follows are some heuristics that I have found helpful in keeping my code clean. I",
+          "title": null
+        },
+        {
+          "doc": "Refactoring Improving the Design of Existing Code (Martin Fowler) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 352,
+          "rel": 0.9311296939849854,
+          "score": 0.030017919838428497,
+          "snippet": "Click here to view code image bookConcert(aCustomer, CustomerType.PREMIUM); or strings (or symbols in languages that use them): Click here to view code",
+          "title": null
+        },
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 9,
+          "rel": 1.0,
+          "score": 0.02871485985815525,
+          "snippet": "of Formatting Vertical Formatting Team Rules Uncle Bob’s Formatting Rules Chapter 7. Clean Functions Small! Reading Code from Top to Bottom: The Stepdown Rule Switch Statements Clean Functions: A De…",
+          "title": null
+        },
+        {
+          "doc": "Computer Systems A Programmers Perspective ( etc.) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 1516,
+          "rel": 0.0,
+          "score": 0.3001377582550049,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "Computer Systems A Programmers Perspective ( etc.) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 727,
+          "rel": 0.8342928290367126,
+          "score": 0.028370220214128498,
+          "snippet": "When compiled, GCC generates the following assembly code for these functions: Based on these examples, determine the following: A. B. How are complex arguments passed",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 264044
+    }
+  },
+  {
+    "kind": "",
+    "note": "known-item proper noun",
+    "query": "Broderbund",
+    "response": {
+      "hits": [
+        {
+          "doc": "larousse-gastronomique",
+          "kind": "image",
+          "page": 141,
+          "rel": 0.0,
+          "score": 0.3106037378311157,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "1985-software-people-doug-carlston",
+          "kind": "text",
+          "page": 188,
+          "rel": 1.0,
+          "score": 0.01666666753590107,
+          "snippet": "who quickly became a friend and introduced the Penguin crew to the Broderbund family. The whimsical nature of their company reflects the man-agement's playful nature. We always liked to have",
+          "title": null
+        },
+        {
+          "doc": "japanese-cooking-a-simple-art",
+          "kind": "text",
+          "page": 268,
+          "rel": 1.0,
+          "score": 0.01666666753590107,
+          "snippet": "cooked first in FISH ONE-POT to develop the flavor of the broth, in this dish, start with the",
+          "title": null
+        },
+        {
+          "doc": "1985-software-people-doug-carlston",
+          "kind": "text",
+          "page": 144,
+          "rel": 0.7412984371185303,
+          "score": 0.016393441706895828,
+          "snippet": "of Japan) that Gary and I credit as most responsible for ensuring Broderbund's survival in our early days. Bob and Dave gave us a tremendous lift right at the end",
+          "title": null
+        },
+        {
+          "doc": "lastwholeearthca00unse",
+          "kind": "image",
+          "page": 382,
+          "rel": 0.0,
+          "score": 0.3006100654602051,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "fish-and-shellfish",
+          "kind": "text",
+          "page": 87,
+          "rel": 1.0,
+          "score": 0.016393441706895828,
+          "snippet": "the fish is cooked—fish broth has a fuller flavor than vegetable broth and will support stronger-flavored ingredients. See",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 115149
+    }
+  },
+  {
+    "kind": "",
+    "note": "known-item",
+    "query": "risotto",
+    "response": {
+      "hits": [
+        {
+          "doc": "il-cucchiaio-dargento-primi-piatti",
+          "kind": "image",
+          "page": 401,
+          "rel": 0.0,
+          "score": 0.32361555099487305,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "il-cucchiaio-dargento-primi-piatti",
+          "kind": "text",
+          "page": 949,
+          "rel": 0.5690322518348694,
+          "score": 0.03205128386616707,
+          "snippet": "RISOTTO ALLO CHAMPAGNE \b �������������������������413 RISOTTO ALLO ZAFFERANO E FILETTI DI SOGLIOLA \b ����������������…",
+          "title": null
+        },
+        {
+          "doc": "il-cucchiaio-dargento-primi-piatti",
+          "kind": "text",
+          "page": 948,
+          "rel": 0.5706471800804138,
+          "score": 0.03201844170689583,
+          "snippet": "LIMONE \b����������������������������������������������������������400 RISOTTO AL CAV…",
+          "title": null
+        },
+        {
+          "doc": "mastering-the-art-of-french-cooking",
+          "kind": "text",
+          "page": 548,
+          "rel": 1.0,
+          "score": 0.0313725508749485,
+          "snippet": "running wa- ter, and allow it to drain thoroughly before using it. RISOTTO PILAF PILAU [Risotto—Braised Rice] This is the standard French method for braised rice, meaning rice sauteed in",
+          "title": null
+        },
+        {
+          "doc": "il-cucchiaio-dargento-primi-piatti",
+          "kind": "image",
+          "page": 449,
+          "rel": 0.0,
+          "score": 0.3234672546386719,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "il-cucchiaio-dargento-primi-piatti",
+          "kind": "text",
+          "page": 949,
+          "rel": 0.5650803446769714,
+          "score": 0.03128054738044739,
+          "snippet": "LE MELE \b ����������������������������������448 PRIMI PIATTI INDICE ANALITICO RISOTTO CON LE RANE \b ����������…",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 72708
+    }
+  },
+  {
+    "kind": "",
+    "note": "semantic",
+    "query": "how to keep bread from going stale",
+    "response": {
+      "hits": [
+        {
+          "doc": "larousse-gastronomique",
+          "kind": "image",
+          "page": 444,
+          "rel": 0.0,
+          "score": 0.2935974597930908,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "mediterranean-seafood",
+          "kind": "text",
+          "page": 278,
+          "rel": 0.7964580655097961,
+          "score": 0.03279569745063782,
+          "snippet": "the marmite, sealing it down with bread dough, and take it to the bread-baker, in whose oven it should remain for at least 8",
+          "title": null
+        },
+        {
+          "doc": "fish-and-shellfish",
+          "kind": "text",
+          "page": 37,
+          "rel": 0.8789604306221008,
+          "score": 0.032786883413791656,
+          "snippet": "has a delicate yet full flavor. If you’re still hesitant about mackerel, however, Baking 19 MAKING YOUR OWN BREAD CRUMBS Many cooks assume that bread crumbs should be made from",
+          "title": null
+        },
+        {
+          "doc": "a-guide-to-modern-cookery",
+          "kind": "text",
+          "page": 97,
+          "rel": 0.6568295359611511,
+          "score": 0.03128054738044739,
+          "snippet": "it. Keep this juice in the cool. 84—BREAD-CRUMBS Thoroughly rub, in a closed towel, some stale bread-crumb previously well",
+          "title": null
+        },
+        {
+          "doc": "il-cucchiaio-dargento-primi-piatti",
+          "kind": "image",
+          "page": 638,
+          "rel": 0.0,
+          "score": 0.29260337352752686,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "fish-and-shellfish",
+          "kind": "text",
+          "page": 98,
+          "rel": 0.6648407578468323,
+          "score": 0.03076923079788685,
+          "snippet": "delicious revelation to those who remember fish sticks or the breaded deep-fried fish served in mediocre restaurants. Several tradi- tional",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 471530
+    }
+  },
+  {
+    "kind": "",
+    "note": "semantic",
+    "query": "tools for living off the grid",
+    "response": {
+      "hits": [
+        {
+          "doc": "wholeearthcatalo00unse-1",
+          "kind": "image",
+          "page": 44,
+          "rel": 0.0,
+          "score": 0.3062911629676819,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-0",
+          "kind": "text",
+          "page": 24,
+          "rel": 0.6493725180625916,
+          "score": 0.028629031032323837,
+          "snippet": "Dees. : detailed sections of hubs, construction methods, and assembly | Space grids consist of two paralle/ planes, forming a floor m yet sequences. and ceiling; “web” members in between",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-10",
+          "kind": "text",
+          "page": 20,
+          "rel": 0.6205133199691772,
+          "score": 0.028431374579668045,
+          "snippet": "Kahn. Vaan ; uy 1 ! WV wae S 7 SS Space Grid Structures A space grid is a means of spanning great dis- tances with little weight, and few",
+          "title": null
+        },
+        {
+          "doc": "nextwholeearthca00unse",
+          "kind": "text",
+          "page": 298,
+          "rel": 0.6556541919708252,
+          "score": 0.028205128386616707,
+          "snippet": "as the raw material. It’s the ol’ Tinker-Toy- basic-module-building-unit trip. One soon learns elementary mass production techniques in creation",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-7",
+          "kind": "image",
+          "page": 48,
+          "rel": 0.0,
+          "score": 0.2956705093383789,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-1",
+          "kind": "text",
+          "page": 22,
+          "rel": 0.6157013773918152,
+          "score": 0.027500923722982407,
+          "snippet": "VAC TATA oho) Bee’ $4.00 postpaid from: University of Detroit Press swan FOrED 4001 West McNichols Road GEODESICS | Detroit, Mich. 48221 or WHOLE EARTH CATALOG Space Grid Structures A",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 538443
+    }
+  },
+  {
+    "kind": "",
+    "note": "semantic",
+    "query": "why big software projects fail",
+    "response": {
+      "hits": [
+        {
+          "doc": "Operating Systems Three Easy Pieces (Remzi H. Arpaci-Dusseau etc.) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 147,
+          "rel": 0.0,
+          "score": 0.287943959236145,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "1985-software-people-doug-carlston",
+          "kind": "text",
+          "page": 257,
+          "rel": 0.8375856280326843,
+          "score": 0.03253968432545662,
+          "snippet": "The Shakeout 245 Furthermore, many of the early software companies tended to believe the fantasies about our business that we and the media had created, and",
+          "title": null
+        },
+        {
+          "doc": "1985-software-people-doug-carlston",
+          "kind": "text",
+          "page": 241,
+          "rel": 0.6959897875785828,
+          "score": 0.02982766181230545,
+          "snippet": "and well-funded outfits like Reader's Digest, Prentice Hall, and Simon & Schuster fail so spectacularly where \"amateurs\" like Microsoft and Broderbund had made millions? Part of the problem was the",
+          "title": null
+        },
+        {
+          "doc": "Fundamentals of Software Architecture An Engineering Approach (Mark Richards, Neal Ford) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 362,
+          "rel": 0.6964959502220154,
+          "score": 0.0297619067132473,
+          "snippet": "teams to focus on certain business scenarios not covered in the checklists. Software Release Checklist Releasing software into production is perhaps one of the most error-prone aspects of the software",
+          "title": null
+        },
+        {
+          "doc": "Fundamentals of Software Architecture An Engineering Approach (Mark Richards, Neal Ford) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 7,
+          "rel": 0.0,
+          "score": 0.2800854444503784,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 740,
+          "rel": 0.6722080707550049,
+          "score": 0.02938045561313629,
+          "snippet": "think the answer is pretty obvious. They had forgotten that the Power-Peg software was still in the system. They had forgotten that the flag they repurposed would activate it. And",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 167140
+    }
+  },
+  {
+    "kind": "",
+    "note": "semantic",
+    "query": "cooking for a crowd on a budget",
+    "response": {
+      "hits": [
+        {
+          "doc": "the-adventurous-fish-cook",
+          "kind": "image",
+          "page": 205,
+          "rel": 0.0,
+          "score": 0.3019876480102539,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-0",
+          "kind": "text",
+          "page": 45,
+          "rel": 0.4457625448703766,
+          "score": 0.02626262605190277,
+          "snippet": "with ground pepper. Let stand for 1 hour. Brush your black skillet with beef suet and heat the skillet. Cook the steaks to",
+          "title": null
+        },
+        {
+          "doc": "mastering-the-art-of-french-cooking",
+          "kind": "text",
+          "page": 9,
+          "rel": 0.3154141902923584,
+          "score": 0.02085772715508938,
+          "snippet": "or combined with another, the texture and taste of the navarin suffer. One of the main reasons that pseudo-French cooking, with which we are all too famil- iar, falls far",
+          "title": null
+        },
+        {
+          "doc": "mediterranean-seafood",
+          "kind": "text",
+          "page": 295,
+          "rel": 0.30733561515808105,
+          "score": 0.01926136389374733,
+          "snippet": "a sharp blow on the carapace (to “unseal’ them), and set them to cook in 150 ml (5 fl oz) of",
+          "title": null
+        },
+        {
+          "doc": "the-adventurous-fish-cook",
+          "kind": "image",
+          "page": 115,
+          "rel": 0.0,
+          "score": 0.3004169464111328,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "mrs-balbir-singhs-indian-cookery",
+          "kind": "text",
+          "page": 31,
+          "rel": 0.29050856828689575,
+          "score": 0.019185559824109077,
+          "snippet": "INDIAN COOKERY 29 in the initial stage in order to avoid prolonged cooking (as for example, in meat dishes), and it is finally completed by frying and the “dum” (see",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 342354
+    }
+  },
+  {
+    "kind": "",
+    "note": "semantic",
+    "query": "meals without meat",
+    "response": {
+      "hits": [
+        {
+          "doc": "a-taste-of-india",
+          "kind": "image",
+          "page": 250,
+          "rel": 0.0,
+          "score": 0.2927650213241577,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "nextwholeearthca00unse",
+          "kind": "text",
+          "page": 369,
+          "rel": 0.6812112927436829,
+          "score": 0.029957523569464684,
+          "snippet": "powdered sugar. when | imagine their meals | shudder too, because the standard American diet is so appalling in its lack of imagination. Even",
+          "title": null
+        },
+        {
+          "doc": "wholeearthepilog00unse",
+          "kind": "text",
+          "page": 143,
+          "rel": 0.8707435727119446,
+          "score": 0.027500923722982407,
+          "snippet": "in “\\/qeee both the preparation and eating of epicurean Wisk i. vegetarian meals. : ss —Evelyn Eldridge “hg The Vegetarian Epicure Anna Thomas 1972; 305pp. R $3.95 postpaid ca from:",
+          "title": null
+        },
+        {
+          "doc": "dishoom-from-bombay-with-love",
+          "kind": "text",
+          "page": 34,
+          "rel": 0.5426523685455322,
+          "score": 0.023296291008591652,
+          "snippet": "UK and The Akshaya Patra Foundation in India to provide nourishing, free meals to school children who would otherwise go hungry. Both of these charities do a valiant job breaking",
+          "title": null
+        },
+        {
+          "doc": "dishoom-from-bombay-with-love",
+          "kind": "image",
+          "page": 89,
+          "rel": 0.0,
+          "score": 0.2900029420852661,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "a-guide-to-modern-cookery",
+          "kind": "text",
+          "page": 127,
+          "rel": 0.43347832560539246,
+          "score": 0.021592039614915848,
+          "snippet": "LEADING CULINARY OPERATIONS 105 The Larding of Meats for Braising.—When the meat to be braised is ribs or fillet of beef, it is always interlarded,",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 111563
+    }
+  },
+  {
+    "kind": "",
+    "note": "ambiguous fruit/computer",
+    "query": "apple",
+    "response": {
+      "hits": [
+        {
+          "doc": "larousse-gastronomique",
+          "kind": "image",
+          "page": 830,
+          "rel": 0.0,
+          "score": 0.3148454427719116,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "1985-software-people-doug-carlston",
+          "kind": "text",
+          "page": 183,
+          "rel": 0.3660266101360321,
+          "score": 0.03151364624500275,
+          "snippet": "Computer Ambush, Strategic Simulations 28.44 Tuesday Night Football, Shoestring Software 27. 24.06 Apple-Doc, Southwestern Data Systems 28. 24.06 Tranquility Base, Stoneware 29. 22.50 The Controller, …",
+          "title": null
+        },
+        {
+          "doc": "millenniumwholee00unse",
+          "kind": "text",
+          "page": 389,
+          "rel": 0.36666858196258545,
+          "score": 0.0314980149269104,
+          "snippet": "utilities: Retrospect Remote for archival backup, Apple Fileshare 4.0 and Timbuktu Remote for network management, and Now Boomerang and Now Menus to optimize Apple",
+          "title": null
+        },
+        {
+          "doc": "1985-software-people-doug-carlston",
+          "kind": "text",
+          "page": 90,
+          "rel": 0.3588597774505615,
+          "score": 0.031159421429038048,
+          "snippet": "the end of the summer, he had a crude working version of Apple Writer. He didn't know it at the time, but this was the first version of the program",
+          "title": null
+        },
+        {
+          "doc": "japanese-cooking-a-simple-art",
+          "kind": "image",
+          "page": 88,
+          "rel": 0.0,
+          "score": 0.294639527797699,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "nextwholeearthca00unse",
+          "kind": "text",
+          "page": 532,
+          "rel": 0.3637893497943878,
+          "score": 0.03007688745856285,
+          "snippet": "from: E. Berg Publications 622 East 3rd Street Kimball, NE 69145 The Apple Il!, a new 6502A-based personal computer with built-in 5-inch floppy disk drive, up to 128 K bytes",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 83200
+    }
+  },
+  {
+    "kind": "",
+    "note": "ambiguous seafood/unix",
+    "query": "shell",
+    "response": {
+      "hits": [
+        {
+          "doc": "japanese-cooking-a-simple-art",
+          "kind": "image",
+          "page": 31,
+          "rel": 0.0,
+          "score": 0.3368992805480957,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "fish-and-shellfish",
+          "kind": "text",
+          "page": 178,
+          "rel": 0.8179730772972107,
+          "score": 0.03047794848680496,
+          "snippet": "the inside of the pan with a spoon. Meanwhile, take the top shells off half of the mussels—leaving about 40 mussels on the half shell—and take the remaining mussels completely",
+          "title": null
+        },
+        {
+          "doc": "fish-and-shellfish",
+          "kind": "text",
+          "page": 283,
+          "rel": 0.4994162917137146,
+          "score": 0.028958333656191822,
+          "snippet": "8 inches) and more elongated than common whelks. The outside of their shells is a dull gray with orange coloration on the inside. Knobbed whelks differ from chan- neled whelks",
+          "title": null
+        },
+        {
+          "doc": "fish-and-shellfish",
+          "kind": "text",
+          "page": 149,
+          "rel": 0.5111238360404968,
+          "score": 0.028594771400094032,
+          "snippet": "knife into the oyster hinge, hold firmly, and twist until the top shell loosens. 2. Slide the oyster knife under the top shell to detach the shell from the oyster.",
+          "title": null
+        },
+        {
+          "doc": "north-atlantic-seafood",
+          "kind": "image",
+          "page": 237,
+          "rel": 0.0,
+          "score": 0.3216153383255005,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "fish-and-shellfish",
+          "kind": "text",
+          "page": 255,
+          "rel": 0.4839008152484894,
+          "score": 0.02857143059372902,
+          "snippet": "six hours or so have only a soft shell. If the crabs are taken out of the water during this period, they will stay alive for",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 82049
+    }
+  },
+  {
+    "kind": "",
+    "note": "ambiguous coffee/language",
+    "query": "java",
+    "response": {
+      "hits": [
+        {
+          "doc": "Design Patterns Elements of Reusable Object-Oriented Software (Erich Gamma, Richard Helm, Ralph Johnson etc.) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 157,
+          "rel": 0.0,
+          "score": 0.2838780879974365,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 190,
+          "rel": 0.963093638420105,
+          "score": 0.032522473484277725,
+          "snippet": "team already knows the code and is not likely to run the Javadoc tool to generate Javadoc pages, so the extra formality of the Javadoc comments amounts to little more",
+          "title": null
+        },
+        {
+          "doc": "Computer Systems A Programmers Perspective ( etc.) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 1472,
+          "rel": 0.6665618419647217,
+          "score": 0.03159204125404358,
+          "snippet": "links the shared library at run time. Aside Shared libraries and the Java Native Interface Java defines a standard calling convention called Java Native Interface (JNI) that allows \"native\" C",
+          "title": null
+        },
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 646,
+          "rel": 0.5760416388511658,
+          "score": 0.03067915514111519,
+          "snippet": "several thread-safe collections, which later became part of the JDK in the java.util.concurrent package. The collections in that package are safe for multithreaded situations and they perform well. In…",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-2",
+          "kind": "image",
+          "page": 163,
+          "rel": 0.0,
+          "score": 0.28186333179473877,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 190,
+          "rel": 0.7209422588348389,
+          "score": 0.03030998818576336,
+          "snippet": "many prime numbers to compute. */ public static int[] generate(int n) { Javadocs in Nonpublic Code As useful as Javadocs are for public APIs, they are more of an impediment",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 75456
+    }
+  },
+  {
+    "kind": "",
+    "note": "ambiguous food/ui",
+    "query": "menu",
+    "response": {
+      "hits": [
+        {
+          "doc": "a-guide-to-modern-cookery",
+          "kind": "image",
+          "page": 862,
+          "rel": 0.0,
+          "score": 0.33322811126708984,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "dishoom-from-bombay-with-love",
+          "kind": "text",
+          "page": 627,
+          "rel": 0.9154819250106812,
+          "score": 0.03201844170689583,
+          "snippet": "DINNER MENU. POTAGE. VERMICELLE À LA MADRILAINE. POISSON. FILETS DE POMFRETS AUX HUITRES. POMMES NATURE. ENTREE. CÔTE DE BŒUF",
+          "title": null
+        },
+        {
+          "doc": "mastering-the-art-of-french-cooking",
+          "kind": "text",
+          "page": 10,
+          "rel": 0.8529402613639832,
+          "score": 0.02964254468679428,
+          "snippet": "calculated to serve six people with reasonably good appetites in an American-style menu of three courses. The amounts called for are generally twice what would be considered sufficient for a",
+          "title": null
+        },
+        {
+          "doc": "a-guide-to-modern-cookery",
+          "kind": "text",
+          "page": 14,
+          "rel": 0.7853435277938843,
+          "score": 0.02674258127808571,
+          "snippet": "vill PREFACE the difficulties attending the arrangement of menus; for very few people know what an arduous task the composing of a perfect menu represents. The",
+          "title": null
+        },
+        {
+          "doc": "dishoom-from-bombay-with-love",
+          "kind": "image",
+          "page": 627,
+          "rel": 0.0,
+          "score": 0.3308930993080139,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "dishoom-from-bombay-with-love",
+          "kind": "text",
+          "page": 730,
+          "rel": 0.8215166330337524,
+          "score": 0.025645241141319275,
+          "snippet": "G E ST I O N S Below we provide some crowd-pleasing menu ideas. Your popularity with family and friends will be guaranteed. If you ’d prefer to build your",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 68258
+    }
+  },
+  {
+    "kind": "",
+    "note": "cross-doc",
+    "query": "tomato sauce italian indian",
+    "response": {
+      "hits": [
+        {
+          "doc": "il-cucchiaio-dargento-primi-piatti",
+          "kind": "image",
+          "page": 48,
+          "rel": 0.0,
+          "score": 0.28873854875564575,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "guide-to-fish-cookery",
+          "kind": "text",
+          "page": 37,
+          "rel": 0.7538582682609558,
+          "score": 0.027106227353215218,
+          "snippet": "the heavy cream. Correct the seasoning, stir in the butter. A rich sauce for a large piece of fish, or a sizeable whole fish, which has been poached in a",
+          "title": null
+        },
+        {
+          "doc": "the-talisman-italian-cook-book",
+          "kind": "text",
+          "page": 20,
+          "rel": 0.7123615145683289,
+          "score": 0.0234118290245533,
+          "snippet": "rich tomato sauce, exclaimed: \"Ma cari! Ma caroni!\" (\"Why, the dears! Why, the big dears!\"), thereby giving the new",
+          "title": null
+        },
+        {
+          "doc": "the-talisman-italian-cook-book",
+          "kind": "text",
+          "page": 21,
+          "rel": 0.7123615145683289,
+          "score": 0.023140717297792435,
+          "snippet": "rich tomato sauce, exclaimed: \"Ma cari! Ma caroni!\" (\"Why, the dears! Why, the big dears!\"), thereby giving the new",
+          "title": null
+        },
+        {
+          "doc": "il-cucchiaio-dargento-primi-piatti",
+          "kind": "image",
+          "page": 275,
+          "rel": 0.0,
+          "score": 0.28681480884552,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "mastering-the-art-of-french-cooking",
+          "kind": "text",
+          "page": 92,
+          "rel": 0.588433027267456,
+          "score": 0.02063492126762867,
+          "snippet": "page 419. Thesauce is also good with steaks, hamburgers, and egg dishes. Sauce a VOrange, a brown sauce with orange flavoring and orange peel, as described in the Duck section",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 97122
+    }
+  },
+  {
+    "kind": "",
+    "note": "cross-doc",
+    "query": "self-sufficiency philosophy",
+    "response": {
+      "hits": [
+        {
+          "doc": "wholeearthepilog00unse",
+          "kind": "image",
+          "page": 270,
+          "rel": 0.0,
+          "score": 0.2827979326248169,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "nextwholeearthca00unse",
+          "kind": "text",
+          "page": 294,
+          "rel": 0.9949491024017334,
+          "score": 0.03279569745063782,
+          "snippet": "ifs Sermon |: Local Dependency Sermon 2: “Voluntary Simplicity” “Self-sufficiency” is an idea which has done more harm than good. On close conceptual examination it is flawed",
+          "title": null
+        },
+        {
+          "doc": "nextwholeearthca00unse",
+          "kind": "text",
+          "page": 294,
+          "rel": 0.6061404347419739,
+          "score": 0.023448774591088295,
+          "snippet": "it occurs to me that the worthy part of the idea of self-sufficiency is better called self-reliance. That term has the responsi- bility and the pride, but it’s not hermetically",
+          "title": null
+        },
+        {
+          "doc": "lastwholeearthca00unse",
+          "kind": "text",
+          "page": 128,
+          "rel": 0.6075425148010254,
+          "score": 0.01904845610260963,
+          "snippet": "mental health, the evidence indicates that activists were relatively high in self-respect, self-sufficiency, intellectual orientation, and concern for others and realtively low in ethnocentrism, posse…",
+          "title": null
+        },
+        {
+          "doc": "wholeearthepilog00unse",
+          "kind": "image",
+          "page": 160,
+          "rel": 0.0,
+          "score": 0.28038889169692993,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "lastsupplementto00unse",
+          "kind": "text",
+          "page": 31,
+          "rel": 0.5556267499923706,
+          "score": 0.01766304299235344,
+          "snippet": "the Godhead are to be found many centuries earlier. Patanjali restated yoga philosophy and practice for his own time--now. These pithy sayings have been passed along orally for a long",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 87426
+    }
+  },
+  {
+    "kind": "images",
+    "note": "image",
+    "query": "diagram of a dome",
+    "response": {
+      "hits": [
+        {
+          "doc": "dishoom-from-bombay-with-love",
+          "kind": "image",
+          "page": 631,
+          "rel": 0.0,
+          "score": 0.34772300720214844,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "essentialwholeea00unse",
+          "kind": "image",
+          "page": 176,
+          "rel": 0.0,
+          "score": 0.34200334548950195,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-9",
+          "kind": "image",
+          "page": 16,
+          "rel": 0.0,
+          "score": 0.3405786156654358,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "japanese-cooking-a-simple-art",
+          "kind": "image",
+          "page": 261,
+          "rel": 0.0,
+          "score": 0.3390581011772156,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "north-atlantic-seafood",
+          "kind": "image",
+          "page": 453,
+          "rel": 0.0,
+          "score": 0.33899402618408203,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse",
+          "kind": "image",
+          "page": 17,
+          "rel": 0.0,
+          "score": 0.33801764249801636,
+          "snippet": "",
+          "title": null
+        }
+      ],
+      "phase": "img",
+      "us": 18385
+    }
+  },
+  {
+    "kind": "images",
+    "note": "image",
+    "query": "photograph of bread",
+    "response": {
+      "hits": [
+        {
+          "doc": "japanese-cooking-a-simple-art",
+          "kind": "image",
+          "page": 67,
+          "rel": 0.0,
+          "score": 0.3439372777938843,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "larousse-gastronomique",
+          "kind": "image",
+          "page": 153,
+          "rel": 0.0,
+          "score": 0.3387109041213989,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "larousse-gastronomique",
+          "kind": "image",
+          "page": 444,
+          "rel": 0.0,
+          "score": 0.3370218276977539,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "il-cucchiaio-dargento-primi-piatti",
+          "kind": "image",
+          "page": 608,
+          "rel": 0.0,
+          "score": 0.33609962463378906,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "larousse-gastronomique",
+          "kind": "image",
+          "page": 598,
+          "rel": 0.0,
+          "score": 0.329464852809906,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-2",
+          "kind": "image",
+          "page": 148,
+          "rel": 0.0,
+          "score": 0.3233940601348877,
+          "snippet": "",
+          "title": null
+        }
+      ],
+      "phase": "img",
+      "us": 22939
+    }
+  },
+  {
+    "kind": "images",
+    "note": "image",
+    "query": "circuit diagram",
+    "response": {
+      "hits": [
+        {
+          "doc": "software-for-people-pauline-oliveros",
+          "kind": "image",
+          "page": 43,
+          "rel": 0.0,
+          "score": 0.32735031843185425,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "nextwholeearthca00unse",
+          "kind": "image",
+          "page": 174,
+          "rel": 0.0,
+          "score": 0.3235294818878174,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "Computer Systems A Programmers Perspective ( etc.) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 888,
+          "rel": 0.0,
+          "score": 0.3227651119232178,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-7",
+          "kind": "image",
+          "page": 26,
+          "rel": 0.0,
+          "score": 0.321567177772522,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthcatalo00unse-10",
+          "kind": "image",
+          "page": 77,
+          "rel": 0.0,
+          "score": 0.3209174871444702,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "Computer Systems A Programmers Perspective ( etc.) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 846,
+          "rel": 0.0,
+          "score": 0.31569886207580566,
+          "snippet": "",
+          "title": null
+        }
+      ],
+      "phase": "img",
+      "us": 21096
+    }
+  },
+  {
+    "kind": "images",
+    "note": "image",
+    "query": "map of the united states",
+    "response": {
+      "hits": [
+        {
+          "doc": "essentialwholeea00unse",
+          "kind": "image",
+          "page": 389,
+          "rel": 0.0,
+          "score": 0.32118701934814453,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "millenniumwholee00unse",
+          "kind": "image",
+          "page": 49,
+          "rel": 0.0,
+          "score": 0.3183431625366211,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "nextwholeearthca00unse",
+          "kind": "image",
+          "page": 527,
+          "rel": 0.0,
+          "score": 0.31263089179992676,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthepilog00unse",
+          "kind": "image",
+          "page": 188,
+          "rel": 0.0,
+          "score": 0.30668699741363525,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "essentialwholeea00unse",
+          "kind": "image",
+          "page": 41,
+          "rel": 0.0,
+          "score": 0.2971274256706238,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "wholeearthepilog00unse",
+          "kind": "image",
+          "page": 210,
+          "rel": 0.0,
+          "score": 0.29596811532974243,
+          "snippet": "",
+          "title": null
+        }
+      ],
+      "phase": "img",
+      "us": 22240
+    }
+  },
+  {
+    "kind": "",
+    "note": "expected-miss",
+    "query": "kubernetes deployment",
+    "response": {
+      "hits": [
+        {
+          "doc": "Fundamentals of Software Architecture An Engineering Approach (Mark Richards, Neal Ford) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 28,
+          "rel": 0.0,
+          "score": 0.29669034481048584,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 783,
+          "rel": 0.6703033447265625,
+          "score": 0.02765151485800743,
+          "snippet": "more, we want to help the business remove all the impediments to deployment so that the business deployment cycle can be shortened as much as possible. After all, the more",
+          "title": null
+        },
+        {
+          "doc": "Computer Systems A Programmers Perspective ( etc.) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 108,
+          "rel": 1.0,
+          "score": 0.01666666753590107,
+          "snippet": "running the in Figure 1.15. program remotely involves the five basic steps shown After we type in the",
+          "title": null
+        },
+        {
+          "doc": "Fundamentals of Software Architecture An Engineering Approach (Mark Richards, Neal Ford) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 160,
+          "rel": 1.0,
+          "score": 0.01666666753590107,
+          "snippet": "this architecture style. Deployabil‐ ity rates low due to the ceremony of deployment (effort to deploy), high risk, and lack of frequent deployments. A simple three-line change to a class",
+          "title": null
+        },
+        {
+          "doc": "Fundamentals of Software Architecture An Engineering Approach (Mark Richards, Neal Ford) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 27,
+          "rel": 0.0,
+          "score": 0.29586148262023926,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "Fundamentals of Software Architecture An Engineering Approach (Mark Richards, Neal Ford) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 102,
+          "rel": 0.88889080286026,
+          "score": 0.016393441706895828,
+          "snippet": "long deployments take, issues/bugs raised by deployments, and a host of others. Each team bears the responsibility to arrive",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 58085
+    }
+  },
+  {
+    "kind": "",
+    "note": "expected-miss",
+    "query": "quantum entanglement",
+    "response": {
+      "hits": [
+        {
+          "doc": "Refactoring Improving the Design of Existing Code (Martin Fowler) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 290,
+          "rel": 0.0,
+          "score": 0.28757691383361816,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 850,
+          "rel": 1.0,
+          "score": 0.03333333507180214,
+          "snippet": "that ordering the methods in a class can help to compensate for entanglement between methods; I don’t. UB: I think this is a fair assessment of our agreements and disagreements.",
+          "title": null
+        },
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 235,
+          "rel": 0.9133063554763794,
+          "score": 0.03151364624500275,
+          "snippet": "nicely named functions. So, first, make it work. Then, make it right. Entanglement One objection to this approach, oﬀered by John Ousterhout, is that when you decompose larger functions into",
+          "title": null
+        },
+        {
+          "doc": "Clean Code A Handbook of Agile Software Craftsmanship, 2nd (Robert C. Martin) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 342,
+          "rel": 0.9098769426345824,
+          "score": 0.03102453239262104,
+          "snippet": "chapter. But first I want to talk about one last thing. 5. Entanglement Of all the complaints, this is the most reasonable, and it is the point that John Ousterhout",
+          "title": null
+        },
+        {
+          "doc": "lastwholeearthca00unse",
+          "kind": "image",
+          "page": 120,
+          "rel": 0.0,
+          "score": 0.2872428894042969,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "software-for-people-pauline-oliveros",
+          "kind": "text",
+          "page": 156,
+          "rel": 0.6454972624778748,
+          "score": 0.02742537297308445,
+          "snippet": "breath cycle without disturbing it? Heisenberg's principle of uncertainty (as applied to quantum theory) teaches that \"there is no such thing as mere observing, in the sense that the only",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 69154
+    }
+  },
+  {
+    "kind": "",
+    "note": "expected-miss",
+    "query": "cryptocurrency blockchain",
+    "response": {
+      "hits": [
+        {
+          "doc": "Fundamentals of Software Architecture An Engineering Approach (Mark Richards, Neal Ford) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 293,
+          "rel": 0.0,
+          "score": 0.26639479398727417,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "millenniumwholee00unse",
+          "kind": "text",
+          "page": 141,
+          "rel": 1.0,
+          "score": 0.01666666753590107,
+          "snippet": "communications. So the government has been fighting to suppress strong crypto. The first shot in this conflict came",
+          "title": null
+        },
+        {
+          "doc": "millenniumwholee00unse",
+          "kind": "text",
+          "page": 141,
+          "rel": 1.0,
+          "score": 0.016393441706895828,
+          "snippet": "rights will sur- vive cyberspace. While crypto technol- ogy is arcane, its uses could influence every part of",
+          "title": null
+        },
+        {
+          "doc": "Computer Systems A Programmers Perspective ( etc.) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "text",
+          "page": 1259,
+          "rel": 1.0,
+          "score": 0.016129031777381897,
+          "snippet": "A page can be written only after the entire block to which it belongs has been erased (typically,",
+          "title": null
+        },
+        {
+          "doc": "Fundamentals of Software Architecture An Engineering Approach (Mark Richards, Neal Ford) (z-library.sk, 1lib.sk, z-lib.sk)",
+          "kind": "image",
+          "page": 278,
+          "rel": 0.0,
+          "score": 0.26245224475860596,
+          "snippet": "",
+          "title": null
+        },
+        {
+          "doc": "millenniumwholee00unse",
+          "kind": "text",
+          "page": 141,
+          "rel": 1.0,
+          "score": 0.01587301678955555,
+          "snippet": "lot of salt is needed. Most UNIX systems use only twelve bits of salt. Even with that, Daniel",
+          "title": null
+        }
+      ],
+      "phase": "hybrid+img",
+      "us": 52725
+    }
+  }
+]

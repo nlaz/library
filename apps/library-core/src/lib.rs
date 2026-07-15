@@ -9,6 +9,7 @@ use fxhash::FxHashMap;
 pub use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
+pub mod tools;
 pub mod wire;
 
 /// Text embeddings come from ese's compile-time static model; the dimension
@@ -283,9 +284,47 @@ pub fn try_open(path: impl AsRef<std::path::Path>) -> Result<Library, fjall::Err
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hit {
     pub score: f32,
+    /// BM25 score relative to the query's best lexical hit (1.0 = top).
+    /// Keys with no lexical evidence (semantic-only) get 1.0 — the semantic
+    /// list is count-bounded upstream, so it never carries a noise tail.
+    #[serde(default)]
+    pub rel: f32,
+    /// Raw BM25 score (0.0 for semantic-only hits). Unlike `rel`, this is
+    /// an absolute signal: a weak query's top hit has a *low* raw score but
+    /// still rel = 1.0, so agents gating on "did we really find anything?"
+    /// must look here.
+    #[serde(default)]
+    pub bm25: f32,
     pub key: ChunkKey,
     pub words: Vec<Word>,
 }
+
+/// Hits scoring below this fraction of the query's top BM25 hit are noise;
+/// the paginated result stream ends here. Tuning knob — the dev `[perf]`
+/// logging in `search` is the place to eyeball rel distributions.
+pub const MIN_REL: f32 = 0.25;
+
+/// Image analogue of [`MIN_REL`], but normalized differently: raw CLIP
+/// text→image cosines cluster tightly (measured: top ≈ 0.30–0.33 with even
+/// the 256th neighbor at 0.85·top — the index always returns *nearest*
+/// figures, relevant or not), so a plain ratio to the top barely
+/// discriminates. Instead each figure is measured on the spread between the
+/// query's best figure and the fetch-depth noise floor (the IMG_FETCH-th
+/// sim): keep figures in the upper `IMG_MIN_REL` fraction of that spread.
+/// See the `[perf] image_search … sims` debug line for real distributions
+/// (measured on this corpus: 0.5 keeps ~12–34 figures and dries up by page
+/// 3; 0.35 keeps ~43–67 and sustains figures through the first several
+/// pages; 0.2 admits a visibly weak tail).
+pub const IMG_MIN_REL: f32 = 0.35;
+
+/// How deep to fetch from the lexical ranker regardless of `k`. Pinning the
+/// depth pins the lexical list — and therefore the RRF input and the final
+/// order — so paginated slices of the same query tile without drift (a
+/// growing fetch would add RRF terms to dual-membership keys and shift
+/// ranks between page requests). Also caps stable pagination depth at
+/// ~LEX_FETCH lexical + TOP_K semantic hits. BM25 cost is limit-independent
+/// (full postings scan, truncate at end), so the extra depth is nearly free.
+const LEX_FETCH: usize = 512;
 
 /// Reciprocal rank fusion: score(k) = sum over lists of 1/(60 + rank).
 fn rrf(lists: &[Vec<ChunkKey>]) -> Vec<(f32, ChunkKey)> {
@@ -301,11 +340,14 @@ fn rrf(lists: &[Vec<ChunkKey>]) -> Vec<(f32, ChunkKey)> {
     out
 }
 
-/// Lexical (with trailing-prefix expansion) + optional semantic, RRF-fused,
-/// metadata resolved via `resolve` (see below) — all under the one snapshot
-/// `r` was taken from. `filter`, when set, restricts every ranker to the
-/// given doc ids *inside* the search (filtering after truncation would
-/// starve results).
+/// Lexical + optional semantic, RRF-fused, metadata resolved via `resolve`
+/// (see below) — all under the one snapshot `r` was taken from. `filter`,
+/// when set, restricts every ranker to the given doc ids *inside* the
+/// search (filtering after truncation would starve results).
+///
+/// `complete` expands the trailing token via the term dictionary — right
+/// for type-ahead (a human mid-word), wrong for programmatic callers whose
+/// queries are complete words ("broderbund" must not match "broth").
 ///
 /// `resolve` fetches a chunk's words given its key; callers should back it
 /// with [`Library::get`] (a cheap primary-table point-read) rather than the
@@ -320,13 +362,14 @@ pub fn search<R: Readable>(
     qemb: Option<&Emb>,
     k: usize,
     filter: Option<&FxHashSet<String>>,
+    complete: bool,
     resolve: impl Fn(&ChunkKey) -> Option<Vec<Word>>,
 ) -> Vec<Hit> {
     let ((lex, vec), (_, terms)) = r;
 
     let t = std::time::Instant::now();
     let mut toks = tokenize(query);
-    if let Some(last) = toks.last().cloned() {
+    if complete && let Some(last) = toks.last().cloned() {
         for t in terms.complete(&last, 5) {
             if !toks.contains(&t) {
                 toks.push(t);
@@ -344,17 +387,24 @@ pub fn search<R: Readable>(
     // joined query inside Bm25 is a no-op
     let expanded = toks.join(" ");
 
-    // give RRF headroom beyond the final k
-    let fetch = k.max(64);
+    // give RRF headroom beyond the final k (and keep the list pinned — see LEX_FETCH)
+    let fetch = k.max(LEX_FETCH);
     let t = std::time::Instant::now();
-    let lexical: Vec<ChunkKey> = match filter {
-        Some(f) => lex
-            .search_filtered(&expanded, fetch, |key: &ChunkKey| f.contains(&key.doc))
-            .into_iter()
-            .map(|h| h.val)
-            .collect(),
-        None => lex.search(&expanded, fetch).into_iter().map(|h| h.val).collect(),
+    let scored = match filter {
+        Some(f) => {
+            lex.search_filtered(&expanded, fetch, |key: &ChunkKey| f.contains(&key.doc))
+        }
+        None => lex.search(&expanded, fetch),
     };
+    let top = scored.first().map(|h| h.score).unwrap_or(0.0);
+    let rel: FxHashMap<ChunkKey, (f32, f32)> = scored
+        .iter()
+        .map(|h| {
+            let r = if top > 0.0 { (h.score / top) as f32 } else { 1.0 };
+            (h.val.clone(), (r, h.score as f32))
+        })
+        .collect();
+    let lexical: Vec<ChunkKey> = scored.into_iter().map(|h| h.val).collect();
     if cfg!(debug_assertions) {
         eprintln!("[perf] lex_search elapsed={}us hits={}", t.elapsed().as_micros(), lexical.len());
     }
@@ -378,7 +428,8 @@ pub fn search<R: Readable>(
         .take(k)
         .filter_map(|(score, key)| {
             let words = resolve(&key)?;
-            Some(Hit { score, key, words })
+            let (r, bm25) = rel.get(&key).copied().unwrap_or((1.0, 0.0));
+            Some(Hit { score, rel: r, bm25, key, words })
         })
         .collect();
     if cfg!(debug_assertions) {
@@ -415,7 +466,12 @@ pub struct ImageRec {
     pub emb: ClipEmb,
 }
 
-pub type ImgVecIndex = Hnsw<ImageKey, f32, Cosine, CLIP_DIM, 32, 40, 80, 80, 16>;
+/// How deep the CLIP index fetches per query. Like `LEX_FETCH` this is a
+/// pinned depth so paginated slices tile deterministically — it's the
+/// compile-time TOP_K below (search-time only; stored graphs stay valid).
+pub const IMG_FETCH: usize = 256;
+
+pub type ImgVecIndex = Hnsw<ImageKey, f32, Cosine, CLIP_DIM, 32, 256, 256, 80, 16>;
 
 /// What the image store's table feeds the graph.
 pub type ImageIn = Keyed<ImageKey, ImageRec>;
@@ -439,7 +495,7 @@ pub type ImgGraph = (ImgVecSink, (ImgMetaSink, ImgManifestSink));
 pub type Images = KeyedStream<ImageKey, ImageRec, ImgGraph>;
 
 pub type ImgReaders<'tx, R> = (
-    HnswReader<'tx, R, ImageKey, f32, Cosine, CLIP_DIM, 32, 40, 80, 80, 16>,
+    HnswReader<'tx, R, ImageKey, f32, Cosine, CLIP_DIM, 32, 256, 256, 80, 16>,
     (
         InvertedIndexReader<'tx, R, Bbox, ImageKey>,
         InvertedIndexReader<'tx, R, ImageKey, String>,
@@ -500,11 +556,12 @@ pub fn image_search<R: Readable>(
     filter: Option<&FxHashSet<String>>,
 ) -> Vec<ImageHit> {
     let (vec, (meta, _)) = r;
+    let t = std::time::Instant::now();
     let found = match filter {
         Some(f) => vec.search_filtered(qemb, |key: &ImageKey| f.contains(&key.doc)),
         None => vec.search(qemb),
     };
-    found
+    let hits: Vec<ImageHit> = found
         .into_iter()
         .take(k)
         .filter_map(|hit| {
@@ -512,6 +569,22 @@ pub fn image_search<R: Readable>(
             // cosine distance -> similarity, so higher is better like text
             Some(ImageHit { score: 1.0 - hit.score, key: hit.val, bbox })
         })
-        .collect()
+        .collect();
+    if cfg!(debug_assertions) {
+        let (top, last) = (
+            hits.first().map(|h| h.score).unwrap_or(0.0),
+            hits.last().map(|h| h.score).unwrap_or(0.0),
+        );
+        // how many figures survive the spread cutoff at various strengths —
+        // the data behind the IMG_MIN_REL choice
+        let above = |f: f32| hits.iter().filter(|h| h.score >= last + f * (top - last)).count();
+        eprintln!(
+            "[perf] image_search elapsed={}us n={} sims top={top:.3} floor={last:.3} above .2/.35/.5/.65={}/{}/{}/{}",
+            t.elapsed().as_micros(),
+            hits.len(),
+            above(0.2), above(0.35), above(0.5), above(0.65),
+        );
+    }
+    hits
 }
 

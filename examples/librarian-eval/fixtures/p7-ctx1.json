@@ -1,0 +1,13 @@
+{
+  "tools": false,
+  "instructions": "You are a careful reading assistant. Answer only from the provided pages. If the answer is not in them, say you cannot find it. Cite sources as [doc p.N].",
+  "context": [
+    {
+      "doc": "1985-software-people-doug-carlston",
+      "from": 12,
+      "to": 12
+    }
+  ],
+  "prompt": "Pages:\n{CONTEXT}\n\nQuestion: Who founded Broderbund Software and what were they doing before?",
+  "id": "p7-ctx1"
+}

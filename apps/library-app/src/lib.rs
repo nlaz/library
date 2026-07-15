@@ -28,6 +28,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const K: usize = 20;
+/// Doc-scoped find wants browser-find coverage, not a top-20 shortlist.
+const K_DOC: usize = 100;
 /// Image hits appended to an "all" response (kind=images gets a full K).
 const K_IMG_BLEND: usize = 6;
 
@@ -56,6 +58,11 @@ pub struct AppState {
     /// Wakes the worker thread for an immediate sweep; what to ingest
     /// comes from the status files, not the channel.
     wake: mpsc::Sender<()>,
+    /// The librarian chat sidecar (AFM agent loop). The outer Mutex
+    /// serializes turns; `chat_stdin` is shared separately so `chat_cancel`
+    /// can write while a turn holds the bridge.
+    chat: std::sync::Mutex<Option<ChatBridge>>,
+    chat_stdin: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +227,14 @@ pub struct Query {
     /// "all" | "text" | "images" (empty = "all")
     #[serde(default)]
     pub kind: String,
+    /// restrict to a single doc id (reader find); takes precedence over `col`
+    #[serde(default)]
+    pub doc: String,
+    /// blended-list offset for infinite scroll; each response is one K-sized
+    /// slice of the deterministic blended order. 0 = first page. Ignored for
+    /// doc-scoped find (which returns everything up to K_DOC).
+    #[serde(default)]
+    pub offset: u32,
 }
 
 fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
@@ -227,11 +242,15 @@ fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
     let want_text = q.kind != "images";
     let want_imgs = q.kind == "images" || (q.kind != "text" && q.mode == "full");
 
-    // collection filter, pushed down into every ranker
-    let member: Option<FxHashSet<String>> = (!q.col.is_empty())
-        .then(|| wire::read_collections(data).remove(&q.col))
-        .flatten()
-        .map(|docs| docs.into_iter().collect());
+    // doc/collection filter, pushed down into every ranker
+    let member: Option<FxHashSet<String>> = if !q.doc.is_empty() {
+        Some(std::iter::once(q.doc.clone()).collect())
+    } else {
+        (!q.col.is_empty())
+            .then(|| wire::read_collections(data).remove(&q.col))
+            .flatten()
+            .map(|docs| docs.into_iter().collect())
+    };
 
     let mut phase = "lex";
     let mut text_hits: Vec<WireHit> = Vec::new();
@@ -249,13 +268,19 @@ fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
             phase = "hybrid";
         }
         let qtoks = tokenize(&q.q);
+        let k = if q.doc.is_empty() { q.offset as usize + K } else { K_DOC };
         let t = Instant::now();
         let lib = eng.lib.read().unwrap();
-        let found = lib.rtx(|r| {
-            library_core::search(&r, &q.q, qemb.as_ref(), K, member.as_ref(), |key| {
+        let mut found = lib.rtx(|r| {
+            library_core::search(&r, &q.q, qemb.as_ref(), k, member.as_ref(), true, |key| {
                 lib.get(key).map(|rec| rec.words)
             })
         });
+        if q.doc.is_empty() {
+            // degradation cutoff, every page — doc-scoped find is exempt
+            // (browser-find coverage must not lose hits)
+            found.retain(|h| h.rel >= library_core::MIN_REL);
+        }
         if cfg!(debug_assertions) {
             stages.push(("lex+rrf", t.elapsed().as_micros()));
         }
@@ -263,7 +288,16 @@ fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
     }
 
     if want_imgs {
-        let k = if q.kind == "images" { K } else { K_IMG_BLEND };
+        // library stream: every figure above the relevance cutoff joins
+        // the blend (pagination doles them out); doc-scoped find keeps
+        // the small cap so reader ticks stay mostly textual
+        let k = if q.kind == "images" {
+            K
+        } else if q.doc.is_empty() {
+            usize::MAX
+        } else {
+            K_IMG_BLEND
+        };
         let t = Instant::now();
         let qemb: Option<ClipEmb> = eng
             .clip_text
@@ -277,11 +311,17 @@ fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
         if let Some(e) = qemb {
             phase = if want_text { "hybrid+img" } else { "img" };
             let t = Instant::now();
-            let found = eng
-                .images
-                .read()
-                .unwrap()
-                .rtx(|r| library_core::image_search(&r, &e, 40, member.as_ref()));
+            let mut found = eng.images.read().unwrap().rtx(|r| {
+                library_core::image_search(&r, &e, library_core::IMG_FETCH, member.as_ref())
+            });
+            if q.doc.is_empty() {
+                // degradation cutoff on the top-to-noise-floor spread
+                // (raw CLIP sims cluster too tightly for a plain ratio)
+                let top = found.first().map(|h| h.score).unwrap_or(0.0);
+                let floor = found.last().map(|h| h.score).unwrap_or(0.0);
+                let min = floor + library_core::IMG_MIN_REL * (top - floor);
+                found.retain(|h| h.score >= min);
+            }
             if cfg!(debug_assertions) {
                 stages.push(("image_search", t.elapsed().as_micros()));
             }
@@ -290,7 +330,13 @@ fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
     }
 
     let t = Instant::now();
-    let hits = wire::blend(text_hits, img_hits);
+    let mut hits = wire::blend(text_hits, img_hits);
+    if q.doc.is_empty() {
+        // one page of the blended order; blend is prefix-stable (weights
+        // depend only on rank-within-own-list), so slices tile cleanly
+        // across continuation requests
+        hits = hits.into_iter().skip(q.offset as usize).take(K).collect();
+    }
     if cfg!(debug_assertions) {
         stages.push(("blend", t.elapsed().as_micros()));
     }
@@ -316,6 +362,172 @@ async fn search(state: State<'_, AppState>, query: Query) -> Result<Response, St
 #[tauri::command]
 fn ready(state: State<'_, AppState>) -> bool {
     state.engine.read().unwrap().is_some()
+}
+
+// ---------------------------------------------------------------------------
+// chat: the librarian sidecar (apps/librarian) over stdio. The sidecar runs
+// the Apple Foundation Models agent loop; its tool calls come back as
+// `tool_request` lines and are executed in-process against the engine via
+// the shared library_core::tools — the same implementations the server's
+// HTTP routes use. Model sessions live in the sidecar, keyed by `conv`.
+// ---------------------------------------------------------------------------
+
+struct ChatBridge {
+    child: std::process::Child,
+    stdin: std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>,
+    lines: std::io::Lines<std::io::BufReader<std::process::ChildStdout>>,
+}
+
+impl Drop for ChatBridge {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn librarian_bin(app: &AppHandle) -> PathBuf {
+    if let Ok(p) = std::env::var("LIBRARIAN_BIN") {
+        return PathBuf::from(p);
+    }
+    // bundled resource in release, repo build at dev time
+    if let Ok(dir) = app.path().resource_dir() {
+        let p = dir.join("librarian");
+        if p.exists() {
+            return p;
+        }
+    }
+    dev_root().join("apps/librarian/.build/release/librarian")
+}
+
+fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
+    use std::io::BufRead;
+    let bin = librarian_bin(app);
+    let mut child = std::process::Command::new(&bin)
+        .args(["serve", "--tools-stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("librarian sidecar failed to start ({}): {e}", bin.display()))?;
+    let stdin = std::sync::Arc::new(std::sync::Mutex::new(child.stdin.take().expect("piped")));
+    let mut lines = std::io::BufReader::new(child.stdout.take().expect("piped")).lines();
+    match lines.next() {
+        Some(Ok(l)) if l.contains("\"ready\"") => {}
+        _ => return Err("librarian sidecar did not become ready".into()),
+    }
+    Ok(ChatBridge { child, stdin, lines })
+}
+
+fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value) -> String {
+    use library_core::tools;
+    match name {
+        "search_library" => {
+            let q = args["query"].as_str().unwrap_or("");
+            let kind = args["kind"].as_str().unwrap_or("");
+            if kind == "images" {
+                let qemb: Option<ClipEmb> = eng
+                    .clip_text
+                    .embed(vec![q.to_string()], None)
+                    .ok()
+                    .and_then(|mut v| v.pop())
+                    .and_then(|v| v.try_into().ok());
+                let found = qemb
+                    .map(|e| {
+                        eng.images.read().unwrap().rtx(|r| {
+                            library_core::image_search(&r, &e, library_core::IMG_FETCH, None)
+                        })
+                    })
+                    .unwrap_or_default();
+                tools::image_hits_for_tool(&found, data, tools::TOOL_K).to_string()
+            } else {
+                let lib = eng.lib.read().unwrap();
+                lib.rtx(|r| tools::search_tool(&r, &lib, data, q, "", tools::TOOL_K)).to_string()
+            }
+        }
+        "read_pages" => {
+            let doc = args["doc"].as_str().unwrap_or("");
+            let from = args["from"].as_u64().map(|n| n as u32);
+            let to = args["to"].as_u64().map(|n| n as u32);
+            tools::read_pages_tool(data, doc, from, to).to_string()
+        }
+        "list_collections" => tools::collections_tool(data).to_string(),
+        _ => serde_json::json!({ "error": format!("unknown tool {name:?}") }).to_string(),
+    }
+}
+
+/// One chat turn: forwards sidecar events to the webview as `chat:event`,
+/// executes tool requests in-process, returns at `turn_end`. Runs on the
+/// blocking pool; a wedged model is recovered by `chat_cancel` (the stop
+/// button), which the sidecar honors between stream snapshots.
+fn chat_turn_blocking(app: AppHandle, conv: String, messages: serde_json::Value) -> Result<(), String> {
+    use std::io::Write;
+
+    let state = app.state::<AppState>();
+    let eng = engine(&state)?;
+    let data = state.settings.data.clone();
+
+    let mut guard = state.chat.lock().unwrap();
+    if guard.is_none() || guard.as_mut().is_some_and(|b| b.child.try_wait().is_ok_and(|s| s.is_some())) {
+        let bridge = spawn_chat(&app)?;
+        *state.chat_stdin.lock().unwrap() = Some(bridge.stdin.clone());
+        *guard = Some(bridge);
+    }
+    // take the bridge out for the turn: any error path drops (and kills) the
+    // child, a clean turn_end puts it back for the next turn
+    let mut bridge = guard.take().expect("just spawned");
+
+    let line = serde_json::json!({ "e": "turn", "conv": conv, "messages": messages });
+    {
+        let mut stdin = bridge.stdin.lock().unwrap();
+        if writeln!(stdin, "{line}").and_then(|_| stdin.flush()).is_err() {
+            return Err("could not reach the librarian sidecar".into());
+        }
+    }
+
+    loop {
+        match bridge.lines.next() {
+            Some(Ok(line)) => {
+                let ev: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+                match ev["e"].as_str() {
+                    Some("turn_end") => {
+                        *guard = Some(bridge);
+                        return Ok(());
+                    }
+                    Some("tool_request") => {
+                        let result = execute_tool(&eng, &data, ev["name"].as_str().unwrap_or(""), &ev["args"]);
+                        let resp = serde_json::json!({
+                            "e": "tool_response", "id": ev["id"], "result": result,
+                        });
+                        let mut stdin = bridge.stdin.lock().unwrap();
+                        if writeln!(stdin, "{resp}").and_then(|_| stdin.flush()).is_err() {
+                            return Err("could not reach the librarian sidecar".into());
+                        }
+                    }
+                    _ => {
+                        let _ = app.emit("chat:event", line);
+                    }
+                }
+            }
+            _ => return Err("librarian sidecar exited early".into()), // EOF mid-turn
+        }
+    }
+}
+
+#[tauri::command]
+async fn chat_turn(app: AppHandle, conv: String, messages: serde_json::Value) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || chat_turn_blocking(app, conv, messages))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn chat_cancel(state: State<'_, AppState>) {
+    use std::io::Write;
+    if let Some(stdin) = state.chat_stdin.lock().unwrap().as_ref() {
+        let mut stdin = stdin.lock().unwrap();
+        let _ = writeln!(stdin, "{}", serde_json::json!({ "e": "cancel" }));
+        let _ = stdin.flush();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -794,6 +1006,8 @@ pub fn run() {
                 settings,
                 engine: RwLock::new(None),
                 wake: tx,
+                chat: std::sync::Mutex::new(None),
+                chat_stdin: std::sync::Mutex::new(None),
             });
 
             let h = app.handle().clone();
@@ -822,6 +1036,8 @@ pub fn run() {
             ingest_paths,
             get_settings,
             set_settings,
+            chat_turn,
+            chat_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

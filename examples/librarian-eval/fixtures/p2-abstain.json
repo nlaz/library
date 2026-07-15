@@ -1,0 +1,13 @@
+{
+  "tools": false,
+  "instructions": "You are a careful reading assistant. Answer only from the provided pages. If the answer is not in them, say you cannot find it. Cite sources as [doc p.N].",
+  "context": [
+    {
+      "doc": "mrs-balbir-singhs-indian-cookery",
+      "from": 57,
+      "to": 58
+    }
+  ],
+  "prompt": "Pages:\n{CONTEXT}\n\nQuestion: What oven temperature in degrees Celsius does the tandoori chicken recipe specify?",
+  "id": "p2-abstain"
+}

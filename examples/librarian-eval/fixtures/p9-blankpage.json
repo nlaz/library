@@ -1,0 +1,5 @@
+{
+  "id": "p9-blankpage",
+  "prompt": "Read page 12 of the software people book and tell me exactly what that page says.",
+  "tools": true
+}

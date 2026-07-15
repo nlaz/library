@@ -1,0 +1,32 @@
+{
+  "tools": false,
+  "instructions": "You are a careful reading assistant. Answer only from the provided pages. If the answer is not in them, say you cannot find it. Cite sources as [doc p.N].",
+  "context": [
+    {
+      "doc": "mrs-balbir-singhs-indian-cookery",
+      "from": 57,
+      "to": 58
+    }
+  ],
+  "prompt": "Pages:\n{CONTEXT}\n\nExtract the tandoori chicken recipe as structured data.",
+  "schema": {
+    "name": "Recipe",
+    "properties": [
+      {
+        "name": "title",
+        "type": "string"
+      },
+      {
+        "name": "ingredients",
+        "type": "[string]",
+        "description": "each with quantity if given"
+      },
+      {
+        "name": "steps",
+        "type": "[string]",
+        "description": "the method, one step per entry"
+      }
+    ]
+  },
+  "id": "p4-recipe"
+}

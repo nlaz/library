@@ -18,6 +18,10 @@ export type QueryMsg = {
   mode: "instant" | "full";
   col: string;
   kind: string;
+  /** restrict to a single doc id (reader find); "" = no restriction */
+  doc: string;
+  /** blended-list offset for infinite-scroll continuations; omitted = 0 (first page) */
+  offset?: number;
 };
 
 export type Collections = Record<string, string[]>;

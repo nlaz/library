@@ -178,8 +178,11 @@ main {
    :active — that translate(1px,1px) is the tactile click. */
 
 #reader-back,
+#reader-meta,
 #viewer-read,
 #viewer-close,
+#search-prev,
+#search-next,
 .bmenu {
   border: 1px solid;
   border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
@@ -189,8 +192,11 @@ main {
 }
 
 #reader-back:active,
+#reader-meta:active,
 #viewer-read:active,
 #viewer-close:active,
+#search-prev:active,
+#search-next:active,
 .bmenu:active {
   border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
   transform: translate(1px, 1px);
@@ -198,6 +204,7 @@ main {
 
 #q,
 .book-menu input[type="text"],
+#reader-drawer input[type="text"],
 .brename {
   border: 1px solid;
   border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
@@ -248,35 +255,6 @@ header {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   margin-left: 6px;
-}
-
-#q {
-  width: 100%;
-  max-width: 440px;
-  margin-left: auto;
-  font: inherit;
-  padding: 7px 14px;
-  outline: none;
-}
-
-#q::placeholder {
-  color: var(--ink-faint);
-}
-
-#q:focus {
-  outline: 1px solid var(--ink);
-  outline-offset: 1px;
-}
-
-#status {
-  color: var(--ink-dim);
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  white-space: nowrap;
-}
-
-#status:empty {
-  display: none;
 }
 
 /* --- §6 home: shelves of books --------------------------------------------- */
@@ -505,18 +483,22 @@ header {
   color: var(--bg);
 }
 
-.book-menu .mcols {
+/* the collections checklist is shared with the reader drawer */
+.mcols {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 4px 8px;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
   max-height: 160px;
   overflow-y: auto;
 }
 
-.book-menu .mcols label {
+.book-menu .mcols {
+  padding: 4px 8px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.mcols label {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -524,8 +506,12 @@ header {
   cursor: pointer;
 }
 
-.book-menu .mcols input[type="checkbox"] {
+.mcols input[type="checkbox"] {
   accent-color: var(--ink);
+}
+
+.mcols input[type="checkbox"]:disabled + * {
+  cursor: default;
 }
 
 .book-menu input[type="text"] {
@@ -555,6 +541,18 @@ header {
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 14px;
   padding: 16px 20px;
+}
+
+/* infinite-scroll sentinel: fixed height so it always has intersectable
+   area; "· · ·" while a page loads, "· end ·" when relevance ran out */
+#more {
+  min-height: 44px;
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  text-align: center;
+  padding: 14px 20px 24px;
+  letter-spacing: 0.4em;
 }
 
 .card {
@@ -755,10 +753,22 @@ mark {
   font-size: var(--fs-mono);
 }
 
-#reader-scroll {
+#reader-meta {
+  font-family: var(--font-mono);
+  padding: 4px 10px;
+}
+
+/* positioning context for the scroll pane, the tick strip and the drawer */
+#reader-body {
+  position: relative;
   flex: 1;
-  overflow-y: auto;
   min-height: 0;
+}
+
+#reader-scroll {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
 }
 
 #reader-pages {
@@ -815,6 +825,114 @@ mark {
   background: var(--hl-wash);
 }
 
+/* find-in-document: word-box highlights over the page scan */
+.hlayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hlayer .hl.cur {
+  outline-width: 3px;
+}
+
+/* find-in-document: one tick per hit, riding the scrollbar track */
+#reader-ticks {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+#reader-ticks .tick {
+  position: absolute;
+  right: 0;
+  width: 10px;
+  height: 3px;
+  background: var(--hl-line);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+#reader-ticks .tick.cur {
+  height: 5px;
+  background: var(--hl);
+  outline: 1px solid var(--hl-line);
+}
+
+/* metadata drawer: an inset panel over the page column, never a reflow */
+#reader-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(300px, 80vw);
+  z-index: 2;
+  background: var(--surface);
+  border-left: 1px solid var(--line-strong);
+  overflow-y: auto;
+  padding: var(--sp-4);
+}
+
+#reader-drawer[hidden] {
+  display: none;
+}
+
+.drow + .drow {
+  margin-top: var(--sp-4);
+}
+
+.dlabel {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  color: var(--ink-dim);
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dval {
+  font-size: var(--fs-ui);
+  overflow-wrap: break-word;
+}
+
+.dval > span {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink);
+}
+
+.dval input[type="text"] {
+  width: 100%;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: var(--fs-ui);
+  outline: none;
+}
+
+.dval input[type="text"]:focus {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+
+/* the "new collection…" input under the drawer's checklist */
+.dval .mcols ~ input[type="text"] {
+  margin-top: 6px;
+  font-size: var(--fs-mono);
+}
+
+.dnone {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+}
+
 /* --- §12 drop target ------------------------------------------------------------ */
 
 #dropzone {
@@ -847,4 +965,346 @@ mark {
   text-transform: uppercase;
   letter-spacing: var(--track-label);
   padding: 60px 80px;
+}
+
+/* --- §13 search popover -----------------------------------------------------
+   Cmd+F. Anchored right so it never sits over the results grid or the page
+   column; same hard dithered shadow as the book-card menu. */
+
+#search-pop {
+  position: fixed;
+  top: 52px;
+  right: 16px;
+  z-index: 9; /* above the reader (8), below the viewer modal (10) */
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+}
+
+#search-pop[hidden] {
+  display: none;
+}
+
+#search-pop::before,
+#search-pop::after {
+  content: "";
+  position: absolute;
+  background: var(--dither-50) 0 0 / 2px 2px;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+#search-pop::before {
+  top: 4px;
+  bottom: -5px;
+  right: -5px;
+  width: 4px;
+}
+
+#search-pop::after {
+  left: 4px;
+  right: -5px;
+  bottom: -5px;
+  height: 4px;
+}
+
+#q {
+  width: 300px;
+  font: inherit;
+  padding: 7px 14px;
+  outline: none;
+}
+
+#q::placeholder {
+  color: var(--ink-faint);
+}
+
+#q:focus {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+
+#search-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+#search-nav[hidden] {
+  display: none;
+}
+
+#search-count {
+  flex: 1;
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  padding-left: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#search-prev,
+#search-next {
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+}
+
+/* --- §14 toast ---------------------------------------------------------------
+   Transient notices, bottom-left. Severity by inversion, not hue. */
+
+#toast {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 12;
+  max-width: 420px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+
+#toast[hidden] {
+  display: none;
+}
+
+#toast.error {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+
+#toast::before,
+#toast::after {
+  content: "";
+  position: absolute;
+  background: var(--dither-50) 0 0 / 2px 2px;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+#toast::before {
+  top: 4px;
+  bottom: -5px;
+  right: -5px;
+  width: 4px;
+}
+
+#toast::after {
+  left: 4px;
+  right: -5px;
+  bottom: -5px;
+  height: 4px;
+}
+
+/* --- §15 librarian chat ------------------------------------------------------
+   Right-docked collapsible panel, toggled from the header. Overlays the
+   reader (z 11 > reader 8, viewer 10) so citation chips can flip pages
+   underneath without closing the conversation. */
+
+#chat-toggle {
+  margin-left: auto;
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  padding: 4px 10px;
+}
+
+#chat-toggle:active {
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  transform: translate(1px, 1px);
+}
+
+#chat {
+  position: fixed;
+  top: 52px;
+  right: 0;
+  bottom: 0;
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, 90vw);
+  background: var(--surface);
+  border-top: 1px solid var(--line-strong);
+  border-left: 1px solid var(--line-strong);
+}
+
+#chat[hidden] {
+  display: none;
+}
+
+#chat::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 0;
+  left: -5px;
+  width: 4px;
+  background: var(--dither-50) 0 0 / 2px 2px;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+#chat-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  color: var(--ink-dim);
+}
+
+.chat-actions {
+  display: flex;
+  gap: var(--sp-1);
+}
+
+#chat-close,
+#chat-stop,
+#chat-clear {
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  padding: 1px 6px;
+}
+
+#chat-close:active,
+#chat-stop:active,
+#chat-clear:active {
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  transform: translate(1px, 1px);
+}
+
+#chat-stop {
+  background: var(--hl-wash);
+}
+
+#chat-stop[hidden] {
+  display: none;
+}
+
+#chat-log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-3);
+}
+
+.cmsg {
+  font-size: var(--fs-body);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.cmsg.user {
+  align-self: flex-end;
+  max-width: 85%;
+  background: var(--well);
+  border: 1px solid;
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  padding: 6px 10px;
+}
+
+.cmsg.tool {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
+  border-left: 2px solid var(--line-strong);
+  padding-left: var(--sp-2);
+  white-space: normal;
+}
+
+.cmsg.cerr {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  background: var(--ink);
+  color: var(--bg);
+  padding: 6px 10px;
+}
+
+.cchip {
+  display: inline-block;
+  margin: 3px 4px 0 0;
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  padding: 2px 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cchip:hover {
+  background: var(--hl-wash);
+}
+
+.cchip:active {
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  transform: translate(1px, 1px);
+}
+
+#chat-form {
+  border-top: 1px solid var(--line);
+  padding: var(--sp-2);
+}
+
+#chat-input {
+  width: 100%;
+  border: 1px solid;
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  background: var(--well);
+  color: var(--ink);
+  border-radius: var(--r);
+  font: inherit;
+  font-size: var(--fs-ui);
+  padding: 7px 10px;
+  outline: none;
+}
+
+#chat-input::placeholder {
+  color: var(--ink-faint);
+}
+
+#chat-input:focus {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+
+#chat-input:disabled {
+  color: var(--ink-faint);
 }

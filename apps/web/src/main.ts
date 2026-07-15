@@ -1,16 +1,29 @@
 import { pageImg, pageUrl } from "./assets";
-import { closeReader, openReader } from "./reader";
+import { initChat } from "./chat";
+import { closeDrawer, collectionsChecklist, initDrawer } from "./drawer";
+import { hlBoxes } from "./highlights";
+import {
+  clearReaderHits,
+  closeReader,
+  onHitStep,
+  openReader,
+  readerDoc,
+  readerOpen,
+  setReaderHits,
+  stepHit,
+} from "./reader";
 import { isTauri, makeTransport, type Transport } from "./transport";
 import type { Collections, DocInfo, IngestEvent, WireHit, WireResponse } from "./types";
 
 const $q = document.getElementById("q") as HTMLInputElement;
 const $cols = document.getElementById("cols")!;
 let col = ""; // "" = everything, else a collection name
-const $status = document.getElementById("status")!;
 const $home = document.getElementById("home")!;
 const $search = document.getElementById("search")!;
 const $stats = document.getElementById("stats")!;
 const $results = document.getElementById("results")!;
+const $more = document.getElementById("more")!;
+const $main = document.querySelector("main")!;
 const $overlay = document.getElementById("overlay")!;
 const $viewerLabel = document.getElementById("viewer-label")!;
 const $viewerRead = document.getElementById("viewer-read")!;
@@ -18,6 +31,12 @@ const $viewerClose = document.getElementById("viewer-close")!;
 const $pageImg = document.getElementById("page-img") as HTMLImageElement;
 const $pageHl = document.getElementById("page-hl")!;
 const $dropzone = document.getElementById("dropzone")!;
+const $searchPop = document.getElementById("search-pop")!;
+const $searchNav = document.getElementById("search-nav")!;
+const $searchCount = document.getElementById("search-count")!;
+const $searchPrev = document.getElementById("search-prev")!;
+const $searchNext = document.getElementById("search-next")!;
+const $toast = document.getElementById("toast")!;
 
 const FULL_DEBOUNCE_MS = 60;
 // once the query first reaches this many characters, fire the hybrid/image
@@ -26,6 +45,9 @@ const FULL_DEBOUNCE_MS = 60;
 // normally off this point
 const FULL_FLUSH_CHARS = 3;
 const PREVIEW_H = 190; // px, keep in sync with .preview height in style.css
+// one page of the blended result order; keep in sync with K in
+// library-server/src/main.rs and library-app/src/lib.rs
+const PAGE = 20;
 
 let seq = 0;
 let rendered = 0; // highest seq drawn; anything older is stale
@@ -33,6 +55,20 @@ let instantSeq = 0; // seq of the in-flight instant query; 0 = none
 let instantDirty = false; // input changed while an instant was in flight
 // dev-only: seq -> performance.now() at send, for round-trip logging
 const sentAt = new Map<number, number>();
+// seqs sent doc-scoped (reader find) and to which doc — their responses
+// feed the reader's hit ticks, never the library results grid
+const sentDoc = new Map<number, string>();
+// infinite scroll: continuation seqs and what they were for, so a late
+// page-N can be dropped if the query/col/pagination state moved on
+const sentMore = new Map<number, { q: string; col: string; offset: number }>();
+let moreOffset = 0; // next offset to request = blended hits consumed so far
+let endReached = false;
+// cross-page dedup: each continuation is its own fjall snapshot, so a
+// mid-ingest index change can drift the slices slightly
+const seen = new Set<string>();
+const hitKey = (h: WireHit) => `${h.kind}|${h.doc}|${h.page}|${h.idx}`;
+// send() closes over main()'s state; route() (top-level) needs it too
+let sendQuery: (mode: "instant" | "full") => void = () => {};
 let transport: Transport;
 let desktop: typeof import("./tauri") | null = null;
 let docList: DocInfo[] = [];
@@ -44,6 +80,7 @@ const ingesting = new Map<string, IngestEvent>();
 
 async function route() {
   const m = location.hash.match(/^#\/read\/([^?]+)(?:\?p=(\d+))?$/);
+  closeDrawer(); // drawer is per-doc; any navigation invalidates it
   if (m) {
     const doc = decodeURIComponent(m[1]);
     // no explicit ?p= -> the reader resumes the remembered position
@@ -51,6 +88,11 @@ async function route() {
   } else {
     closeReader();
   }
+  // crossing the library/reader boundary re-scopes the query: in-flight
+  // answers for the old scope are dropped by seq, this refreshes the new one
+  sentDoc.clear();
+  if ($q.value.trim()) sendQuery("full");
+  $searchNav.hidden = !readerOpen();
 }
 window.addEventListener("hashchange", route);
 
@@ -185,9 +227,8 @@ function bookCard(d: DocInfo, cols: Collections): HTMLElement {
       e.stopPropagation();
       try {
         await desktop!.retryDoc(d.id);
-        $status.textContent = `retrying ${displayTitle(d)}`;
       } catch (err) {
-        $status.textContent = `retry: ${err}`;
+        notify(`retry: ${err}`, { sticky: true });
       }
       renderHome();
     });
@@ -256,31 +297,16 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
     renameInline(card, d);
   });
 
-  const colList = document.createElement("div");
-  colList.className = "mcols";
-  const checked = () =>
-    [...colList.querySelectorAll<HTMLInputElement>("input[type=checkbox]")]
-      .filter((c) => c.checked)
-      .map((c) => c.dataset.col!);
   const apply = async (names: string[]) => {
     try {
       await desktop!.setCollections(d.id, names);
     } catch (e) {
-      $status.textContent = `collections: ${e}`;
+      notify(`collections: ${e}`, { sticky: true });
     }
     await loadCollections();
     renderHome();
   };
-  for (const name of Object.keys(cols)) {
-    const row = document.createElement("label");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.dataset.col = name;
-    box.checked = d.collections.includes(name);
-    box.addEventListener("change", () => apply(checked()));
-    row.append(box, name);
-    colList.append(row);
-  }
+  const { el: colList, checked } = collectionsChecklist(Object.keys(cols), d.collections, apply);
   const newCol = document.createElement("input");
   newCol.type = "text";
   newCol.placeholder = "new collection…";
@@ -302,9 +328,8 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
       await desktop!.deleteDoc(d.id);
       localStorage.removeItem(`pos:${d.id}`);
       if (location.hash.startsWith(`#/read/${encodeURIComponent(d.id)}`)) location.hash = "#/";
-      $status.textContent = `deleted ${displayTitle(d)}`;
     } catch (e) {
-      $status.textContent = `delete failed: ${e}`;
+      notify(`delete failed: ${e}`, { sticky: true });
     }
     await loadCollections();
     renderHome();
@@ -331,7 +356,7 @@ function renameInline(card: HTMLElement, d: DocInfo) {
     try {
       await desktop!.setTitle(d.id, v);
     } catch (e) {
-      $status.textContent = `rename: ${e}`;
+      notify(`rename: ${e}`, { sticky: true });
     }
     renderHome();
   };
@@ -395,11 +420,10 @@ async function queuePdfs(paths: string[]) {
   if (!(await desktop.confirmMove(names, libraryDir))) return;
   try {
     const queued = await desktop.ingestPaths(pdfs, col || null, "move");
-    $status.textContent = queued.length
-      ? `queued: ${queued.join(", ")}`
-      : "already in the queue";
+    // queued docs show up on the shelves; only silence needs explaining
+    if (!queued.length) notify("already in the queue");
   } catch (e) {
-    $status.textContent = `add failed: ${e}`;
+    notify(`add failed: ${e}`, { sticky: true });
   }
   renderHome();
 }
@@ -419,8 +443,8 @@ function wireDesktop() {
     if (e.stage === "log") return;
     if (e.stage === "done" || e.stage === "error") {
       ingesting.delete(e.doc);
-      $status.textContent =
-        e.stage === "done" ? `added ${e.doc}` : `ingest failed: ${e.message}`;
+      // "done" needs no announcement — the book appears on the shelf
+      if (e.stage === "error") notify(`ingest failed: ${e.message}`, { sticky: true });
       loadCollections();
       renderHome();
       return;
@@ -431,28 +455,31 @@ function wireDesktop() {
     else renderHome(); // first event for a doc we haven't drawn yet
   });
   desktop.onAppError((msg) => {
-    $status.textContent = msg;
+    notify(msg, { sticky: true });
   });
   desktop.onAppWaiting((msg) => {
-    $status.textContent = msg;
+    notify(msg, { sticky: true });
   });
 }
+
+// ---------------------------------------------------------------------------
+// toast: transient notices bottom-left; sticky (errors) stay until clicked
+// ---------------------------------------------------------------------------
+
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+function notify(msg: string, opts?: { sticky?: boolean }) {
+  $toast.textContent = msg;
+  $toast.classList.toggle("error", !!opts?.sticky);
+  $toast.hidden = false;
+  clearTimeout(toastTimer);
+  if (!opts?.sticky) toastTimer = setTimeout(() => ($toast.hidden = true), 4000);
+}
+$toast.addEventListener("click", () => ($toast.hidden = true));
 
 // ---------------------------------------------------------------------------
 // search results (unchanged card/viewer logic, URLs via pageUrl)
 // ---------------------------------------------------------------------------
-
-function hlBoxes(boxes: [number, number, number, number][]): HTMLElement[] {
-  return boxes.map(([x, y, w, h]) => {
-    const b = document.createElement("div");
-    b.className = "hl";
-    b.style.left = `${x * 100}%`;
-    b.style.top = `${y * 100}%`;
-    b.style.width = `${w * 100}%`;
-    b.style.height = `${h * 100}%`;
-    return b;
-  });
-}
 
 function card(hit: WireHit): { el: HTMLElement; place: () => void } {
   const el = document.createElement("div");
@@ -526,6 +553,35 @@ function card(hit: WireHit): { el: HTMLElement; place: () => void } {
   return { el, place };
 }
 
+// ---------------------------------------------------------------------------
+// infinite scroll: a sentinel under the grid requests the next PAGE-sized
+// slice of the blended order; the server ends the stream when relevance
+// drops below its MIN_REL cutoff (a short page = end)
+// ---------------------------------------------------------------------------
+
+let moreObserver: IntersectionObserver | null = null;
+
+function setMoreState(s: "hidden" | "idle" | "loading" | "end") {
+  $more.hidden = s === "hidden";
+  $more.textContent = s === "loading" ? "· · ·" : s === "end" ? "· end ·" : "";
+}
+
+function resetPaging() {
+  moreOffset = 0;
+  endReached = false;
+  seen.clear();
+  sentMore.clear();
+  setMoreState("hidden");
+}
+
+// IntersectionObserver fires on threshold *crossings* — a sentinel that is
+// still visible after an append (thin page) needs a fresh observation to
+// get another callback
+function rearmSentinel() {
+  moreObserver?.unobserve($more);
+  moreObserver?.observe($more);
+}
+
 function render(msg: WireResponse) {
   const q = $q.value.trim();
   if (!q) return;
@@ -559,6 +615,31 @@ function render(msg: WireResponse) {
     empty.textContent = "no matches";
     $results.replaceChildren(empty);
   }
+
+  // a replace render restarts pagination from this page-1
+  seen.clear();
+  for (const h of msg.hits) seen.add(hitKey(h));
+  moreOffset = msg.hits.length;
+  // an instant response can be short of PAGE and flag "end" prematurely;
+  // the debounced full re-render 60ms later recomputes it
+  endReached = settled && msg.hits.length < PAGE;
+  setMoreState(!msg.hits.length ? "hidden" : endReached ? "end" : "idle");
+  $main.scrollTop = 0;
+  rearmSentinel();
+}
+
+function appendResults(msg: WireResponse) {
+  const fresh = msg.hits.filter((h) => !seen.has(hitKey(h)));
+  for (const h of fresh) seen.add(hitKey(h));
+  const cards = fresh.map(card);
+  $results.append(...cards.map((c) => c.el));
+  requestAnimationFrame(() => cards.forEach((c) => c.place()));
+  // raw server count, not `fresh.length` — offsets are server-side positions
+  moreOffset += msg.hits.length;
+  endReached = msg.hits.length < PAGE;
+  setMoreState(endReached ? "end" : "idle");
+  if (!endReached) rearmSentinel();
+  $stats.textContent = `${$results.querySelectorAll(".card").length} hits · ${msg.phase} · ${(msg.us / 1000).toFixed(1)}ms`;
 }
 
 let viewerHit: WireHit | null = null;
@@ -599,6 +680,58 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---------------------------------------------------------------------------
+// search popover: Cmd+F opens it (right side, clear of the results), Escape
+// closes it — and only it. Query text and results survive a close.
+// ---------------------------------------------------------------------------
+
+function openSearchPop() {
+  $searchPop.hidden = false;
+  $searchNav.hidden = !readerOpen();
+  $q.focus();
+  $q.select(); // retyping replaces, browser-find style
+}
+
+function closeSearchPop() {
+  $searchPop.hidden = true;
+}
+
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === "f") {
+    e.preventDefault(); // the popover replaces native find in the web build
+    openSearchPop();
+  }
+});
+
+// capture phase: the reader's own Escape (registered earlier, bubble phase)
+// would exit the reader before the popover saw the key — each press must
+// close exactly one layer: viewer modal, then popover, then reader
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key === "Escape" && !$searchPop.hidden && $overlay.hidden) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      closeSearchPop();
+    }
+  },
+  true,
+);
+
+const showStep = (i: number, n: number) => {
+  $searchCount.textContent = `${i + 1}/${n}`;
+};
+onHitStep(showStep);
+$searchNext.addEventListener("click", () => stepHit(1));
+$searchPrev.addEventListener("click", () => stepHit(-1));
+
+$q.addEventListener("keydown", (e) => {
+  // the reader's document-level hotkeys (Space/arrows scroll) must not see
+  // keys typed into the box — same pattern as the book-menu inputs
+  e.stopPropagation();
+  if (e.key === "Enter" && readerOpen()) stepHit(e.shiftKey ? -1 : 1);
+});
+
+// ---------------------------------------------------------------------------
 // mode switching: home shelves when the query is empty, results otherwise
 // ---------------------------------------------------------------------------
 
@@ -614,6 +747,43 @@ async function main() {
   showSearch(false);
   renderHome();
 
+  initChat({
+    prettify,
+    desktop: desktop ? { turn: desktop.chatTurn, cancel: desktop.chatCancel } : null,
+  });
+
+  initDrawer({
+    currentDoc: readerDoc,
+    getDoc: async (id) => {
+      if (desktop) {
+        docList = await desktop.docs();
+        const d = docList.find((x) => x.id === id);
+        if (d) return d;
+      } else {
+        try {
+          const res = await fetch(`/api/doc/${encodeURIComponent(id)}`);
+          if (res.ok) return await res.json();
+        } catch {
+          // offline/unreachable — fall through to the empty shape below
+        }
+      }
+      return { id, title: null, pages: 0, collections: [], status: null };
+    },
+    getCollections: () => transport.collections(),
+    prettify,
+    // no write path in the web build — the drawer renders read-only
+    edit: desktop ? { setTitle: desktop.setTitle, setCollections: desktop.setCollections } : null,
+    onChanged: async (id) => {
+      await loadCollections();
+      await renderHome();
+      // a rename must show in the reader chrome immediately
+      if (readerDoc() === id) {
+        document.getElementById("reader-title")!.textContent = docTitle(id);
+      }
+    },
+    onError: (msg) => notify(msg, { sticky: true }),
+  });
+
   await transport.ready();
   loadCollections();
   renderHome().then(route); // route needs page counts for #/read links
@@ -626,23 +796,39 @@ async function main() {
 
   const send = (mode: "instant" | "full") => {
     const q = $q.value.trim();
+    // reader open = the query is a find scoped to that doc; the library
+    // views behind the reader must not churn
+    const doc = readerDoc();
     if (!q) {
       rendered = ++seq;
       instantSeq = 0;
       instantDirty = false;
-      $results.replaceChildren();
-      showSearch(false);
-      renderHome();
+      sentDoc.clear();
+      resetPaging();
+      if (doc) {
+        clearReaderHits();
+        $searchCount.textContent = "";
+      } else {
+        $results.replaceChildren();
+        showSearch(false);
+        renderHome();
+      }
       return;
     }
-    showSearch(true);
+    if (!doc) showSearch(true);
     // single chars tokenize to nothing server-side — don't round-trip,
     // and don't let a stale in-flight answer render over this state
     if (q.length < 2) {
       rendered = ++seq;
       instantDirty = false;
-      $results.replaceChildren();
-      $stats.textContent = "searching…";
+      resetPaging();
+      if (doc) {
+        clearReaderHits();
+        $searchCount.textContent = "";
+      } else {
+        $results.replaceChildren();
+        $stats.textContent = "searching…";
+      }
       return;
     }
     // at most one instant query in flight: a burst of keystrokes must not
@@ -656,11 +842,35 @@ async function main() {
       instantSeq = seq + 1;
     }
     if (mode === "full") lastFullQuery = q;
-    $stats.textContent = "searching…";
+    if (!doc) $stats.textContent = "searching…";
     if (import.meta.env.DEV) sentAt.set(seq + 1, performance.now());
+    if (doc) sentDoc.set(seq + 1, doc);
     // "" = search all kinds — the UI has no text/images toggle
-    transport.send({ seq: ++seq, q, mode, col, kind: "" });
+    transport.send({ seq: ++seq, q, mode, col, kind: "", doc });
   };
+  sendQuery = send;
+
+  // infinite scroll continuation — deliberately NOT routed through send():
+  // it must not touch lastFullQuery or the instant machinery
+  const sendMore = () => {
+    const q = $q.value.trim();
+    if (readerOpen() || $search.hidden || endReached || q.length < 2) return;
+    // settled-gate: only continue when nothing else is in flight, so a
+    // continuation can never race an unanswered query
+    if (seq !== rendered) return;
+    if (sentMore.size) return; // one continuation at a time
+    setMoreState("loading");
+    sentMore.set(seq + 1, { q, col, offset: moreOffset });
+    if (import.meta.env.DEV) sentAt.set(seq + 1, performance.now());
+    transport.send({ seq: ++seq, q, mode: "full", col, kind: "", doc: "", offset: moreOffset });
+  };
+  moreObserver = new IntersectionObserver(
+    (es) => {
+      if (es.some((e) => e.isIntersecting)) sendMore();
+    },
+    { root: $main, rootMargin: "0px 0px 200% 0px" },
+  );
+  moreObserver.observe($more);
 
   transport.onResponse((msg) => {
     if (import.meta.env.DEV) {
@@ -685,15 +895,45 @@ async function main() {
         send("instant"); // the box changed while we were waiting
       }
     }
+    const hitDoc = sentDoc.get(msg.seq);
+    sentDoc.delete(msg.seq);
+    const more = sentMore.get(msg.seq);
+    sentMore.delete(msg.seq);
     if (msg.seq < rendered) return; // superseded while in flight
     rendered = msg.seq;
+    if (hitDoc) {
+      // reader find: hits become ticks/highlights, never result cards
+      if (readerDoc() === hitDoc) {
+        const n = setReaderHits(msg.hits);
+        const settled = msg.seq >= seq;
+        $searchCount.textContent = settled && !n ? "no matches" : n ? `${n} hits` : "";
+      }
+      return;
+    }
+    if (more) {
+      // sends are strictly seq-ordered, so a new query's page-1 always
+      // outranks an outstanding continuation: if it rendered first, the
+      // seq guard above dropped us; if it hasn't yet, these guards do —
+      // append only when the grid still holds exactly `offset` hits of
+      // this exact query/collection
+      if (
+        more.q !== $q.value.trim() ||
+        more.col !== col ||
+        more.offset !== moreOffset ||
+        readerOpen()
+      ) {
+        setMoreState("idle");
+        return;
+      }
+      appendResults(msg);
+      return;
+    }
     render(msg);
   });
 
   let fullTimer: ReturnType<typeof setTimeout>;
   let flushedLen = 0; // query length we last eagerly flushed at; 0 = not yet
   $q.addEventListener("input", () => {
-    if (location.hash.startsWith("#/read/")) location.hash = "#/";
     const q = $q.value.trim();
     send("instant"); // lexical, every keystroke
     clearTimeout(fullTimer);
@@ -717,5 +957,5 @@ async function main() {
 }
 
 main().catch((e) => {
-  $status.textContent = `startup failed: ${e?.message ?? e}`;
+  notify(`startup failed: ${e?.message ?? e}`, { sticky: true });
 });

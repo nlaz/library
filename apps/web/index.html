@@ -13,20 +13,14 @@
   <body>
     <header>
       <nav id="cols" role="group" title="Collections"></nav>
-      <input
-        id="q"
-        type="search"
-        placeholder="Search the library…"
-        autocomplete="off"
-        autofocus
-      />
-      <div id="status"></div>
+      <button id="chat-toggle" title="Ask the librarian">chat</button>
     </header>
     <main>
       <div id="home"></div>
       <div id="search" hidden>
         <div id="stats"></div>
         <div id="results"></div>
+        <div id="more" hidden></div>
       </div>
     </main>
     <section id="reader" hidden>
@@ -34,9 +28,14 @@
         <button id="reader-back" title="Back (Esc)">←</button>
         <div id="reader-title"></div>
         <div id="reader-pageno"></div>
+        <button id="reader-meta" title="Document info">ⓘ</button>
       </div>
-      <div id="reader-scroll">
-        <div id="reader-pages"></div>
+      <div id="reader-body">
+        <div id="reader-scroll">
+          <div id="reader-pages"></div>
+        </div>
+        <div id="reader-ticks"></div>
+        <aside id="reader-drawer" hidden></aside>
       </div>
     </section>
     <div id="overlay" hidden>
@@ -57,6 +56,29 @@
     <div id="dropzone" hidden>
       <div class="dz-inner">Drop PDFs to add them to the library</div>
     </div>
+    <div id="search-pop" hidden>
+      <input id="q" type="search" placeholder="Search the library…" autocomplete="off" />
+      <div id="search-nav" hidden>
+        <span id="search-count"></span>
+        <button id="search-prev" title="Previous match (Shift+Enter)">↑</button>
+        <button id="search-next" title="Next match (Enter)">↓</button>
+      </div>
+    </div>
+    <aside id="chat" hidden aria-label="Librarian chat">
+      <div id="chat-top">
+        <span>librarian</span>
+        <div class="chat-actions">
+          <button id="chat-stop" title="Stop generating" hidden>stop</button>
+          <button id="chat-clear" title="Clear conversation">clear</button>
+          <button id="chat-close" title="Close (Esc)">✕</button>
+        </div>
+      </div>
+      <div id="chat-log" aria-live="polite"></div>
+      <form id="chat-form">
+        <input id="chat-input" type="text" placeholder="ask the library…" autocomplete="off" />
+      </form>
+    </aside>
+    <div id="toast" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -1,0 +1,32 @@
+{
+  "tools": false,
+  "instructions": "You are a careful reading assistant. Answer only from the provided pages. If the answer is not in them, say you cannot find it. Cite sources as [doc p.N].",
+  "context": [
+    {
+      "doc": "wholeearthcatalo00unse-1",
+      "from": 22,
+      "to": 22
+    }
+  ],
+  "prompt": "Pages:\n{CONTEXT}\n\nExtract the first book/product listed on this catalog page.",
+  "schema": {
+    "name": "CatalogEntry",
+    "properties": [
+      {
+        "name": "item",
+        "type": "string"
+      },
+      {
+        "name": "price",
+        "type": "string",
+        "description": "as printed, or 'unknown'"
+      },
+      {
+        "name": "supplier",
+        "type": "string",
+        "description": "publisher or supplier, or 'unknown'"
+      }
+    ]
+  },
+  "id": "p4-catalog"
+}

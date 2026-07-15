@@ -102,6 +102,32 @@ export function confirmDelete(title: string): Promise<boolean> {
   );
 }
 
+/** One librarian chat turn: events stream via `chat:event`, the invoke
+ * resolves at turn end. Payloads are the sidecar's NDJSON lines. */
+export async function chatTurn(
+  conv: string,
+  messages: { role: string; content: string }[],
+  onEvent: (ev: unknown) => void,
+): Promise<void> {
+  const un = await listen<string>("chat:event", (e) => {
+    try {
+      onEvent(JSON.parse(e.payload));
+    } catch {
+      // malformed line — skip
+    }
+  });
+  try {
+    await invoke("chat_turn", { conv, messages });
+  } finally {
+    un();
+  }
+}
+
+/** Cancel the active chat turn (the sidecar stops between snapshots). */
+export function chatCancel(): void {
+  invoke("chat_cancel").catch(() => {});
+}
+
 export function onIngestProgress(cb: (e: IngestEvent) => void): void {
   listen<IngestEvent>("ingest:progress", (e) => cb(e.payload));
 }

@@ -1,0 +1,10 @@
+[package]
+name = "librarian-eval"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+ureq = { version = "2", features = ["json"] }

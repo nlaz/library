@@ -5,7 +5,8 @@
 // transparent OCR text layer so scanned text can be selected and copied.
 
 import { ocrUrl, pageImg } from "./assets";
-import type { OcrWord } from "./types";
+import { hlBoxes } from "./highlights";
+import type { OcrWord, WireHit } from "./types";
 
 const $reader = document.getElementById("reader")!;
 const $scroll = document.getElementById("reader-scroll")!;
@@ -13,8 +14,10 @@ const $pagesEl = document.getElementById("reader-pages")!;
 const $title = document.getElementById("reader-title")!;
 const $pageNo = document.getElementById("reader-pageno")!;
 const $back = document.getElementById("reader-back")!;
+const $ticks = document.getElementById("reader-ticks")!;
 
 let currentDoc = "";
+let totalPages = 0;
 let loader: IntersectionObserver | null = null;
 let tracker: IntersectionObserver | null = null;
 /** Per-page OCR words for the current doc; null = fetch failed, don't retry. */
@@ -22,6 +25,11 @@ const ocrCache = new Map<number, OcrWord[] | null>();
 
 export function readerOpen(): boolean {
   return !$reader.hidden;
+}
+
+/** The open doc's id when the reader is visible — scopes find queries. */
+export function readerDoc(): string {
+  return $reader.hidden ? "" : currentDoc;
 }
 
 /** Open at `page`; when omitted, resume the last remembered position. */
@@ -46,6 +54,8 @@ function buildPages(doc: string, pages: number) {
   loader?.disconnect();
   tracker?.disconnect();
   ocrCache.clear();
+  clearReaderHits(); // hits belong to the previous doc
+  totalPages = pages;
 
   const els: HTMLElement[] = [];
   for (let p = 1; p <= pages; p++) {
@@ -70,9 +80,11 @@ function buildPages(doc: string, pages: number) {
               // real aspect ratio, so placeholder heights stop drifting
               el.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
               fitTextLayer(el);
+              scheduleTicks(); // page heights shifted — tick offsets moved
             });
             el.append(img);
             attachTextLayer(el, doc, Number(el.dataset.page));
+            attachHitLayer(el);
           }
         } else {
           el.replaceChildren(); // out of range: give the memory back
@@ -162,6 +174,157 @@ function fitTextLayer(el: HTMLElement) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// find-in-document: hits from a doc-scoped search render as scrollbar tick
+// marks + word-box highlights on the pages, and Enter steps through them
+// ---------------------------------------------------------------------------
+
+/** Blend weights for find-hit stepping order (must sum to 1): "next" is not
+ * strictly the best match nor strictly the next one down the page, but a
+ * weighted compromise between relevance rank and document position. */
+const STEP_RELEVANCE_WEIGHT = 0.6;
+const STEP_POSITION_WEIGHT = 0.4;
+
+let hits: WireHit[] = [];
+let stepOrder: number[] = []; // hit indices in blended stepping order
+let cur = -1; // position in stepOrder; -1 = not stepping yet
+let hitsByPage = new Map<number, { hit: number; boxes: [number, number, number, number][] }[]>();
+let stepListener: ((i: number, n: number) => void) | null = null;
+
+/** Called whenever stepping lands on a hit (Enter, buttons, tick click). */
+export function onHitStep(cb: (i: number, n: number) => void) {
+  stepListener = cb;
+}
+
+const clamp01 = (v: number) => Math.min(Math.max(v, 0), 1);
+
+/** Fraction of the way through the document, by page + y on the page. */
+function docPos(h: WireHit): number {
+  return (h.page - 1 + clamp01(h.crop[1])) / Math.max(totalPages, 1);
+}
+
+export function setReaderHits(hs: WireHit[]): number {
+  hits = hs;
+  hitsByPage = new Map();
+  hs.forEach((h, i) => {
+    // semantic hits can match without any lexical word boxes — highlight
+    // the whole chunk region instead of nothing
+    const boxes = h.boxes.length ? h.boxes : [h.crop];
+    const arr = hitsByPage.get(h.page) ?? [];
+    arr.push({ hit: i, boxes });
+    hitsByPage.set(h.page, arr);
+  });
+  // response order IS relevance rank; normalize it against list length
+  const denom = Math.max(hs.length - 1, 1);
+  const weight = new Map(
+    hs.map((h, i) => [i, STEP_RELEVANCE_WEIGHT * (i / denom) + STEP_POSITION_WEIGHT * docPos(h)]),
+  );
+  stepOrder = hs.map((_, i) => i).sort((a, b) => weight.get(a)! - weight.get(b)!);
+  cur = -1;
+  for (const el of $pagesEl.children) attachHitLayer(el as HTMLElement);
+  layoutTicks();
+  return hits.length;
+}
+
+export function clearReaderHits() {
+  hits = [];
+  stepOrder = [];
+  cur = -1;
+  hitsByPage = new Map();
+  $ticks.replaceChildren();
+  for (const l of $pagesEl.querySelectorAll(".hlayer")) l.remove();
+}
+
+/** Advance through the blended order (wrapping) and scroll to the hit. */
+export function stepHit(dir: 1 | -1) {
+  const n = stepOrder.length;
+  if (!n) return;
+  cur = cur < 0 ? (dir > 0 ? 0 : n - 1) : (cur + dir + n) % n;
+  gotoHit(stepOrder[cur]);
+  stepListener?.(cur, n);
+}
+
+function gotoHit(i: number) {
+  const h = hits[i];
+  const el = $pagesEl.children[h.page - 1] as HTMLElement | undefined;
+  if (!el) return;
+  // placeholders always exist, so this works for unloaded pages too: the
+  // scroll brings the page into the loader's range and the highlight layer
+  // attaches when the image does
+  const y = el.offsetTop + clamp01(h.crop[1]) * el.offsetHeight - $scroll.clientHeight * 0.3;
+  $scroll.scrollTo({ top: Math.max(y, 0) });
+  updateCur();
+}
+
+/** Re-decorate the active hit everywhere it's drawn (pages + ticks). */
+function updateCur() {
+  const active = cur >= 0 ? String(stepOrder[cur]) : "";
+  for (const b of $pagesEl.querySelectorAll<HTMLElement>(".hlayer .hl")) {
+    b.classList.toggle("cur", b.dataset.hit === active);
+  }
+  for (const t of $ticks.children) {
+    t.classList.toggle("cur", (t as HTMLElement).dataset.hit === active);
+  }
+}
+
+/** Word-box highlights for one page, attached at image-load time (the same
+ * lifecycle as the OCR text layer — the unload branch discards both). */
+function attachHitLayer(el: HTMLElement) {
+  el.querySelector(".hlayer")?.remove();
+  if (!el.firstElementChild) return; // unloaded placeholder
+  const entries = hitsByPage.get(Number(el.dataset.page));
+  if (!entries) return;
+  const layer = document.createElement("div");
+  layer.className = "hlayer";
+  const active = cur >= 0 ? stepOrder[cur] : -1;
+  for (const en of entries) {
+    const divs = hlBoxes(en.boxes);
+    for (const d of divs) {
+      d.dataset.hit = String(en.hit);
+      if (en.hit === active) d.classList.add("cur");
+    }
+    layer.append(...divs);
+  }
+  el.append(layer);
+}
+
+/** One tick per hit along the scrollbar. Positions must come from content
+ * offsets, not page-count fractions — page aspect ratios vary, and they
+ * refine as images load (scheduleTicks re-runs this on those loads). */
+function layoutTicks() {
+  $ticks.replaceChildren();
+  if (!hits.length) return;
+  const sh = $scroll.scrollHeight;
+  const th = $ticks.clientHeight;
+  if (!sh || !th) return;
+  const active = cur >= 0 ? stepOrder[cur] : -1;
+  hits.forEach((h, i) => {
+    const el = $pagesEl.children[h.page - 1] as HTMLElement | undefined;
+    if (!el) return;
+    const t = document.createElement("div");
+    t.className = "tick";
+    t.dataset.hit = String(i);
+    if (i === active) t.classList.add("cur");
+    t.style.top = `${((el.offsetTop + clamp01(h.crop[1]) * el.offsetHeight) / sh) * th}px`;
+    t.addEventListener("click", () => {
+      cur = stepOrder.indexOf(i);
+      gotoHit(i);
+      stepListener?.(cur, stepOrder.length);
+    });
+    $ticks.append(t);
+  });
+}
+
+let tickRaf = 0;
+function scheduleTicks() {
+  if (tickRaf || !hits.length) return;
+  tickRaf = requestAnimationFrame(() => {
+    tickRaf = 0;
+    layoutTicks();
+  });
+}
+window.addEventListener("resize", scheduleTicks);
 
 $back.addEventListener("click", () => {
   location.hash = "#/";

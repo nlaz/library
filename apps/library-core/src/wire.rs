@@ -45,6 +45,9 @@ pub struct WireHit {
     /// "text" | "image"
     pub kind: &'static str,
     pub score: f32,
+    /// BM25 score as a fraction of the top lexical hit (the MIN_REL cutoff
+    /// signal); 0.0 for image hits, whose CLIP sims live on another scale
+    pub rel: f32,
     pub doc: String,
     pub page: u32,
     pub idx: u32,
@@ -100,6 +103,7 @@ pub fn group_image_hits(found: &[ImageHit], k: usize) -> Vec<WireHit> {
             WireHit {
                 kind: "image",
                 score: best.score,
+                rel: 0.0,
                 doc: best.key.doc.clone(),
                 page: best.key.page,
                 idx: best.key.idx,
@@ -120,26 +124,50 @@ pub fn group_image_hits(found: &[ImageHit], k: usize) -> Vec<WireHit> {
 /// Text hits (RRF over lexical/semantic) and image hits (CLIP cosine) live
 /// on unrelated score scales, so blending by raw `score` would just let
 /// whichever scale happens to run bigger dominate the order. Both lists
-/// arrive best-first, so blend by each hit's rank within its own list
-/// instead — a reciprocal-rank curve, like RRF but per-modality — and give
-/// images a slight edge so a handful of strong figures land among the top
-/// text hits rather than trailing after all of them.
-const IMAGE_PREFERENCE: f32 = 1.3;
+/// arrive best-first; deal them into the stream at one image per
+/// `IMG_CADENCE` slots on average — so figures stay a steady presence
+/// through the paginated stream instead of packing the first pages (a
+/// rank-weight interleave puts image rank r at text depth ~0.77r, i.e.
+/// everything up front). Each figure's exact slot is jittered so the
+/// interleave doesn't read as a mechanical every-Nth pattern.
+const IMG_CADENCE: usize = 4;
+
+/// Slot for the i-th image: `i * IMG_CADENCE` plus a jitter hashed from the
+/// figure's identity. Deterministic — real randomness would reorder between
+/// continuation requests and break slice tiling — and dependent only on the
+/// image list, so extending the text list never moves a figure (the
+/// prefix-stability invariant pagination relies on). Jitter < IMG_CADENCE
+/// keeps slots strictly increasing, so gaps vary 1..2*IMG_CADENCE-1 while
+/// average density stays 1-per-IMG_CADENCE.
+fn img_slot(i: usize, h: &WireHit) -> usize {
+    let mut x: u32 = 2166136261; // FNV-1a
+    for b in h.doc.bytes() {
+        x = (x ^ b as u32).wrapping_mul(16777619);
+    }
+    x = (x ^ h.page).wrapping_mul(16777619);
+    i * IMG_CADENCE + x as usize % IMG_CADENCE
+}
 
 pub fn blend(text: Vec<WireHit>, images: Vec<WireHit>) -> Vec<WireHit> {
-    let mut ranked: Vec<(f32, WireHit)> = text
-        .into_iter()
-        .enumerate()
-        .map(|(rank, h)| (1.0 / (1.0 + rank as f32), h))
-        .chain(
-            images
-                .into_iter()
-                .enumerate()
-                .map(|(rank, h)| (IMAGE_PREFERENCE / (1.0 + rank as f32), h)),
-        )
-        .collect();
-    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
-    ranked.into_iter().map(|(_, h)| h).collect()
+    let mut out = Vec::with_capacity(text.len() + images.len());
+    let mut text = text.into_iter();
+    let mut images = images.into_iter().peekable();
+    let mut img_idx = 0;
+    loop {
+        let img_due = images.peek().is_some_and(|h| img_slot(img_idx, h) <= out.len());
+        let next = if img_due {
+            img_idx += 1;
+            images.next()
+        } else {
+            // text first; once it runs dry the remaining images drain in order
+            text.next().or_else(|| images.next())
+        };
+        match next {
+            Some(h) => out.push(h),
+            None => break,
+        }
+    }
+    out
 }
 
 pub fn wire_hit(hit: &Hit, qtoks: &[String]) -> WireHit {
@@ -185,6 +213,7 @@ pub fn wire_hit(hit: &Hit, qtoks: &[String]) -> WireHit {
     WireHit {
         kind: "text",
         score: hit.score,
+        rel: hit.rel,
         doc: hit.key.doc.clone(),
         page: hit.key.page,
         idx: hit.key.idx,
@@ -203,6 +232,7 @@ mod tests {
         WireHit {
             kind,
             score: 0.0,
+            rel: 0.0,
             doc: "d".into(),
             page: n,
             idx: 0,
@@ -228,6 +258,52 @@ mod tests {
         // still interleaved, not images-then-text or text-then-images
         assert!(merged[..10].iter().any(|h| h.kind == "text"));
         assert!(merged[..10].iter().any(|h| h.kind == "image"));
+    }
+
+    #[test]
+    fn blend_prefix_is_stable_under_longer_text_list() {
+        // infinite scroll slices the blended order at growing offsets across
+        // separate requests with growing k — that only tiles cleanly if
+        // extending the text list never reorders the existing prefix
+        let short = blend(
+            (0..20).map(|n| hit("text", n)).collect(),
+            (0..6).map(|n| hit("image", n)).collect(),
+        );
+        let long = blend(
+            (0..40).map(|n| hit("text", n)).collect(),
+            (0..6).map(|n| hit("image", n)).collect(),
+        );
+        for (i, (a, b)) in short.iter().zip(&long).enumerate() {
+            assert_eq!((a.kind, a.page), (b.kind, b.page), "prefix diverged at rank {i}");
+        }
+    }
+
+    #[test]
+    fn blend_deals_images_at_jittered_cadence() {
+        let merged = blend(
+            (0..100).map(|n| hit("text", n)).collect(),
+            (0..30).map(|n| hit("image", n)).collect(),
+        );
+        assert_eq!(merged.len(), 130);
+        let slots: Vec<usize> = merged
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.kind == "image")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(slots.len(), 30);
+        // every image lands within jitter range of its cadence position,
+        // in list order (kept by the strictly-increasing slot function)
+        for (i, (slot, h)) in slots.iter().zip(merged.iter().filter(|h| h.kind == "image")).enumerate() {
+            assert_eq!(*slot, img_slot(i, h), "image {i}");
+            assert!(*slot >= i * IMG_CADENCE && *slot < (i + 1) * IMG_CADENCE, "image {i} at {slot}");
+        }
+        // the jitter actually varies — a fixed every-Nth pattern is the bug
+        let gaps: std::collections::HashSet<usize> =
+            slots.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(gaps.len() > 1, "cadence gaps all identical: {gaps:?}");
+        // figures reach deep into the stream instead of packing page 1
+        assert!(*slots.last().unwrap() >= 29 * IMG_CADENCE);
     }
 
     #[test]

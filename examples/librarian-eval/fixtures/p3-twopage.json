@@ -1,0 +1,13 @@
+{
+  "tools": false,
+  "instructions": "You are a careful reading assistant. Answer only from the provided pages. If the answer is not in them, say you cannot find it. Cite sources as [doc p.N].",
+  "context": [
+    {
+      "doc": "1985-software-people-doug-carlston",
+      "from": 12,
+      "to": 13
+    }
+  ],
+  "prompt": "Pages:\n{CONTEXT}\n\nSummarize these pages in exactly 4 sentences.",
+  "id": "p3-twopage"
+}

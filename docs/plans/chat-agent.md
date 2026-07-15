@@ -26,7 +26,7 @@ agents trip over exactly those tunings.
 
 - **`complete` flag** (`library-core::search` + `/api/search?complete=false`):
   skip `TermDict::complete` prefix expansion for agent queries — complete
-  words in, complete words matched ("Broderbund" must stop matching "broth").
+  words in, complete words matched ("micro" must stop matching "microscope").
 - **Absolute confidence**: expose the top hit's raw BM25 (not just
   rel-to-top) in `/api/search`; `search_library` maps it to
   `strong | weak | none` phrasing in the tool result.
@@ -95,8 +95,8 @@ sidecar's tools can't call back into it as-is.
 ## Phase 6 — regression evals (cheap insurance)
 
 - Extend `examples/librarian-eval` fixtures with the Phase 1/2 behaviors:
-  blank-page probe must return the error string; "Broderbund" must not match
-  "broth"; expected-miss queries must produce the weak-hits note and an
+  blank-page probe must return the error string; "micro" must not match
+  "microscope"; expected-miss queries must produce the weak-hits note and an
   abstaining answer.
 - Add `librarian-eval e2e`: 5 canned questions through `POST /api/chat`
   asserting event shape (tool → tokens → done) and that citations resolve to

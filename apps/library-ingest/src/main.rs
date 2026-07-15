@@ -86,6 +86,35 @@ enum Cli {
         #[arg(long)]
         hot: bool,
     },
+    /// Rank ingested docs by OCR legibility, worst first — the shortlist
+    /// for `re-ocr`. Scores what search/chat actually serve (cached OCR
+    /// with clean overlays applied).
+    Audit {
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+        /// Only docs in this collection (fuzzy, e.g. "whole-earth").
+        #[arg(long)]
+        col: Option<String>,
+        /// Worst pages to list per doc.
+        #[arg(long, default_value_t = 3)]
+        worst: usize,
+    },
+    /// Force re-OCR of a doc from its source PDF with Apple Vision,
+    /// ignoring any embedded text layer, then rebuild its index. For docs
+    /// whose producer embedded garbage OCR (e.g. Internet Archive scans,
+    /// whose text layer is decades-old multi-column OCR). Clears the doc's
+    /// ocr/clean/edits caches first; run with the app closed (store lock).
+    ReOcr {
+        doc: String,
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+        /// Rendered page-image width in pixels.
+        #[arg(long, default_value_t = 1600)]
+        width: u32,
+        /// Run at full priority instead of background QoS.
+        #[arg(long)]
+        hot: bool,
+    },
     /// (Re)build the figure index for an already-ingested doc from its
     /// cached OCR + page images. `ingest` runs this automatically.
     Images {
@@ -121,6 +150,16 @@ enum Cli {
     /// Open both stores and write fresh HNSW graph blobs if stale, so the
     /// next open loads instead of rebuilding. (Ingest does this itself.)
     Checkpoint {
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+    },
+    /// Remove a doc from the library: retract its index entries, delete its
+    /// pages/ocr/text derivatives, clear collection membership + title, and
+    /// mark it Deleted so the worker never re-ingests it. The source PDF in
+    /// data/pdfs is left in place. Refuses while the doc is mid-ingest.
+    /// (Same semantics as the desktop app's delete, runnable offline.)
+    Delete {
+        doc: String,
         #[arg(long, default_value = "data")]
         data: PathBuf,
     },
@@ -220,6 +259,13 @@ fn main() -> Result<()> {
             }
             reindex(&doc, &data)
         }
+        Cli::Audit { data, col, worst } => audit(&data, col.as_deref(), worst),
+        Cli::ReOcr { doc, data, width, hot } => {
+            if !hot {
+                be_gentle();
+            }
+            reocr(&doc, &data, width)
+        }
         Cli::Images { doc, data, hot } => {
             if !hot {
                 be_gentle();
@@ -257,6 +303,56 @@ fn main() -> Result<()> {
                 let path = library_ingest::textout::write_doc(&data, &doc)?;
                 println!("wrote {}", path.display());
             }
+            Ok(())
+        }
+        Cli::Delete { doc, data } => {
+            use library_ingest::status::{self, DocState, DocStatus};
+            use library_ingest::worker;
+            if worker::claimed(&data, &doc)
+                || status::read(&data, &doc).map(|s| s.state) == Some(DocState::Preparing)
+            {
+                anyhow::bail!("{doc}: still processing — try again when ingest finishes");
+            }
+            // retract from the stores first so nothing can hand out hits
+            // whose page images are already gone (mirrors the app's delete)
+            let t = Instant::now();
+            {
+                let mut st = library_core::open(data.join("library.db"));
+                library_ingest::commit_text(&mut st, &doc, &[]);
+            }
+            {
+                let mut ist = library_core::open_images(data.join("images.db"));
+                library_ingest::commit_figures(&mut ist, &doc, &[]);
+            }
+            // derivatives; text/clean/edits too, or the chat tools' fuzzy
+            // doc-id match keeps resolving a doc that no longer exists
+            for dir in ["pages", "ocr", "clean", "edits"] {
+                let p = data.join(dir).join(&doc);
+                if let Err(e) = std::fs::remove_dir_all(&p) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        anyhow::bail!("removing {}: {e}", p.display());
+                    }
+                }
+            }
+            let md = data.join("text").join(format!("{doc}.md"));
+            if let Err(e) = std::fs::remove_file(&md) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    anyhow::bail!("removing {}: {e}", md.display());
+                }
+            }
+            worker::clear_staged(&data, &doc);
+            status::write(&data, &doc, &DocStatus::new(DocState::Deleted))?;
+            library_ingest::set_collections(&data, &doc, &[])?;
+            let titles_path = data.join("titles.json");
+            let mut titles: std::collections::BTreeMap<String, String> =
+                std::fs::read(&titles_path)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or_default();
+            if titles.remove(&doc).is_some() {
+                std::fs::write(&titles_path, serde_json::to_vec_pretty(&titles)?)?;
+            }
+            println!("deleted {doc} in {:?} (source PDF kept in data/pdfs)", t.elapsed());
             Ok(())
         }
         Cli::Checkpoint { data } => {
@@ -371,6 +467,136 @@ fn ingest(
         collect(data, &col, &doc)?;
     }
     println!("done: doc '{doc}'");
+    Ok(())
+}
+
+struct DocAudit {
+    mean: f32,
+    median: f32,
+    /// Fraction of scored pages with an unquotable stretch (min_window
+    /// below NOISY_MIN) — the number that actually predicts the chat
+    /// agent quoting garbage, since column-interleaved salad hides inside
+    /// pages whose *average* legibility looks fine.
+    noisy: f32,
+    scored: usize,
+    total: usize,
+    worst: Vec<(u32, f32)>,
+}
+
+/// Per-doc legibility from the same caches read_pages serves (clean
+/// overlays applied).
+fn audit_doc(data: &Path, doc: &str) -> Result<DocAudit> {
+    use library_core::legibility::{NOISY_MIN, legibility, min_window};
+    let pages = library_ingest::read_pages(data, doc)?;
+    let total = pages.len();
+    let mut scores: Vec<(u32, f32)> = Vec::new();
+    let mut noisy_pages = 0usize;
+    for p in &pages {
+        let text: String =
+            p.words.iter().map(|w| w.t.as_str()).collect::<Vec<_>>().join(" ");
+        if text.len() < library_core::tools::BLANK_CHARS {
+            continue;
+        }
+        scores.push((p.page, legibility(&text)));
+        if min_window(&text) < NOISY_MIN {
+            noisy_pages += 1;
+        }
+    }
+    if scores.is_empty() {
+        return Ok(DocAudit { mean: 0.0, median: 0.0, noisy: 0.0, scored: 0, total, worst: vec![] });
+    }
+    let mean = scores.iter().map(|(_, s)| s).sum::<f32>() / scores.len() as f32;
+    let mut by_score = scores.clone();
+    by_score.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let median = by_score[by_score.len() / 2].1;
+    let noisy = noisy_pages as f32 / scores.len() as f32;
+    Ok(DocAudit { mean, median, noisy, scored: scores.len(), total, worst: by_score })
+}
+
+fn audit(data: &Path, col: Option<&str>, worst: usize) -> Result<()> {
+    let member = match library_core::tools::resolve_collection(data, col.unwrap_or("")) {
+        Ok(m) => m,
+        Err(e) => anyhow::bail!("{e}"),
+    };
+    let mut docs: Vec<String> = std::fs::read_dir(data.join("ocr"))
+        .context("no data/ocr directory")?
+        .filter_map(|e| {
+            let e = e.ok()?;
+            e.file_type().ok()?.is_dir().then(|| e.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    if let Some(m) = &member {
+        docs.retain(|d| m.contains(d));
+    }
+    docs.sort();
+
+    let mut rows = Vec::new();
+    for doc in &docs {
+        match audit_doc(data, doc) {
+            Ok(r) => rows.push((doc.clone(), r)),
+            Err(e) => eprintln!("{doc}: {e}"),
+        }
+    }
+    // worst first = most unquotable pages first (see DocAudit::noisy)
+    rows.sort_by(|a, b| b.1.noisy.total_cmp(&a.1.noisy).then(a.1.mean.total_cmp(&b.1.mean)));
+    println!("{:>6}  {:>5}  {:>6}  {:>6}/{:<6}  worst pages", "noisy%", "mean", "median", "scored", "pages");
+    for (doc, a) in &rows {
+        let worst_pages: Vec<String> =
+            a.worst.iter().take(worst).map(|(p, s)| format!("p.{p}={s:.2}")).collect();
+        println!(
+            "{:>6.1}  {:>5.2}  {:>6.2}  {:>6}/{:<6}  {doc}  {}",
+            a.noisy * 100.0,
+            a.mean,
+            a.median,
+            a.scored,
+            a.total,
+            worst_pages.join(" ")
+        );
+    }
+    Ok(())
+}
+
+/// Vision-forced re-OCR from the source PDF, then a full per-doc reindex.
+fn reocr(doc: &str, data: &Path, width: u32) -> Result<()> {
+    let pdf = data.join("pdfs").join(format!("{doc}.pdf"));
+    if !pdf.exists() {
+        anyhow::bail!(
+            "no source PDF at {} — re-OCR needs the original; `reindex` only rebuilds from caches",
+            pdf.display()
+        );
+    }
+    // clear every derivative of the old OCR: raw pages, and the clean/edits
+    // overlays — prepare_text re-applies data/edits/<doc> whenever that dir
+    // exists, and read_pages prefers data/clean/<doc>, so stale overlays
+    // would resurrect the garbage this command exists to purge
+    for sub in ["ocr", "clean", "edits"] {
+        let dir = data.join(sub).join(doc);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => println!("cleared {}", dir.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context(format!("clearing {}", dir.display())),
+        }
+    }
+    ingest(
+        &pdf,
+        data,
+        None,
+        width,
+        Some(doc.to_owned()),
+        None,
+        /*clean*/ false,
+        /*text_only*/ false,
+        /*no_text_layer*/ true,
+    )?;
+    let a = audit_doc(data, doc)?;
+    println!(
+        "legibility after re-OCR: mean {:.2} median {:.2} noisy {:.1}% ({}/{} pages scored)",
+        a.mean,
+        a.median,
+        a.noisy * 100.0,
+        a.scored,
+        a.total
+    );
     Ok(())
 }
 
@@ -494,7 +720,7 @@ fn search(query: &str, data: &Path, k: usize, lex_only: bool) -> Result<()> {
 
     let t = Instant::now();
     let hits = st.rtx(|r| {
-        library_core::search(&r, query, qemb.as_ref(), k, None, |key| {
+        library_core::search(&r, query, qemb.as_ref(), k, None, true, |key| {
             st.get(key).map(|rec| rec.words)
         })
     });

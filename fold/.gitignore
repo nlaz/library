@@ -3,3 +3,4 @@ agnews.txt
 testdata/
 test.db/
 *.db/
+Cargo.lock

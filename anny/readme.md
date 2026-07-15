@@ -1,13 +1,25 @@
-# ANNy&emsp;&ensp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;[![Build Status]][actions] [![Latest Version]][crates.io] [![msrv]][Rust 1.56]
+# ANNy
 
-**ANNy provides performance-oriented data structures for approximate nearest neighbor (ANN) search.**
+**ANNy provides performance-oriented data structures for approximate nearest
+neighbor (ANN) search.**
 
-[Build Status]: https://img.shields.io/github/actions/workflow/status/flowercomputers/anny/ci.yml?branch=master
-[actions]: https://github.com/flowercomputers/anny/actions?query=branch%3Amaster
-[Latest Version]: https://img.shields.io/crates/v/anny.svg
-[crates.io]: https://crates.io/crates/anny
-[msrv]: https://img.shields.io/crates/msrv/anny.svg?color=lightgray
-[Rust 1.56]: https://blog.rust-lang.org/2021/10/21/Rust-1.56.0/
+It currently implements HNSW (Hierarchical Navigable Small World) graphs with
+pluggable distance metrics, generic over the vector element type. It is a small,
+dependency-light building block used by the rest of this workspace (see `fold`
+for the streaming search pipeline built on top of it).
 
----
+## Usage
 
+Add it as a path or git dependency:
+
+```toml
+[dependencies]
+anny = { path = "../anny" }
+```
+
+See `src/hnsw.rs` for the index API and `benches/hnsw.rs` for a worked example.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See the repository-root
+`LICENSE`.

@@ -1,0 +1,12 @@
+{
+  "id": "mt-tell-me-more",
+  "turns": [
+    "what does the Field Guides collection say about geodesic domes?",
+    "tell me more"
+  ],
+  "expect": [
+    { "kind": "all_content_not_regex", "value": "(?i)can.?t (assist|help)|unable to (assist|help)" },
+    { "kind": "all_content_not_regex", "value": "00vol|Document ID" },
+    { "kind": "all_content_not_regex", "value": "\\\\n" }
+  ]
+}

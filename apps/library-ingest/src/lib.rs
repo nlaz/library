@@ -115,16 +115,18 @@ pub fn read_pages(data: &Path, doc: &str) -> Result<Vec<PageOcr>> {
 }
 
 pub fn read_ocr(ocr_dir: &Path) -> Result<Vec<PageOcr>> {
-    let mut pages: Vec<PageOcr> = std::fs::read_dir(ocr_dir)?
-        .filter_map(|e| {
-            let p = e.ok()?.path();
-            (p.extension()? == "json").then(|| {
-                serde_json::from_slice(&std::fs::read(&p).unwrap())
-                    .context(format!("bad OCR json {}", p.display()))
-                    .unwrap()
-            })
-        })
-        .collect();
+    let mut pages: Vec<PageOcr> = Vec::new();
+    for entry in std::fs::read_dir(ocr_dir)? {
+        let p = entry?.path();
+        if p.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let bytes =
+            std::fs::read(&p).with_context(|| format!("reading OCR json {}", p.display()))?;
+        let page = serde_json::from_slice(&bytes)
+            .with_context(|| format!("bad OCR json {}", p.display()))?;
+        pages.push(page);
+    }
     pages.sort_by_key(|p: &PageOcr| p.page);
     Ok(pages)
 }

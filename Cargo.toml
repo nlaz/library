@@ -5,6 +5,7 @@ members = [
     "anny",
     "ese",
     "examples/*",
+    "tools/librarian-eval",
     "apps/library-core",
     "apps/library-ingest",
     "apps/library-server",

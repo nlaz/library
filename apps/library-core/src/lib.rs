@@ -9,8 +9,12 @@ use fxhash::FxHashMap;
 pub use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
+pub mod legibility;
+pub mod search_api;
 pub mod tools;
 pub mod wire;
+
+pub use search_api::{K, K_DOC, Query, answer};
 
 /// Text embeddings come from ese's compile-time static model; the dimension
 /// follows its `dim-*` cargo feature. NOTE: with `dim-512` this equals
@@ -347,7 +351,7 @@ fn rrf(lists: &[Vec<ChunkKey>]) -> Vec<(f32, ChunkKey)> {
 ///
 /// `complete` expands the trailing token via the term dictionary — right
 /// for type-ahead (a human mid-word), wrong for programmatic callers whose
-/// queries are complete words ("broderbund" must not match "broth").
+/// queries are complete words ("micro" must not match "microscope").
 ///
 /// `resolve` fetches a chunk's words given its key; callers should back it
 /// with [`Library::get`] (a cheap primary-table point-read) rather than the

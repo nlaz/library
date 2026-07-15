@@ -15,8 +15,10 @@
 // http://127.0.0.1:8080) so search/content logic stays in Rust
 // (library_core::tools, shared with the desktop app).
 //
-// Built macro-free (@Generable needs full Xcode): tool schemas are hand-built
-// GenerationSchemas over GeneratedContent.
+// Built macro-free (@Generable needs full Xcode): both the tool-call schemas
+// and the final answer's schema (see ANSWER_SCHEMA) are hand-built
+// GenerationSchemas over GeneratedContent. The final answer uses guided
+// generation against ANSWER_SCHEMA so its format rules hold at decode time.
 
 import Foundation
 import FoundationModels
@@ -25,6 +27,18 @@ let BASE = ProcessInfo.processInfo.environment["LIBRARIAN_BASE"] ?? "http://127.
 /// --tools-stdin: tools go to the host process over stdio instead of HTTP
 /// (the desktop app has no HTTP plane; it executes tools in-process).
 let TOOLS_VIA_STDIN = CommandLine.arguments.contains("--tools-stdin")
+/// --collections "a,b,c": real collection names from the host, woven into
+/// tool schemas and instructions so the model can scope without guessing.
+let COLLECTIONS: String = {
+    guard let i = CommandLine.arguments.firstIndex(of: "--collections"),
+        CommandLine.arguments.count > i + 1
+    else { return "" }
+    return CommandLine.arguments[i + 1]
+}()
+let COLLECTION_HINT =
+    COLLECTIONS.isEmpty
+    ? "Optional: search only one collection"
+    : "Optional: search only one collection (\(COLLECTIONS))"
 
 // MARK: - NDJSON emitter (stdout is the wire; serialize writes)
 
@@ -112,43 +126,134 @@ func json(_ s: String) -> Any? {
 
 // MARK: - Tools
 
+/// Shared search plumbing: emit started/done tool events with hit chips,
+/// route to /api/search (text or figures — the `kind` param picks).
+func runSearch(toolName: String, query: String, collection: String, kind: String) async -> String {
+    recorder.record(toolName, ["query": query, "collection": collection])
+    emit.line([
+        "e": "tool", "name": toolName, "status": "started",
+        "args": ["query": query, "collection": collection],
+    ])
+    var params = ["q": query, "k": "6"]
+    if !kind.isEmpty { params["kind"] = kind }
+    if !collection.isEmpty { params["col"] = collection }
+    let body = await callTool(
+        toolName, ["query": query, "collection": collection],
+        path: "/api/search", query: params)
+    // surface hit chips to the UI even when the model's citations are sloppy
+    var chips: [[String: Any]] = []
+    if let obj = json(body) as? [String: Any], let hits = obj["hits"] as? [[String: Any]] {
+        chips = hits.map { h in
+            ["doc": h["doc"] ?? "", "title": h["title"] ?? NSNull(), "page": h["page"] ?? 0]
+        }
+    }
+    emit.line([
+        "e": "tool", "name": toolName, "status": "done",
+        "summary": "\(chips.count) hits", "hits": chips,
+    ])
+    return body
+}
+
 struct SearchLibrary: Tool {
     let name = "search_library"
     let description =
-        "Search the library of scanned books (full-text + semantic). Returns matching passages with doc id, page, and snippet. Plain keywords work best."
+        "Search the text of the library's scanned books (full-text + semantic). Returns matching passages with title, page, and snippet. Plain keywords work best."
 
     var parameters: GenerationSchema {
         GenerationSchema(
             type: GeneratedContent.self,
             properties: [
                 .init(name: "query", description: "Search terms", type: String.self),
-                .init(
-                    name: "kind",
-                    description: "Set to \"images\" to search figures and photos instead of text",
-                    type: String?.self),
+                .init(name: "collection", description: COLLECTION_HINT, type: String?.self),
             ])
     }
 
     func call(arguments: GeneratedContent) async throws -> String {
         let query = (try? arguments.value(String.self, forProperty: "query")) ?? ""
-        let kind = (try? arguments.value(String?.self, forProperty: "kind")) ?? nil
-        recorder.record(name, ["query": query, "kind": kind ?? ""])
-        emit.line(["e": "tool", "name": name, "status": "started", "args": ["query": query, "kind": kind ?? ""]])
-        var params = ["q": query, "k": "6"]
-        if let kind, !kind.isEmpty { params["kind"] = kind }
+        let col = ((try? arguments.value(String?.self, forProperty: "collection")) ?? nil) ?? ""
+        return await runSearch(toolName: name, query: query, collection: col, kind: "")
+    }
+}
+
+struct SearchFigures: Tool {
+    let name = "search_figures"
+    let description =
+        "Find pictures, photographs, diagrams, and maps in the books. Only for requests about images — for facts, recipes, or any text question, use search_library instead."
+
+    var parameters: GenerationSchema {
+        GenerationSchema(
+            type: GeneratedContent.self,
+            properties: [
+                .init(name: "query", description: "What the figure shows", type: String.self),
+                .init(name: "collection", description: COLLECTION_HINT, type: String?.self),
+            ])
+    }
+
+    func call(arguments: GeneratedContent) async throws -> String {
+        let query = (try? arguments.value(String.self, forProperty: "query")) ?? ""
+        let col = ((try? arguments.value(String?.self, forProperty: "collection")) ?? nil) ?? ""
+        return await runSearch(toolName: name, query: query, collection: col, kind: "images")
+    }
+}
+
+/// Pages served to one conversation, so repeat sampling ("another one")
+/// walks new shelves. Host-side session state — the model never sees it;
+/// SamplePage injects it as an `avoid` arg the tool impl filters on.
+final class SeenPages: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pages: [String] = []
+    func add(_ p: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if !pages.contains(p) {
+            pages.append(p)
+            if pages.count > 40 { pages.removeFirst() }
+        }
+    }
+    func csv() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return pages.joined(separator: ",")
+    }
+}
+
+struct SamplePage: Tool {
+    let name = "sample_page"
+    let description =
+        "Open one page of the library at random and return its text. Use whenever the user wants something interesting or fun rather than a specific topic: \"tell me an interesting fact\", \"another one\", \"surprise me\". Pass collection to browse one shelf."
+    let seen: SeenPages
+
+    var parameters: GenerationSchema {
+        GenerationSchema(
+            type: GeneratedContent.self,
+            properties: [
+                .init(name: "collection", description: COLLECTION_HINT, type: String?.self)
+            ])
+    }
+
+    func call(arguments: GeneratedContent) async throws -> String {
+        let col = ((try? arguments.value(String?.self, forProperty: "collection")) ?? nil) ?? ""
+        recorder.record(name, ["collection": col])
+        emit.line(["e": "tool", "name": name, "status": "started", "args": ["collection": col]])
+        var params: [String: String] = [:]
+        if !col.isEmpty { params["col"] = col }
+        let avoid = seen.csv()
+        if !avoid.isEmpty { params["avoid"] = avoid }
         let body = await callTool(
-            name, ["query": query, "kind": kind ?? ""], path: "/api/search", query: params)
-        // surface hit chips to the UI even when the model's citations are sloppy
+            name, ["collection": col, "avoid": avoid], path: "/api/sample", query: params)
+        var summary = "sampled a page"
         var chips: [[String: Any]] = []
-        if let obj = json(body) as? [String: Any], let hits = obj["hits"] as? [[String: Any]] {
-            chips = hits.map { h in
-                ["doc": h["doc"] ?? "", "title": h["title"] ?? NSNull(), "page": h["page"] ?? 0]
+        if let obj = json(body) as? [String: Any] {
+            if let err = obj["error"] as? String {
+                summary = err
+            } else if let d = obj["doc"] as? String {
+                let page = obj["page"] ?? 0
+                summary = "opened \(d) p.\(page)"
+                chips = [["doc": d, "title": obj["title"] ?? NSNull(), "page": page]]
+                if let p = obj["page"] as? Int { seen.add("\(d):\(p)") }
             }
         }
-        emit.line([
-            "e": "tool", "name": name, "status": "done",
-            "summary": "\(chips.count) hits", "hits": chips,
-        ])
+        emit.line(["e": "tool", "name": name, "status": "done", "summary": summary, "hits": chips])
         return body
     }
 }
@@ -188,7 +293,7 @@ struct ReadPages: Tool {
                 summary = err
             } else if let d = obj["doc"] as? String {
                 summary = "\(d) p.\(from)"
-                chips = [["doc": d, "title": NSNull(), "page": from]]
+                chips = [["doc": d, "title": obj["title"] ?? NSNull(), "page": from]]
             }
         }
         emit.line(["e": "tool", "name": name, "status": "done", "summary": summary, "hits": chips])
@@ -218,22 +323,67 @@ struct ListCollections: Tool {
 let INSTRUCTIONS = """
     You are the librarian for a personal library of scanned books: cookbooks, \
     Whole Earth Catalogs, and books about software and computing. You answer \
-    only from the library's contents. Always call search_library before \
-    answering a question about the books. Search results include a \
-    "confidence" field and sometimes a "note" — when confidence is "none" or \
-    "weak", tell the user plainly that the library may not cover their \
-    question instead of stretching the hits. Results may include the top \
-    hit's full page text; answer from it when it suffices, and use \
-    read_pages only when you need a different page. If a tool returns an \
-    error, relay it honestly — never guess at a page's contents. Cite every \
-    claim as [doc-id p.N]. Be concise.
+    only from the library's contents, using your tools. For questions about \
+    the books, call search_library first; pass collection when the user \
+    names one\(COLLECTIONS.isEmpty ? "" : " (\(COLLECTIONS))"). For browsing \
+    — "tell me something interesting", "another one", "surprise me" — call \
+    sample_page and share the single most interesting thing on that page in \
+    your own words; quote only short clean phrases, and never open with \
+    announcements like "Here is an interesting fact". Vague follow-ups ("more", \
+    "another", "no, a different one") are still library requests: call a \
+    tool again; never decline them. Search results include a "confidence" \
+    field and sometimes a "note" — when confidence is "none" or "weak", say \
+    plainly that the library may not cover the question. Results may \
+    include the top hit's full page text; answer from it when it suffices, \
+    and use read_pages only for a different page. If a tool returns an \
+    error, relay it honestly — never guess at a page's contents. Call books \
+    by their "title" from tool results — never show raw document ids. Cite \
+    every claim as [Title p.N]. Be concise.
     """
 
-func makeSession(tools: [any Tool] = [SearchLibrary(), ReadPages(), ListCollections()]) -> LanguageModelSession {
-    LanguageModelSession(
+/// Fresh tool instances per session: SamplePage carries per-conversation
+/// state (its SeenPages avoid list) that must not leak across sessions.
+func defaultTools() -> [any Tool] {
+    [SearchLibrary(), SearchFigures(), SamplePage(seen: SeenPages()), ReadPages(), ListCollections()]
+}
+
+func makeSession(tools: [any Tool]? = nil) -> LanguageModelSession {
+    let tools = tools ?? defaultTools()
+    // Permissive guardrails are deliberate: benign questions about this
+    // corpus (butchering a chicken, curing meat, sharpening a knife, home
+    // brewing, lighting a wood stove) trip AFM's default guardrail. The
+    // model still answers only from the library's own contents via its tools.
+    return LanguageModelSession(
         model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
         tools: tools,
         instructions: INSTRUCTIONS)
+}
+
+/// Guide for the final answer's single `text` field. Constraining generation
+/// to this schema is what replaces the old deterministic post-processing: the
+/// format rules (no announcement opener; titles, never raw doc ids) are stated
+/// at decode time, so we no longer strip filler openers with a regex or
+/// substitute ids→titles after the fact. The 3B model followed the same rules
+/// far less reliably as plain instructions — which is why that post-processing
+/// existed at all.
+let ANSWER_GUIDE = """
+    Your answer to the user, in your own words. Begin directly with the \
+    substance — never open with an announcement such as "Here is an \
+    interesting fact". Refer to every book by its "title" from the tool \
+    results, never by a raw document id, and cite each claim inline as \
+    [Title p.N]. Be concise.
+    """
+
+/// The final answer's schema: a single guided `text` field. Built at runtime
+/// (macro-free) so the tool stays buildable without the @Generable macro.
+let ANSWER_SCHEMA = GenerationSchema(
+    type: GeneratedContent.self,
+    properties: [.init(name: "text", description: ANSWER_GUIDE, type: String.self)])
+
+/// The `text` field of a (possibly partial) answer object, or nil if it has
+/// not started streaming yet.
+func answerText(_ content: GeneratedContent) -> String? {
+    try? content.value(String.self, forProperty: "text")
 }
 
 func friendly(_ error: any Error) -> String {
@@ -252,17 +402,17 @@ func friendly(_ error: any Error) -> String {
     }
 }
 
-/// Stream one prompt; emit token deltas; return the full text. Checks task
-/// cancellation between snapshots so a `cancel` request stops output fast.
+/// Stream one prompt as a guided `Answer`; emit token deltas of its `text`
+/// field; return the full text. Checks task cancellation between snapshots so a
+/// `cancel` request stops output fast.
 func stream(_ session: LanguageModelSession, _ prompt: String, options: GenerationOptions = GenerationOptions())
     async throws -> String
 {
     var full = ""
-    for try await snapshot in session.streamResponse(to: prompt, options: options) {
+    for try await snapshot in session.streamResponse(to: prompt, schema: ANSWER_SCHEMA, options: options) {
         try Task.checkCancellation()
-        let text = snapshot.content
-        // AFM's first snapshot before any tokens can be a literal "null"
-        if full.isEmpty && text == "null" { continue }
+        // partially-generated `text` is nil until the field starts streaming
+        guard let text = answerText(snapshot.content) else { continue }
         // snapshots are cumulative; ship only the delta
         if text.count > full.count, text.hasPrefix(full) {
             let delta = String(text.dropFirst(full.count))
@@ -318,7 +468,10 @@ func executeTurn(session: LanguageModelSession, prompt: String, fallback: String
     let start = Date()
     do {
         let full = try await stream(session, prompt)
-        emit.line(["e": "done", "content": full, "ms": Int(Date().timeIntervalSince(start) * 1000)])
+        emit.line([
+            "e": "done", "content": full,
+            "ms": Int(Date().timeIntervalSince(start) * 1000),
+        ])
         return nil
     } catch is CancellationError {
         emit.line(["e": "cancelled"])
@@ -329,6 +482,7 @@ func executeTurn(session: LanguageModelSession, prompt: String, fallback: String
             let retry = makeSession()
             do {
                 let full = try await stream(retry, fallback)
+                emit.line(["e": "token", "text": full, "replace": true])
                 emit.line(["e": "done", "content": full, "ms": Int(Date().timeIntervalSince(start) * 1000)])
             } catch {
                 emit.line(["e": "error", "message": friendly(error)])
@@ -466,15 +620,23 @@ func runServe() async {
 
 // MARK: - probe mode
 
-// Fixture: {"id": "...", "prompt": "...", "instructions"?: "...", "tools"?: bool,
+// Fixture: {"id": "...", "prompt": "..." | "turns": ["...", ...],
+//           "instructions"?: "...", "tools"?: bool,
 //           "temperature"?: 0.7, "schema"?: {"name": "...", "properties":
 //           [{"name","type":"string"|"int"|"[string]","description"?}]}}
+// `turns` runs a whole conversation on ONE session (transcript carries
+// forward) — for probing follow-up behavior; `content` is the last turn's.
 func runProbe(_ path: String) async {
     guard let data = FileManager.default.contents(atPath: path),
-        let fx = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-        let prompt = fx["prompt"] as? String
+        let fx = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else {
         emit.line(["e": "error", "message": "unreadable fixture \(path)"])
+        exit(1)
+    }
+    let turns: [String] =
+        (fx["turns"] as? [String]) ?? (fx["prompt"] as? String).map { [$0] } ?? []
+    guard let prompt = turns.first else {
+        emit.line(["e": "error", "message": "fixture has neither prompt nor turns: \(path)"])
         exit(1)
     }
     let id = fx["id"] as? String ?? (path as NSString).lastPathComponent
@@ -486,25 +648,35 @@ func runProbe(_ path: String) async {
     if let instructions = fx["instructions"] as? String {
         session = LanguageModelSession(
             model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
-            tools: useTools ? [SearchLibrary(), ReadPages(), ListCollections()] : [],
+            tools: useTools ? defaultTools() : [],
             instructions: instructions)
     } else {
-        session = makeSession(tools: useTools ? [SearchLibrary(), ReadPages(), ListCollections()] : [])
+        session = makeSession(tools: useTools ? defaultTools() : [])
     }
 
     let start = Date()
     do {
         var content: String
+        var contents: [String] = []
         if let schemaSpec = fx["schema"] as? [String: Any] {
             let schema = try dynamicSchema(schemaSpec)
             let resp = try await session.respond(to: prompt, schema: schema, options: options)
             content = resp.content.jsonString
+            contents = [content]
         } else {
-            let resp = try await session.respond(to: prompt, options: options)
-            content = resp.content
+            content = ""
+            for (i, turn) in turns.enumerated() {
+                // guided generation, matching serve/turn mode
+                let resp = try await session.respond(to: turn, schema: ANSWER_SCHEMA, options: options)
+                content = answerText(resp.content) ?? resp.content.jsonString
+                contents.append(content)
+                if turns.count > 1 {
+                    emit.line(["e": "turn_result", "id": id, "turn": i, "content": content])
+                }
+            }
         }
         emit.line([
-            "e": "result", "id": id, "ok": true, "content": content,
+            "e": "result", "id": id, "ok": true, "content": content, "contents": contents,
             "ms": Int(Date().timeIntervalSince(start) * 1000),
             "tool_calls": recorder.calls,
         ])
@@ -556,6 +728,20 @@ case "check":
     switch SystemLanguageModel.default.availability {
     case .available: print("AVAILABLE")
     case .unavailable(let reason): print("UNAVAILABLE: \(reason)")
+    }
+case "gen":
+    // bare-generation diagnostic: default vs permissive guardrails, no tools
+    for (label, model) in [
+        ("default", SystemLanguageModel.default),
+        ("permissive", SystemLanguageModel(guardrails: .permissiveContentTransformations)),
+    ] {
+        let s = LanguageModelSession(model: model)
+        do {
+            let r = try await s.respond(to: "Say the word hello.")
+            print("\(label): OK \(r.content.prefix(40))")
+        } catch {
+            print("\(label): FAIL \(error)")
+        }
     }
 default:
     FileHandle.standardError.write(Data("usage: librarian serve|turn|probe <fixture.json>|check\n".utf8))

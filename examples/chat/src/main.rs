@@ -64,7 +64,7 @@ macro_rules! snapshot {
 fn main() {
     // fresh db per run keeps the demo deterministic; delete this line and
     // chat history survives restarts
-    let db_path = std::env::temp_dir().join("bog-kit-chat.db");
+    let db_path = std::env::temp_dir().join("the-library-chat.db");
     let _ = std::fs::remove_dir_all(&db_path);
 
     let (msg_tx, msg_rx) = mpsc::channel::<(String, String)>();

@@ -18,3 +18,7 @@ Clone the repo, and reference locally as a crate in your rust project. If you wa
 
 #### Quantization and Truncation
 By default this crate provides an unquantized model truncated to 512 dimensions. To change this, change the feature setting in your cargo.toml for your `ese` dependency ([see `Cargo.toml` for all crate features](./Cargo.toml)).
+
+## Model weights and attribution
+
+At build time, `build.rs` downloads the embedding model weights and tokenizer from [`sentence-transformers/static-retrieval-mrl-en-v1`](https://huggingface.co/sentence-transformers/static-retrieval-mrl-en-v1) (licensed **Apache-2.0**) and bakes a quantized/truncated copy of the weights into the compiled crate. Distributing a build artifact therefore redistributes derived weights under the upstream Apache-2.0 license. See the repository-root `NOTICE` for details.

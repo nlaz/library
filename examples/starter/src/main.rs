@@ -11,7 +11,7 @@ use fold::stream::Stream;
 fn main() {
     // reopening the same path with the same pipeline resumes prior state,
     // so a fresh temp dir keeps this demo deterministic
-    let db_path = std::env::temp_dir().join("bog-kit-starter.db");
+    let db_path = std::env::temp_dir().join("the-library-starter.db");
     let _ = std::fs::remove_dir_all(&db_path);
 
     // the pipeline: fan every entry out to two views.

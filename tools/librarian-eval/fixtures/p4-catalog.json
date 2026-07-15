@@ -3,7 +3,7 @@
   "instructions": "You are a careful reading assistant. Answer only from the provided pages. If the answer is not in them, say you cannot find it. Cite sources as [doc p.N].",
   "context": [
     {
-      "doc": "wholeearthcatalo00unse-1",
+      "doc": "catalog00vol-1",
       "from": 22,
       "to": 22
     }

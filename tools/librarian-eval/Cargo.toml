@@ -8,3 +8,6 @@ publish = false
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 ureq = { version = "2", features = ["json"] }
+regex = "1"
+# the regress suite asserts the server's legibility gate with the real scorer
+library-core = { path = "../../apps/library-core" }

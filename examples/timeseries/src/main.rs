@@ -67,7 +67,7 @@ macro_rules! print_snapshot {
 }
 
 fn main() {
-    let db_path = std::env::temp_dir().join("bog-kit-timeseries.db");
+    let db_path = std::env::temp_dir().join("the-library-timeseries.db");
     let _ = std::fs::remove_dir_all(&db_path);
 
     let mut st = Stream::new(

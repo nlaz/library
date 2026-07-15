@@ -1,0 +1,14 @@
+{
+  "id": "mt-another-fact",
+  "turns": [
+    "tell me an interesting fact from the field guides",
+    "no i want another interesting fact"
+  ],
+  "expect": [
+    { "kind": "tools_include", "value": "sample_page" },
+    { "kind": "all_content_not_regex", "value": "(?i)can.?t (assist|help)|unable to (assist|help)" },
+    { "kind": "all_content_not_regex", "value": "00vol|Document ID" },
+    { "kind": "all_content_not_regex", "value": "\\\\n" },
+    { "kind": "all_content_not_regex", "value": "(?i)^here is an(other)? interesting" }
+  ]
+}

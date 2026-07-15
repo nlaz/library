@@ -1,0 +1,8 @@
+{
+  "id": "titles-not-ids",
+  "prompt": "which cookbook has a risotto recipe?",
+  "expect": [
+    { "kind": "tools_include", "value": "search_library" },
+    { "kind": "content_not_regex", "value": "00vol|Document ID" }
+  ]
+}

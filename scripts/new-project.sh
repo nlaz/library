@@ -37,7 +37,7 @@ EOF
 
 cat > "$project_dir/src/main.rs" <<EOF
 fn main() {
-    println!("welcome to bog kit. start hacking in $project_dir/src/main.rs");
+    println!("welcome to The Library workspace. start hacking in $project_dir/src/main.rs");
 }
 EOF
 

@@ -87,16 +87,16 @@ issues:
 
 1. **`rel` is relative, not absolute — it cannot gate "did we find
    anything?".** Expected-miss queries scored *rel = 1.0* on junk:
-   "quantum entanglement" → Clean Code's "entanglement between methods";
-   "kubernetes deployment" → generic "deployment" hits; "Broderbund" →
-   *"broth"* hits at rel 1.0 (trailing-token prefix expansion). The
+   "quantum entanglement" → a page's "entanglement between methods";
+   "kubernetes deployment" → generic "deployment" hits; "micro" →
+   *"microscope"* hits at rel 1.0 (trailing-token prefix expansion). The
    `MIN_REL=0.25` floor keeps UI noise down but tells an agent nothing.
    Recommendation: expose an absolute signal in `/api/search` (raw BM25 of
    the top hit, or top-hit-vs-corpus-baseline), and have `search_library`
    say "weak hits — the library may not cover this" below a threshold so
    the model can abstain honestly.
 2. **Prefix expansion of the last token hurts programmatic queries.**
-   It's built for type-ahead ("brod…" → broth) but agent queries are complete
+   It's built for type-ahead ("micro…" → microscope) but agent queries are complete
    words. Worth a `complete=false` flag on `/api/search` (skip
    `TermDict::complete`) for tool calls.
 3. **Semantic (ese) recall is shallow on paraphrase.** "how to keep bread

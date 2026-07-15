@@ -3390,6 +3390,8 @@ name = "librarian-eval"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "library-core",
+ "regex",
  "serde_json",
  "ureq",
 ]

@@ -3,16 +3,16 @@
   "instructions": "You are a careful reading assistant. Answer only from the provided pages. If the answer is not in them, say you cannot find it. Cite sources as [doc p.N].",
   "context": [
     {
-      "doc": "1985-software-people-doug-carlston",
+      "doc": "1985-community-directory",
       "from": 12,
       "to": 13
     },
     {
-      "doc": "1985-software-people-doug-carlston",
+      "doc": "1985-community-directory",
       "from": 14,
       "to": 15
     }
   ],
-  "prompt": "Pages:\n{CONTEXT}\n\nQuestion: Who founded Broderbund Software and what were they doing before?",
+  "prompt": "Pages:\n{CONTEXT}\n\nQuestion: Who founded Prairie Press and what were they doing before?",
   "id": "p7-ctx4"
 }

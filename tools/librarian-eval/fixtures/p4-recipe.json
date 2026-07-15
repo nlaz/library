@@ -3,7 +3,7 @@
   "instructions": "You are a careful reading assistant. Answer only from the provided pages. If the answer is not in them, say you cannot find it. Cite sources as [doc p.N].",
   "context": [
     {
-      "doc": "mrs-balbir-singhs-indian-cookery",
+      "doc": "the-art-of-plain-cookery",
       "from": 57,
       "to": 58
     }

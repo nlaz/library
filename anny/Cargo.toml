@@ -3,11 +3,11 @@ name = "anny"
 version = "0.0.1"
 edition = "2024"
 readme = "readme.md"
-license = "Apache-2.0 OR MIT"
+license = "Apache-2.0"
 documentation = "https://docs.rs/anny"
 homepage = "https://github.com/flowercomputers/anny"
 repository = "https://github.com/flowercomputers/anny"
-authors = ["W. Turner Abney <william@flowercomputer.com>"]
+authors = ["W. Turner Abney"]
 keywords = ["ann", "knn", "hnsw", "distance", "search"]
 categories = ["data-structures", "artificial-intelligence", "algorithms", "science"]
 [[bench]]

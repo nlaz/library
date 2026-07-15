@@ -3,11 +3,11 @@
   "instructions": "You are a careful reading assistant. Answer only from the provided pages. If the answer is not in them, say you cannot find it. Cite sources as [doc p.N].",
   "context": [
     {
-      "doc": "1985-software-people-doug-carlston",
+      "doc": "1985-community-directory",
       "from": 12,
-      "to": 13
+      "to": 12
     }
   ],
-  "prompt": "Pages:\n{CONTEXT}\n\nSummarize these pages in exactly 4 sentences.",
-  "id": "p3-twopage"
+  "prompt": "Pages:\n{CONTEXT}\n\nQuestion: Who founded Prairie Press and what were they doing before?",
+  "id": "p7-ctx1"
 }

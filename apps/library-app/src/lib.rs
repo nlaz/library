@@ -18,20 +18,14 @@ use std::sync::{RwLock, mpsc};
 use std::time::{Duration, Instant};
 
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use library_core::wire::{self, Response, WireHit};
-use library_core::{ClipEmb, Emb, FxHashSet, Images, Library, tokenize};
+use library_core::wire::{self, Response};
+use library_core::{ClipEmb, Images, Library, Query};
 use library_ingest::status::{self, DocState, DocStatus};
 use library_ingest::worker::{self, CommitErr, Committer, Outcome};
 use library_ingest::{IngestCtx, Progress};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
-
-const K: usize = 20;
-/// Doc-scoped find wants browser-find coverage, not a top-20 shortlist.
-const K_DOC: usize = 100;
-/// Image hits appended to an "all" response (kind=images gets a full K).
-const K_IMG_BLEND: usize = 6;
 
 pub struct Engine {
     lib: RwLock<Library>,
@@ -214,140 +208,16 @@ fn engine(state: &AppState) -> Result<std::sync::Arc<Engine>, String> {
 // search
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-pub struct Query {
-    pub seq: u64,
-    pub q: String,
-    /// "instant" = lexical only (every keystroke), "full" = hybrid (debounced)
-    #[serde(default)]
-    pub mode: String,
-    /// restrict to a collection from data/collections.json; empty = everything
-    #[serde(default)]
-    pub col: String,
-    /// "all" | "text" | "images" (empty = "all")
-    #[serde(default)]
-    pub kind: String,
-    /// restrict to a single doc id (reader find); takes precedence over `col`
-    #[serde(default)]
-    pub doc: String,
-    /// blended-list offset for infinite scroll; each response is one K-sized
-    /// slice of the deterministic blended order. 0 = first page. Ignored for
-    /// doc-scoped find (which returns everything up to K_DOC).
-    #[serde(default)]
-    pub offset: u32,
-}
-
 fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
-    let start = Instant::now();
-    let want_text = q.kind != "images";
-    let want_imgs = q.kind == "images" || (q.kind != "text" && q.mode == "full");
-
-    // doc/collection filter, pushed down into every ranker
-    let member: Option<FxHashSet<String>> = if !q.doc.is_empty() {
-        Some(std::iter::once(q.doc.clone()).collect())
-    } else {
-        (!q.col.is_empty())
-            .then(|| wire::read_collections(data).remove(&q.col))
-            .flatten()
-            .map(|docs| docs.into_iter().collect())
-    };
-
-    let mut phase = "lex";
-    let mut text_hits: Vec<WireHit> = Vec::new();
-    let mut img_hits: Vec<WireHit> = Vec::new();
-    // dev-only per-stage breakdown, see the eprintln! at the bottom
-    let mut stages: Vec<(&'static str, u128)> = Vec::new();
-
-    if want_text {
-        let t = Instant::now();
-        let qemb: Option<Emb> = (q.mode == "full").then(|| ese::encode_single(&q.q));
-        if cfg!(debug_assertions) {
-            stages.push(("ese_embed", t.elapsed().as_micros()));
-        }
-        if qemb.is_some() {
-            phase = "hybrid";
-        }
-        let qtoks = tokenize(&q.q);
-        let k = if q.doc.is_empty() { q.offset as usize + K } else { K_DOC };
-        let t = Instant::now();
-        let lib = eng.lib.read().unwrap();
-        let mut found = lib.rtx(|r| {
-            library_core::search(&r, &q.q, qemb.as_ref(), k, member.as_ref(), true, |key| {
-                lib.get(key).map(|rec| rec.words)
-            })
-        });
-        if q.doc.is_empty() {
-            // degradation cutoff, every page — doc-scoped find is exempt
-            // (browser-find coverage must not lose hits)
-            found.retain(|h| h.rel >= library_core::MIN_REL);
-        }
-        if cfg!(debug_assertions) {
-            stages.push(("lex+rrf", t.elapsed().as_micros()));
-        }
-        text_hits.extend(found.iter().map(|h| wire::wire_hit(h, &qtoks)));
-    }
-
-    if want_imgs {
-        // library stream: every figure above the relevance cutoff joins
-        // the blend (pagination doles them out); doc-scoped find keeps
-        // the small cap so reader ticks stay mostly textual
-        let k = if q.kind == "images" {
-            K
-        } else if q.doc.is_empty() {
-            usize::MAX
-        } else {
-            K_IMG_BLEND
-        };
-        let t = Instant::now();
-        let qemb: Option<ClipEmb> = eng
-            .clip_text
-            .embed(vec![q.q.clone()], None)
+    let lib = eng.lib.read().unwrap();
+    let images = eng.images.read().unwrap();
+    library_core::answer(&lib, &images, data, q, |s| {
+        eng.clip_text
+            .embed(vec![s.to_string()], None)
             .ok()
             .and_then(|mut v| v.pop())
-            .and_then(|v| v.try_into().ok());
-        if cfg!(debug_assertions) {
-            stages.push(("clip_embed", t.elapsed().as_micros()));
-        }
-        if let Some(e) = qemb {
-            phase = if want_text { "hybrid+img" } else { "img" };
-            let t = Instant::now();
-            let mut found = eng.images.read().unwrap().rtx(|r| {
-                library_core::image_search(&r, &e, library_core::IMG_FETCH, member.as_ref())
-            });
-            if q.doc.is_empty() {
-                // degradation cutoff on the top-to-noise-floor spread
-                // (raw CLIP sims cluster too tightly for a plain ratio)
-                let top = found.first().map(|h| h.score).unwrap_or(0.0);
-                let floor = found.last().map(|h| h.score).unwrap_or(0.0);
-                let min = floor + library_core::IMG_MIN_REL * (top - floor);
-                found.retain(|h| h.score >= min);
-            }
-            if cfg!(debug_assertions) {
-                stages.push(("image_search", t.elapsed().as_micros()));
-            }
-            img_hits.extend(wire::group_image_hits(&found, k));
-        }
-    }
-
-    let t = Instant::now();
-    let mut hits = wire::blend(text_hits, img_hits);
-    if q.doc.is_empty() {
-        // one page of the blended order; blend is prefix-stable (weights
-        // depend only on rank-within-own-list), so slices tile cleanly
-        // across continuation requests
-        hits = hits.into_iter().skip(q.offset as usize).take(K).collect();
-    }
-    if cfg!(debug_assertions) {
-        stages.push(("blend", t.elapsed().as_micros()));
-    }
-
-    let total = start.elapsed().as_micros();
-    if cfg!(debug_assertions) {
-        let breakdown: String =
-            stages.iter().map(|(n, us)| format!("{n}={us}us")).collect::<Vec<_>>().join(" ");
-        eprintln!("[perf] search {:?} mode={} phase={phase} : {breakdown} total={total}us", q.q, q.mode);
-    }
-    Response { seq: q.seq, phase, us: total, hits }
+            .and_then(|v| v.try_into().ok())
+    })
 }
 
 #[tauri::command]
@@ -402,8 +272,15 @@ fn librarian_bin(app: &AppHandle) -> PathBuf {
 fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
     use std::io::BufRead;
     let bin = librarian_bin(app);
+    // real collection names ride into the tool schema + instructions so the
+    // model can scope searches without guessing
+    let cols: Vec<String> = library_core::wire::read_collections(
+        &app.state::<AppState>().settings.data,
+    )
+    .into_keys()
+    .collect();
     let mut child = std::process::Command::new(&bin)
-        .args(["serve", "--tools-stdin"])
+        .args(["serve", "--tools-stdin", "--collections", &cols.join(",")])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -420,29 +297,44 @@ fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
 
 fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value) -> String {
     use library_core::tools;
+    let figure_search = |q: &str, col: &str| -> String {
+        let member = match tools::resolve_collection(data, col) {
+            Ok(m) => m,
+            Err(e) => return e.to_string(),
+        };
+        let qemb: Option<ClipEmb> = eng
+            .clip_text
+            .embed(vec![q.to_string()], None)
+            .ok()
+            .and_then(|mut v| v.pop())
+            .and_then(|v| v.try_into().ok());
+        let found = qemb
+            .map(|e| {
+                eng.images.read().unwrap().rtx(|r| {
+                    library_core::image_search(&r, &e, library_core::IMG_FETCH, member.as_ref())
+                })
+            })
+            .unwrap_or_default();
+        tools::image_hits_for_tool(&found, data, tools::TOOL_K).to_string()
+    };
+    let q = args["query"].as_str().unwrap_or("");
+    let col = args["collection"].as_str().unwrap_or("");
     match name {
         "search_library" => {
-            let q = args["query"].as_str().unwrap_or("");
-            let kind = args["kind"].as_str().unwrap_or("");
-            if kind == "images" {
-                let qemb: Option<ClipEmb> = eng
-                    .clip_text
-                    .embed(vec![q.to_string()], None)
-                    .ok()
-                    .and_then(|mut v| v.pop())
-                    .and_then(|v| v.try_into().ok());
-                let found = qemb
-                    .map(|e| {
-                        eng.images.read().unwrap().rtx(|r| {
-                            library_core::image_search(&r, &e, library_core::IMG_FETCH, None)
-                        })
-                    })
-                    .unwrap_or_default();
-                tools::image_hits_for_tool(&found, data, tools::TOOL_K).to_string()
-            } else {
-                let lib = eng.lib.read().unwrap();
-                lib.rtx(|r| tools::search_tool(&r, &lib, data, q, "", tools::TOOL_K)).to_string()
-            }
+            let lib = eng.lib.read().unwrap();
+            lib.rtx(|r| tools::search_tool(&r, &lib, data, q, col, tools::TOOL_K)).to_string()
+        }
+        "search_figures" => figure_search(q, col),
+        "sample_page" => {
+            // sidecar-injected session state, not a model-visible param
+            let avoid: Vec<String> = args["avoid"]
+                .as_str()
+                .unwrap_or("")
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect();
+            tools::sample_page_tool(data, col, None, &avoid).to_string()
         }
         "read_pages" => {
             let doc = args["doc"].as_str().unwrap_or("");

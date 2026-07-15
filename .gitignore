@@ -9,3 +9,10 @@ tools/clean-pages/clean-pages
 layout-debug/
 *.pdf
 .playwright-mcp/
+
+# personal, per-machine Claude Code settings (keep .claude/skills tracked)
+/.claude/settings.local.json
+
+# source PDF corpora — ingested working copies live under /data (also ignored)
+/cookbooks/
+/whole-earth/

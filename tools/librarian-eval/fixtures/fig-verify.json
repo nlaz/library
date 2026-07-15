@@ -1,0 +1,10 @@
+{
+  "id": "fig-verify",
+  "prompt": "show me a diagram of a geodesic dome from the field guides",
+  "expect": [
+    { "kind": "tools_include", "value": "search_figures" },
+    { "kind": "content_not_regex", "value": "(?i)please verify|you (should|can) (verify|check|read)" },
+    { "kind": "content_not_regex", "value": "(?i)can.?t (assist|help)|unable to (assist|help)" },
+    { "kind": "content_not_regex", "value": "00vol|Document ID" }
+  ]
+}

@@ -1,0 +1,33 @@
+The Library
+Copyright 2026 Flower Computer
+
+This product includes software developed at Flower Computer, licensed under
+the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party models
+--------------------------------------------------------------------------------
+
+The build and runtime fetch machine-learning models from third parties. These
+models are NOT vendored in this repository; they are downloaded by your own
+build/runtime from their upstream sources, and their own licenses govern their
+use and any redistribution.
+
+1. Static text-embedding model (crate: ese)
+   Source: sentence-transformers/static-retrieval-mrl-en-v1
+           https://huggingface.co/sentence-transformers/static-retrieval-mrl-en-v1
+   License: Apache-2.0
+   Use here: ese/build.rs downloads the model weights and tokenizer at build
+   time and bakes a quantized/truncated copy of the weights into the compiled
+   crate. Redistribution of a build artifact therefore redistributes derived
+   weights under the upstream Apache-2.0 license.
+
+2. Document-layout detection model (crate: library-ingest)
+   Source: Oblix/yolov10m-doclaynet_ONNX_document-layout-analysis
+           https://huggingface.co/Oblix/yolov10m-doclaynet_ONNX_document-layout-analysis
+   License: AGPL-3.0
+   Use here: fetched at runtime to data/models/layout/ and run via ONNX Runtime
+   for page-layout detection during ingestion. It is optional in the sense that
+   ingestion falls back to a word-gap heuristic when the model file is absent.
+   Because this model is AGPL-3.0, review its terms before redistributing it or
+   offering it as part of a network service.

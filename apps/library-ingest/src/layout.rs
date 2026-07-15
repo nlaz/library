@@ -5,8 +5,11 @@
 //! postprocessing is a score threshold plus coordinate un-mapping.
 //!
 //! Model file (not vendored): data/models/layout/yolov10m-doclaynet.onnx from
-//! huggingface.co/Oblix/yolov10m-doclaynet_ONNX_document-layout-analysis
-//! (AGPL-3.0 — fine for local use, revisit if distributing).
+//! huggingface.co/Oblix/yolov10m-doclaynet_ONNX_document-layout-analysis. The
+//! model is AGPL-3.0; it is fetched at runtime by your own build, not shipped
+//! here. Review its terms before redistributing it or serving it over a
+//! network. When the file is absent, ingestion falls back to the word-gap
+//! heuristic below, so this dependency is optional. See NOTICE.
 
 use std::path::{Path, PathBuf};
 
@@ -100,11 +103,6 @@ impl LayoutModel {
             .with_intra_threads(2)?
             .commit_from_file(&path)
             .with_context(|| format!("loading layout model {}", path.display()))?;
-        println!(
-            "layout model: {} (input '{}')",
-            path.file_name().unwrap().to_string_lossy(),
-            session.inputs[0].name,
-        );
         Ok(Some(LayoutModel { session }))
     }
 

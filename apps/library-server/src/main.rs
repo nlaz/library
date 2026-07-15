@@ -21,10 +21,8 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{Json, Router, extract::Path as UrlPath, routing::get, routing::post};
 use clap::Parser;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use library_core::wire::{
-    Response, WireHit, blend, count_pages, group_image_hits, read_collections, wire_hit,
-};
-use library_core::{ClipEmb, Emb, FxHashSet, Images, Library, tokenize};
+use library_core::wire::{count_pages, read_collections};
+use library_core::{ClipEmb, Images, Library, Query};
 use serde::Deserialize;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
@@ -44,29 +42,6 @@ struct Args {
 }
 
 #[derive(Deserialize)]
-struct Query {
-    seq: u64,
-    q: String,
-    /// "instant" = lexical only (every keystroke), "full" = hybrid (debounced)
-    #[serde(default)]
-    mode: String,
-    /// restrict to a collection from data/collections.json; empty = everything
-    #[serde(default)]
-    col: String,
-    /// "all" | "text" | "images" (empty = "all")
-    #[serde(default)]
-    kind: String,
-    /// restrict to a single doc id (reader find); takes precedence over `col`
-    #[serde(default)]
-    doc: String,
-    /// blended-list offset for infinite scroll; each response is one K-sized
-    /// slice of the deterministic blended order. 0 = first page. Ignored for
-    /// doc-scoped find (which returns everything up to K_DOC).
-    #[serde(default)]
-    offset: u32,
-}
-
-#[derive(Deserialize)]
 struct SearchParams {
     q: String,
     /// "all" | "text" | "images" (empty = "all")
@@ -83,6 +58,17 @@ struct TextParams {
     to: Option<u32>,
 }
 
+#[derive(Deserialize)]
+struct SampleParams {
+    #[serde(default)]
+    col: String,
+    seed: Option<u64>,
+    /// CSV of "doc:page" recently served to this session (sidecar-injected,
+    /// never model-visible) so repeat sampling walks new shelves.
+    #[serde(default)]
+    avoid: String,
+}
+
 struct App {
     lib: Library,
     images: Images,
@@ -92,125 +78,18 @@ struct App {
     data: PathBuf,
 }
 
-const K: usize = 20;
-/// Doc-scoped find wants browser-find coverage, not a top-20 shortlist.
-const K_DOC: usize = 100;
-/// Image hits appended to an "all" response (kind=images gets a full K).
-const K_IMG_BLEND: usize = 6;
-
 impl App {
-    fn answer(&self, q: &Query) -> Response {
-        let start = Instant::now();
-        let want_text = q.kind != "images";
-        let want_imgs = q.kind == "images" || (q.kind != "text" && q.mode == "full");
-
-        // doc/collection filter, pushed down into every ranker
-        let member: Option<FxHashSet<String>> = if !q.doc.is_empty() {
-            Some(std::iter::once(q.doc.clone()).collect())
-        } else {
-            (!q.col.is_empty())
-                .then(|| read_collections(&self.data).remove(&q.col))
-                .flatten()
-                .map(|docs| docs.into_iter().collect())
-        };
-
-        let mut phase = "lex";
-        let mut text_hits: Vec<WireHit> = Vec::new();
-        let mut img_hits: Vec<WireHit> = Vec::new();
-        // dev-only per-stage breakdown, see the eprintln! at the bottom
-        let mut stages: Vec<(&'static str, u128)> = Vec::new();
-
-        if want_text {
-            let t = Instant::now();
-            let qemb: Option<Emb> = (q.mode == "full").then(|| ese::encode_single(&q.q));
-            if cfg!(debug_assertions) {
-                stages.push(("ese_embed", t.elapsed().as_micros()));
-            }
-            if qemb.is_some() {
-                phase = "hybrid";
-            }
-            let qtoks = tokenize(&q.q);
-            let k = if q.doc.is_empty() { q.offset as usize + K } else { K_DOC };
-            let t = Instant::now();
-            let mut found = self.lib.rtx(|r| {
-                library_core::search(&r, &q.q, qemb.as_ref(), k, member.as_ref(), true, |key| {
-                    self.lib.get(key).map(|rec| rec.words)
-                })
-            });
-            if q.doc.is_empty() {
-                // degradation cutoff, every page — doc-scoped find is exempt
-                // (browser-find coverage must not lose hits)
-                found.retain(|h| h.rel >= library_core::MIN_REL);
-            }
-            if cfg!(debug_assertions) {
-                stages.push(("lex+rrf", t.elapsed().as_micros()));
-            }
-            text_hits.extend(found.iter().map(|h| wire_hit(h, &qtoks)));
-        }
-
-        if want_imgs {
-            // library stream: every figure above the relevance cutoff joins
-            // the blend (pagination doles them out); doc-scoped find keeps
-            // the small cap so reader ticks stay mostly textual
-            let k = if q.kind == "images" {
-                K
-            } else if q.doc.is_empty() {
-                usize::MAX
-            } else {
-                K_IMG_BLEND
-            };
-            let t = Instant::now();
-            let qemb: Option<ClipEmb> = self
-                .clip
-                .embed(vec![q.q.clone()], None)
+    fn answer(&self, q: &Query) -> library_core::wire::Response {
+        library_core::answer(&self.lib, &self.images, &self.data, q, |s| {
+            self.clip
+                .embed(vec![s.to_string()], None)
                 .ok()
                 .and_then(|mut v| v.pop())
-                .and_then(|v| v.try_into().ok());
-            if cfg!(debug_assertions) {
-                stages.push(("clip_embed", t.elapsed().as_micros()));
-            }
-            if let Some(e) = qemb {
-                phase = if want_text { "hybrid+img" } else { "img" };
-                let t = Instant::now();
-                let mut found = self.images.rtx(|r| {
-                    library_core::image_search(&r, &e, library_core::IMG_FETCH, member.as_ref())
-                });
-                if q.doc.is_empty() {
-                    // degradation cutoff on the top-to-noise-floor spread
-                    // (raw CLIP sims cluster too tightly for a plain ratio)
-                    let top = found.first().map(|h| h.score).unwrap_or(0.0);
-                    let floor = found.last().map(|h| h.score).unwrap_or(0.0);
-                    let min = floor + library_core::IMG_MIN_REL * (top - floor);
-                    found.retain(|h| h.score >= min);
-                }
-                if cfg!(debug_assertions) {
-                    stages.push(("image_search", t.elapsed().as_micros()));
-                }
-                img_hits.extend(group_image_hits(&found, k));
-            }
-        }
-
-        let t = Instant::now();
-        let mut hits = blend(text_hits, img_hits);
-        if q.doc.is_empty() {
-            // one page of the blended order; blend is prefix-stable (weights
-            // depend only on rank-within-own-list), so slices tile cleanly
-            // across continuation requests
-            hits = hits.into_iter().skip(q.offset as usize).take(K).collect();
-        }
-        if cfg!(debug_assertions) {
-            stages.push(("blend", t.elapsed().as_micros()));
-        }
-
-        let total = start.elapsed().as_micros();
-        if cfg!(debug_assertions) {
-            let breakdown: String =
-                stages.iter().map(|(n, us)| format!("{n}={us}us")).collect::<Vec<_>>().join(" ");
-            eprintln!("[perf] search {:?} mode={} phase={phase} : {breakdown} total={total}us", q.q, q.mode);
-        }
-        Response { seq: q.seq, phase, us: total, hits }
+                .and_then(|v| v.try_into().ok())
+        })
     }
 }
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -233,6 +112,11 @@ async fn main() -> Result<()> {
     println!("embedding model ready (clip-text; ese needs no load): {:?}", t.elapsed());
 
     let app = Arc::new(App { lib, images, clip, data: args.data.clone() });
+
+    // real collection names ride into the sidecar's tool schema +
+    // instructions (Sidecar::spawn has no data-dir access of its own)
+    let _ = SIDECAR_COLLECTIONS
+        .set(read_collections(&args.data).into_keys().collect::<Vec<_>>().join(","));
 
     // --- WebTransport endpoint ---------------------------------------------
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])?;
@@ -270,6 +154,12 @@ async fn main() -> Result<()> {
                     let out = tokio::task::spawn_blocking(move || {
                         let k = p.k.unwrap_or(library_core::tools::TOOL_K);
                         if p.kind == "images" {
+                            let member = match library_core::tools::resolve_collection(
+                                &app.data, &p.col,
+                            ) {
+                                Ok(m) => m,
+                                Err(e) => return e,
+                            };
                             let qemb: Option<ClipEmb> = app
                                 .clip
                                 .embed(vec![p.q.clone()], None)
@@ -283,7 +173,7 @@ async fn main() -> Result<()> {
                                             &r,
                                             &e,
                                             library_core::IMG_FETCH,
-                                            None,
+                                            member.as_ref(),
                                         )
                                     })
                                 })
@@ -318,6 +208,24 @@ async fn main() -> Result<()> {
                 let data = data.clone();
                 async move {
                     Json(library_core::tools::read_pages_tool(&data, &doc, p.from, p.to))
+                }
+            }
+        }))
+        // a random readable page — the browse affordance behind the sidecar's
+        // sample_page tool ("tell me something interesting"). `seed` is a
+        // test hook for the eval harness.
+        .route("/api/sample", get({
+            let data = args.data.clone();
+            move |axum::extract::Query(p): axum::extract::Query<SampleParams>| {
+                let data = data.clone();
+                async move {
+                    let avoid: Vec<String> = p
+                        .avoid
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect();
+                    Json(library_core::tools::sample_page_tool(&data, &p.col, p.seed, &avoid))
                 }
             }
         }))
@@ -393,6 +301,9 @@ async fn main() -> Result<()> {
 /// respawned on the next turn.
 const CHAT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Collection names for the sidecar's --collections flag, set once in main.
+static SIDECAR_COLLECTIONS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 struct Sidecar {
     child: tokio::process::Child,
     stdin: tokio::process::ChildStdin,
@@ -406,6 +317,13 @@ impl Sidecar {
             .unwrap_or_else(|_| "apps/librarian/.build/release/librarian".into());
         let mut child = tokio::process::Command::new(&bin)
             .arg("serve")
+            .args(
+                SIDECAR_COLLECTIONS
+                    .get()
+                    .filter(|c| !c.is_empty())
+                    .map(|c| vec!["--collections".to_string(), c.clone()])
+                    .unwrap_or_default(),
+            )
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())

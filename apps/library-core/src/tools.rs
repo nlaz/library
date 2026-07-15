@@ -14,6 +14,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+use crate::legibility::{LEGIBLE_OK, NOISY_MIN, legibility, legible_excerpt, min_window, squash_ws};
 use crate::wire::read_collections;
 use crate::{ChunkKey, Emb, FxHashSet, Hit, Library, MIN_REL, Readers, search};
 
@@ -31,6 +32,12 @@ pub const MAX_TEXT_CHARS: usize = 2500;
 /// text) and must come back as an explicit error, not as content.
 pub const BLANK_CHARS: usize = 40;
 
+/// Rides along with page text whose OCR has garbled stretches — the model
+/// quotes tool text verbatim unless told otherwise, and quoting column-
+/// interleaved salad was a top complaint from live use.
+const NOISY_NOTE: &str = "Parts of this page's OCR are noisy. Paraphrase what \
+                          is legible — never quote garbled text.";
+
 /// Raw-BM25 floor below which even a full-coverage hit is dubious
 /// (calibrated on this corpus via `librarian-eval retrieval`: real hits
 /// run 10–22, junk tails < 6).
@@ -45,8 +52,8 @@ const STOP: &[&str] = &[
 ];
 
 /// Absolute confidence for a query's hits. Raw BM25 alone can't call a
-/// miss — "quantum entanglement" scores high on Clean Code's (real!)
-/// "entanglement" chapter — so the deciding signal is *coverage*: did any
+/// miss — "quantum entanglement" scores high on a page that only really
+/// covers "entanglement" — so the deciding signal is *coverage*: did any
 /// hit match every content word of the query, or only some? Partial
 /// coverage is exactly what an off-intent match looks like.
 pub fn confidence(top_bm25: f32, coverage: f32) -> &'static str {
@@ -95,6 +102,129 @@ fn read_titles(data: &Path) -> std::collections::BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+/// Human-readable title derived from a doc id, for docs missing from
+/// titles.json. Download filenames often carry the title before a
+/// parenthetical tag (`Title (Author) (source).pdf`); kebab-case ids
+/// prettify word-by-word. Opaque scanned-archive ids (e.g. `somebook00abcd`)
+/// derive badly — those need real titles.json entries.
+pub fn derive_title(doc: &str) -> String {
+    let base = doc.split(" (").next().unwrap_or(doc).trim();
+    if base.contains(' ') {
+        return base.to_owned();
+    }
+    base.split('-')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) if w.len() > 2 => f.to_uppercase().chain(c).collect::<String>(),
+                _ => w.to_owned(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The model-facing title: titles.json first, derived otherwise — never
+/// null, so the model always has something better than a raw id to say.
+fn title_for(titles: &std::collections::BTreeMap<String, String>, doc: &str) -> String {
+    titles.get(doc).cloned().unwrap_or_else(|| derive_title(doc))
+}
+
+/// Reverse doc → collection-name map (first collection wins). Hits carry
+/// this so the model can't misattribute a doc to the wrong shelf.
+fn collection_of(data: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for (name, docs) in read_collections(data) {
+        for d in docs {
+            out.entry(d).or_insert_with(|| name.clone());
+        }
+    }
+    out
+}
+
+/// Resolve a collection argument: Ok(None) for "", Ok(Some(docs)) on a
+/// fuzzy match ("Field Guides" resolves to "field-guides"), Err(json) the
+/// model can act on when nothing matches — never a silent search-everything.
+pub fn resolve_collection(
+    data: &Path,
+    col: &str,
+) -> Result<Option<FxHashSet<String>>, Value> {
+    if col.is_empty() {
+        return Ok(None);
+    }
+    let cols = read_collections(data);
+    let norm = |s: &str| {
+        s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+    };
+    let n = norm(col);
+    // exact first; else the LONGEST overlapping name — "Field Guides
+    // Collection" must pick field-guides, not Guides, when both overlap
+    let found = cols.iter().find(|(name, _)| norm(name) == n).or_else(|| {
+        cols.iter()
+            .filter(|(name, _)| {
+                let m = norm(name);
+                m.contains(&n) || n.contains(&m)
+            })
+            .max_by_key(|(name, _)| norm(name).len())
+    });
+    match found {
+        Some((_, docs)) => Ok(Some(docs.iter().cloned().collect())),
+        None => Err(json!({
+            "error": format!("no collection matching {col:?}"),
+            "collections": cols.keys().collect::<Vec<_>>(),
+        })),
+    }
+}
+
+/// "somebook00abcd-6" -> "somebook00abcd". Ids without a trailing all-digit
+/// suffix pass through. Ids like "journal-1891" strip to "journal", which is
+/// harmless: the copy cap in [`dedup_doc_pages`] only engages when several
+/// *distinct* docs share a base.
+pub(crate) fn base_id(doc: &str) -> &str {
+    match doc.rfind('-') {
+        Some(i)
+            if !doc[i + 1..].is_empty()
+                && doc[i + 1..].bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            &doc[..i]
+        }
+        _ => doc,
+    }
+}
+
+/// Rank-order indices to keep from ranked (doc, page) hits. The library
+/// holds several physical copies of the same book (`-N` suffixed ids);
+/// without this, one catalog's copies crowd out every other source. Same
+/// base id + page collapses to the best-ranked copy, and a base with 2+
+/// distinct copy docs contributes at most 2 hits total.
+pub(crate) fn dedup_doc_pages(keys: &[(&str, u32)]) -> Vec<usize> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut docs_per_base: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (doc, _) in keys {
+        docs_per_base.entry(base_id(doc)).or_default().insert(doc);
+    }
+    let mut seen: BTreeSet<(&str, u32)> = BTreeSet::new();
+    let mut per_base: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut keep = Vec::new();
+    for (i, (doc, page)) in keys.iter().enumerate() {
+        let base = base_id(doc);
+        let copies = docs_per_base[base].len() >= 2;
+        if !seen.insert(if copies { (base, *page) } else { (*doc, *page) }) {
+            continue;
+        }
+        if copies {
+            let n = per_base.entry(base).or_insert(0);
+            if *n >= 2 {
+                continue;
+            }
+            *n += 1;
+        }
+        keep.push(i);
+    }
+    keep
+}
+
 /// Truncate in place to at most `max` bytes without splitting a char.
 pub fn truncate_chars(s: &mut String, max: usize) {
     if s.len() > max {
@@ -123,25 +253,38 @@ pub fn search_tool<R: fold::stream::Readable>(
     col: &str,
     k: usize,
 ) -> Value {
-    let member: Option<FxHashSet<String>> = (!col.is_empty())
-        .then(|| read_collections(data).remove(col))
-        .flatten()
-        .map(|docs| docs.into_iter().collect());
+    let member = match resolve_collection(data, col) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
 
     let qemb: Emb = ese::encode_single(query);
     let k = k.clamp(1, TOOL_K);
-    let mut hits = search(r, query, Some(&qemb), k.max(TOOL_K), member.as_ref(), false, |key| {
+    // fetch 2x: copy dedup below may drop hits, and the extras backfill
+    let mut hits = search(r, query, Some(&qemb), TOOL_K * 2, member.as_ref(), false, |key| {
         lib.get(key).map(|rec| rec.words)
     });
     hits.retain(|h| h.rel >= MIN_REL);
+    let keep = {
+        let keys: Vec<(&str, u32)> =
+            hits.iter().map(|h| (h.key.doc.as_str(), h.key.page)).collect();
+        dedup_doc_pages(&keys)
+    };
+    let mut i = 0;
+    hits.retain(|_| {
+        let keep_it = keep.binary_search(&i).is_ok();
+        i += 1;
+        keep_it
+    });
     hits.truncate(k);
 
     let top_bm25 = hits.iter().map(|h| h.bm25).fold(0.0f32, f32::max);
     let coverage = query_coverage(query, &hits);
     let conf = confidence(top_bm25, coverage);
     let titles = read_titles(data);
+    let cols = collection_of(data);
 
-    let slim: Vec<Value> = hits.iter().map(|h| slim_hit(h, &titles)).collect();
+    let slim: Vec<Value> = hits.iter().map(|h| slim_hit(h, &titles, &cols)).collect();
 
     let mut out = json!({
         "confidence": conf,
@@ -164,27 +307,36 @@ pub fn search_tool<R: fold::stream::Readable>(
     if conf != "none" && let Some(top) = hits.first() {
         // one hop instead of two: the top hit's whole page rides along
         if let Some(text) = page_slice(data, &top.key.doc, top.key.page, top.key.page) {
-            let mut text = text;
+            let mut text = squash_ws(&text);
             truncate_chars(&mut text, TOP_PAGE_CHARS);
             if text.len() >= BLANK_CHARS {
-                out["top_hit_page"] = json!({
+                let mut thp = json!({
                     "doc": top.key.doc,
                     "page": top.key.page,
                     "text": text,
                 });
+                if min_window(thp["text"].as_str().unwrap_or("")) < NOISY_MIN {
+                    thp["note"] = json!(NOISY_NOTE);
+                }
+                out["top_hit_page"] = thp;
             }
         }
     }
     out
 }
 
-fn slim_hit(h: &Hit, titles: &std::collections::BTreeMap<String, String>) -> Value {
+fn slim_hit(
+    h: &Hit,
+    titles: &std::collections::BTreeMap<String, String>,
+    cols: &std::collections::BTreeMap<String, String>,
+) -> Value {
     let mut snippet: String =
         h.words.iter().map(|w| w.t.as_str()).collect::<Vec<_>>().join(" ");
     truncate_chars(&mut snippet, 200);
     json!({
         "doc": h.key.doc,
-        "title": titles.get(&h.key.doc),
+        "title": title_for(titles, &h.key.doc),
+        "col": cols.get(&h.key.doc),
         "page": h.key.page,
         "snippet": snippet,
     })
@@ -198,28 +350,64 @@ pub fn image_hits_for_tool(
     k: usize,
 ) -> Value {
     let titles = read_titles(data);
-    let hits: Vec<Value> = found
+    let cols = collection_of(data);
+    let keep = {
+        let keys: Vec<(&str, u32)> =
+            found.iter().map(|h| (h.key.doc.as_str(), h.key.page)).collect();
+        dedup_doc_pages(&keys)
+    };
+    let hits: Vec<Value> = keep
         .iter()
+        .map(|&i| &found[i])
         .take(k.clamp(1, TOOL_K))
         .map(|h| {
             json!({
                 "doc": h.key.doc,
-                "title": titles.get(&h.key.doc),
+                "title": title_for(&titles, &h.key.doc),
+                "col": cols.get(&h.key.doc),
                 "page": h.key.page,
                 "kind": "figure",
             })
         })
         .collect();
     if hits.is_empty() {
-        json!({
+        return json!({
             "confidence": "none",
             "hits": [],
             "note": "No matching figures found.",
-        })
-    } else {
-        json!({ "confidence": "weak", "hits": hits,
-                "note": "Figure matches are visual-similarity only; verify by reading the page." })
+        });
     }
+    // the 3B model won't reliably chain a read_pages verify hop after a
+    // figure search (measured: fig-verify probe) — so the top figure's page
+    // text rides along, same as search_tool's top_hit_page
+    let mut out = json!({ "confidence": "weak", "hits": hits,
+            "note": "Figure matches are visual-similarity guesses, and these scan \
+                     pages have no readable text. Point the user at the page \
+                     ([Title p.N]) — do not describe what a figure shows." });
+    if let Some(top) = found.first()
+        && let Some(text) = page_slice(data, &top.key.doc, top.key.page, top.key.page)
+    {
+        let mut text = squash_ws(&text);
+        truncate_chars(&mut text, TOP_PAGE_CHARS);
+        if text.len() >= BLANK_CHARS {
+            let noisy = min_window(&text) < NOISY_MIN;
+            out["top_hit_page"] = json!({
+                "doc": top.key.doc,
+                "page": top.key.page,
+                "text": text,
+            });
+            let mut note = "Figure matches are visual-similarity guesses. top_hit_page \
+                            is the first figure's page text — describe figures only as \
+                            that text supports, and cite the page."
+                .to_owned();
+            if noisy {
+                note.push(' ');
+                note.push_str(NOISY_NOTE);
+            }
+            out["note"] = json!(note);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +455,7 @@ pub fn read_pages_tool(data: &Path, doc: &str, from: Option<u32>, to: Option<u32
 
     let from = from.unwrap_or(1).max(1);
     let to = to.unwrap_or(from).clamp(from, from + (MAX_TEXT_PAGES - 1));
-    let (text, last_page) = slice_pages(&md, from, to);
+    let (_, last_page) = slice_pages(&md, 0, 0);
 
     if from > last_page {
         return json!({
@@ -275,7 +463,17 @@ pub fn read_pages_tool(data: &Path, doc: &str, from: Option<u32>, to: Option<u32
             "doc": resolved,
         });
     }
-    if text.trim().len() < BLANK_CHARS {
+    // per page so boundaries stay marked once whitespace is squashed
+    // (newlines used to imply them, but the model parrots \n escapes)
+    let mut parts = Vec::new();
+    for p in from..=to {
+        let t = squash_ws(&slice_pages(&md, p, p).0);
+        if !t.is_empty() {
+            parts.push(if from == to { t } else { format!("[p.{p}] {t}") });
+        }
+    }
+    let text = parts.join(" ");
+    if text.len() < BLANK_CHARS {
         // blank or image-only scan page: an explicit error, never empty text
         return json!({
             "error": format!(
@@ -288,14 +486,20 @@ pub fn read_pages_tool(data: &Path, doc: &str, from: Option<u32>, to: Option<u32
     let full = text.len();
     let mut text = text;
     truncate_chars(&mut text, MAX_TEXT_CHARS);
-    json!({
+    let mut out = json!({
         "doc": resolved,
+        "title": title_for(&read_titles(data), &resolved),
+        "col": collection_of(data).get(&resolved),
         "from": from,
         "to": to,
         "total_pages": last_page,
         "truncated": full > MAX_TEXT_CHARS,
-        "text": text.trim(),
-    })
+        "text": text,
+    });
+    if min_window(out["text"].as_str().unwrap_or("")) < NOISY_MIN {
+        out["note"] = json!(NOISY_NOTE);
+    }
+    out
 }
 
 /// Slice `<!-- page N -->`-marked markdown to [from, to]; returns the text
@@ -330,6 +534,125 @@ fn page_slice(data: &Path, doc: &str, from: u32, to: u32) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// sample_page
+// ---------------------------------------------------------------------------
+
+/// A random readable page, for browse/serendipity asks ("tell me something
+/// interesting", "another one") — the app does the picking, the model
+/// narrates. Serves only each page's quotable stretches (legible_excerpt):
+/// browse doesn't need page fidelity, and a "don't quote the garbled bits"
+/// note would just get parroted at the user. Pages with nothing quotable
+/// are skipped like blanks; error-as-content on exhaustion.
+///
+/// `seed` is a test hook; None draws from the clock. `avoid` holds
+/// "doc:page" strings of recently served pages (host-side session state,
+/// never model-visible) so "another one" walks new shelves; it is ignored
+/// rather than erroring when it would exhaust the candidates.
+pub fn sample_page_tool(data: &Path, col: &str, seed: Option<u64>, avoid: &[String]) -> Value {
+    let member = match resolve_collection(data, col) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let dir = data.join("text");
+    let mut docs: Vec<String> = std::fs::read_dir(&dir)
+        .map(|it| {
+            it.flatten()
+                .filter_map(|f| {
+                    let n = f.file_name();
+                    let n = n.to_string_lossy();
+                    n.strip_suffix(".md").map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(m) = &member {
+        docs.retain(|d| m.contains(d));
+    }
+    docs.sort();
+    if docs.is_empty() {
+        return json!({ "error": "no readable documents in that collection" });
+    }
+
+    let mut state = seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::from(d.subsec_nanos()) ^ d.as_secs())
+            .unwrap_or(0x9e37_79b9_7f4a_7c15)
+    });
+    // splitmix64: enough randomness for page-picking, no new dependency
+    let mut next = move || {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+
+    let titles = read_titles(data);
+    let cols = collection_of(data);
+    // best low-scoring candidate seen, served (with a note) only if the
+    // draw budget never lands on a legible page
+    let mut best: Option<(f32, Value)> = None;
+    let mut attempt = |honor_avoid: bool, best: &mut Option<(f32, Value)>| -> Option<Value> {
+        for _ in 0..10 {
+            let doc = &docs[(next() % docs.len() as u64) as usize];
+            let Ok(md) = std::fs::read_to_string(dir.join(format!("{doc}.md"))) else {
+                continue;
+            };
+            let (_, last) = slice_pages(&md, 0, 0);
+            if last == 0 {
+                continue;
+            }
+            let page = (next() % u64::from(last)) as u32 + 1;
+            if honor_avoid && avoid.iter().any(|a| a == &format!("{doc}:{page}")) {
+                continue;
+            }
+            let (text, _) = slice_pages(&md, page, page);
+            if text.trim().len() < BLANK_CHARS {
+                continue;
+            }
+            let mut text = legible_excerpt(&squash_ws(&text));
+            if text.len() < BLANK_CHARS {
+                // nothing quotable on this page — treat like a blank
+                continue;
+            }
+            truncate_chars(&mut text, TOP_PAGE_CHARS);
+            let score = legibility(&text);
+            let out = json!({
+                "doc": doc,
+                "title": title_for(&titles, doc),
+                "col": cols.get(doc),
+                "page": page,
+                "total_pages": last,
+                "text": text,
+            });
+            if score >= LEGIBLE_OK {
+                return Some(out);
+            }
+            if best.as_ref().is_none_or(|(s, _)| score > *s) {
+                *best = Some((score, out));
+            }
+        }
+        None
+    };
+    if let Some(out) = attempt(true, &mut best) {
+        return out;
+    }
+    if best.is_none()
+        && !avoid.is_empty()
+        && let Some(out) = attempt(false, &mut best)
+    {
+        return out;
+    }
+    if let Some((_, out)) = best {
+        return out;
+    }
+    json!({
+        "error": "could not find a readable page — the collection may be mostly image-only scans"
+    })
+}
+
+// ---------------------------------------------------------------------------
 // list_collections
 // ---------------------------------------------------------------------------
 
@@ -341,7 +664,7 @@ pub fn collections_tool(data: &Path) -> Value {
         .map(|(name, docs)| {
             let entries: Vec<Value> = docs
                 .iter()
-                .map(|d| json!({ "doc": d, "title": titles.get(d) }))
+                .map(|d| json!({ "doc": d, "title": title_for(&titles, d) }))
                 .collect();
             (name, Value::Array(entries))
         })
@@ -392,5 +715,134 @@ mod tests {
         assert_eq!(confidence(20.0, 0.5), "weak"); // off-intent partial match
         assert_eq!(confidence(3.0, 1.0), "weak"); // full match, junk-tail score
         assert_eq!(confidence(0.0, 1.0), "none");
+    }
+
+    #[test]
+    fn derive_title_handles_id_shapes() {
+        assert_eq!(derive_title("the-art-of-plain-cookery"), "The Art of Plain Cookery");
+        assert_eq!(
+            derive_title("Field Guide to Mushrooms (A. Botanist) (source.example)"),
+            "Field Guide to Mushrooms"
+        );
+        assert_eq!(derive_title("a-history-of-tea"), "a History of Tea");
+    }
+
+    fn sample_fixture(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tools-test-{name}"));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("text")).unwrap();
+        std::fs::write(
+            dir.join("text/doc-a.md"),
+            "# a\n<!-- page 1 -->\nplenty of readable text here, long enough to clear the blank floor\n<!-- page 2 -->\nsecond page also has plenty of readable text to clear the floor\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("text/doc-b.md"), "# b\n<!-- page 1 -->\n\n").unwrap();
+        std::fs::write(
+            dir.join("text/doc-garbled.md"),
+            "# g\n<!-- page 1 -->\nGotu iicher cs Veckly sty Merkel Stece ee 7 ee ee cs Seeeetca Uriters ay ck vb 9 zz qf om Veckly Stece ee cs ee ay ck\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("collections.json"),
+            r#"{"field-guides": ["doc-a"], "recipes": ["doc-b"], "Guides": ["doc-b"], "garbled": ["doc-garbled"]}"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_collection_is_fuzzy_and_loud() {
+        let dir = sample_fixture("resolve");
+        assert!(resolve_collection(&dir, "").unwrap().is_none());
+        let m = resolve_collection(&dir, "Field Guides").unwrap().unwrap();
+        assert!(m.contains("doc-a"));
+        let err = resolve_collection(&dir, "bogus").unwrap_err();
+        assert!(err["error"].as_str().unwrap().contains("bogus"));
+        assert!(err["collections"].as_array().unwrap().len() == 4);
+        // overlapping names pick the longest match, not map order:
+        // "Field Guides Collection" must hit field-guides, not Guides
+        let m = resolve_collection(&dir, "Field Guides Collection").unwrap().unwrap();
+        assert!(m.contains("doc-a"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sample_page_is_seeded_and_skips_blanks() {
+        let dir = sample_fixture("sample");
+        let a = sample_page_tool(&dir, "field-guides", Some(42), &[]);
+        let b = sample_page_tool(&dir, "field-guides", Some(42), &[]);
+        assert_eq!(a, b); // seed determinism
+        assert_eq!(a["doc"], "doc-a");
+        assert!(a["text"].as_str().unwrap().len() >= BLANK_CHARS);
+        assert!(!a["text"].as_str().unwrap().contains('\n'));
+        assert_eq!(a["col"], "field-guides");
+        assert!(a["note"].is_null(), "clean page must not carry a noisy note");
+        // doc-b's only page is blank: exhaustion is an error, not empty text
+        let blank = sample_page_tool(&dir, "recipes", Some(1), &[]);
+        assert!(blank["error"].as_str().unwrap().contains("readable"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sample_page_skips_garbled_pages_and_honors_avoid() {
+        let dir = sample_fixture("sample-gate");
+        // the garbled collection's only page has no quotable stretch: it is
+        // skipped like a blank, and exhaustion stays an explicit error
+        let g = sample_page_tool(&dir, "garbled", Some(7), &[]);
+        assert!(g["error"].as_str().unwrap().contains("readable"), "got: {g}");
+        // avoid steers to the other readable page of doc-a...
+        let first = sample_page_tool(&dir, "field-guides", Some(42), &[]);
+        let avoid = format!("doc-a:{}", first["page"].as_u64().unwrap());
+        let second = sample_page_tool(&dir, "field-guides", Some(42), &[avoid.clone()]);
+        assert_eq!(second["doc"], "doc-a");
+        assert_ne!(first["page"], second["page"]);
+        // ...and is ignored, not fatal, when every candidate is avoided
+        let both = vec!["doc-a:1".to_owned(), "doc-a:2".to_owned()];
+        let anyway = sample_page_tool(&dir, "field-guides", Some(42), &both);
+        assert_eq!(anyway["doc"], "doc-a");
+        assert!(anyway["error"].is_null());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn base_id_strips_only_trailing_digit_suffixes() {
+        assert_eq!(base_id("somebook00abcd-6"), "somebook00abcd");
+        assert_eq!(base_id("somebook00abcd-10"), "somebook00abcd");
+        assert_eq!(base_id("somebook00abcd"), "somebook00abcd");
+        assert_eq!(base_id("a-history-of-tea"), "a-history-of-tea");
+        assert_eq!(base_id("journal-1891"), "journal"); // harmless, see doc comment
+    }
+
+    #[test]
+    fn dedup_collapses_copies_but_not_lone_docs() {
+        // vol-2/vol-6 are copies (2 distinct docs, one base): same page
+        // collapses, and the family is capped at 2 hits total
+        let keys = vec![
+            ("vol-2", 5),
+            ("vol-6", 5),
+            ("vol-2", 9),
+            ("vol-6", 9),
+            ("vol-2", 12),
+            ("other", 1),
+        ];
+        assert_eq!(dedup_doc_pages(&keys), vec![0, 2, 5]);
+        // journal-1891 strips to "journal" but is the only doc on that base:
+        // no cap, only exact (doc, page) duplicates collapse
+        let lone = vec![("journal-1891", 3), ("journal-1891", 4), ("journal-1891", 5), ("journal-1891", 4)];
+        assert_eq!(dedup_doc_pages(&lone), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn read_pages_squashes_newlines_and_marks_page_boundaries() {
+        let dir = sample_fixture("read-squash");
+        let one = read_pages_tool(&dir, "doc-a", Some(1), Some(1));
+        let t = one["text"].as_str().unwrap();
+        assert!(!t.contains('\n'));
+        assert!(!t.contains("[p."), "single-page reads carry no marker");
+        let two = read_pages_tool(&dir, "doc-a", Some(1), Some(2));
+        let t = two["text"].as_str().unwrap();
+        assert!(!t.contains('\n'));
+        assert!(t.contains("[p.1]") && t.contains("[p.2]"), "got: {t}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

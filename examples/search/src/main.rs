@@ -72,7 +72,7 @@ macro_rules! demo {
 }
 
 fn main() {
-    let db_path = std::env::temp_dir().join("bog-kit-search.db");
+    let db_path = std::env::temp_dir().join("the-library-search.db");
     let _ = std::fs::remove_dir_all(&db_path);
 
     // KeyedStream pushes Keyed<u64, String> deltas through the pipeline;

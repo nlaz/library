@@ -1,0 +1,7 @@
+{
+  "id": "scoped-search",
+  "prompt": "search the recipes for saffron",
+  "expect": [
+    { "kind": "tool_arg", "tool": "search_library", "arg": "collection", "value": "recipes" }
+  ]
+}

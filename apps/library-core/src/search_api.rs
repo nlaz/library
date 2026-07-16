@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use serde::Deserialize;
 
+use crate::perf;
 use crate::wire::{self, Response, WireHit};
 use crate::{ClipEmb, Emb, FxHashSet, Images, Library, MIN_REL, tokenize};
 
@@ -77,8 +78,15 @@ pub fn answer(
     let mut phase = "lex";
     let mut text_hits: Vec<WireHit> = Vec::new();
     let mut img_hits: Vec<WireHit> = Vec::new();
-    // dev-only per-stage breakdown, see the eprintln! at the bottom
+    // per-stage breakdown, recorded into the perf ring (and, in dev builds,
+    // the eprintln! at the bottom)
     let mut stages: Vec<(&'static str, u128)> = Vec::new();
+    let mut ranker = crate::RankerStats::default();
+    let mut rel_killed = 0usize;
+    let (mut img_fetched, mut img_killed) = (0usize, 0usize);
+    let (mut img_top, mut img_floor) = (0.0f32, 0.0f32);
+    let mut text_prov: Vec<perf::HitProv> = Vec::new();
+    let mut img_prov: Vec<perf::ImgProv> = Vec::new();
 
     if want_text {
         let t = Instant::now();
@@ -87,9 +95,7 @@ pub fn answer(
         // doc-scoped browser-find stay lexical-only and exact.
         let full = q.mode == "full" && q.doc.is_empty();
         let qemb: Option<Emb> = full.then(|| ese::encode_single(&q.q));
-        if cfg!(debug_assertions) {
-            stages.push(("ese_embed", t.elapsed().as_micros()));
-        }
+        stages.push(("ese_embed", t.elapsed().as_micros()));
         if qemb.is_some() {
             phase = "hybrid";
         }
@@ -99,16 +105,17 @@ pub fn answer(
         let mut found = lib.rtx(|r| {
             crate::search(&r, &q.q, qemb.as_ref(), k, member.as_ref(), true, full, full, |key| {
                 lib.get(key)
-            })
+            }, Some(&mut ranker))
         });
         if q.doc.is_empty() {
             // degradation cutoff, every page — doc-scoped find is exempt
             // (browser-find coverage must not lose hits)
+            let before = found.len();
             found.retain(|h| h.rel >= MIN_REL);
+            rel_killed = before - found.len();
         }
-        if cfg!(debug_assertions) {
-            stages.push(("lex+rrf", t.elapsed().as_micros()));
-        }
+        stages.push(("lex+rrf", t.elapsed().as_micros()));
+        text_prov.extend(found.iter().take(perf::HITS_PER_RECORD).map(perf::HitProv::from));
         text_hits.extend(found.iter().map(|h| wire::wire_hit(h, &qtoks)));
     }
 
@@ -118,26 +125,25 @@ pub fn answer(
         let k = if q.kind == "images" { K } else { usize::MAX };
         let t = Instant::now();
         let qemb: Option<ClipEmb> = clip_embed(&q.q);
-        if cfg!(debug_assertions) {
-            stages.push(("clip_embed", t.elapsed().as_micros()));
-        }
+        stages.push(("clip_embed", t.elapsed().as_micros()));
         if let Some(e) = qemb {
             phase = if want_text { "hybrid+img" } else { "img" };
             let t = Instant::now();
             let mut found = images.rtx(|r| {
                 crate::image_search(&r, &e, crate::IMG_FETCH, member.as_ref())
             });
+            img_fetched = found.len();
+            img_top = found.first().map(|h| h.score).unwrap_or(0.0);
+            img_floor = found.last().map(|h| h.score).unwrap_or(0.0);
             if q.doc.is_empty() {
                 // degradation cutoff on the top-to-noise-floor spread
                 // (raw CLIP sims cluster too tightly for a plain ratio)
-                let top = found.first().map(|h| h.score).unwrap_or(0.0);
-                let floor = found.last().map(|h| h.score).unwrap_or(0.0);
-                let min = floor + crate::IMG_MIN_REL * (top - floor);
+                let min = img_floor + crate::IMG_MIN_REL * (img_top - img_floor);
                 found.retain(|h| h.score >= min);
+                img_killed = img_fetched - found.len();
             }
-            if cfg!(debug_assertions) {
-                stages.push(("image_search", t.elapsed().as_micros()));
-            }
+            stages.push(("image_search", t.elapsed().as_micros()));
+            img_prov.extend(found.iter().take(perf::HITS_PER_RECORD).map(perf::ImgProv::from));
             img_hits.extend(wire::group_image_hits(&found, k));
         }
     }
@@ -150,9 +156,7 @@ pub fn answer(
         // across continuation requests
         hits = hits.into_iter().skip(q.offset as usize).take(K).collect();
     }
-    if cfg!(debug_assertions) {
-        stages.push(("blend", t.elapsed().as_micros()));
-    }
+    stages.push(("blend", t.elapsed().as_micros()));
 
     let total = start.elapsed().as_micros();
     if cfg!(debug_assertions) {
@@ -160,5 +164,28 @@ pub fn answer(
             stages.iter().map(|(n, us)| format!("{n}={us}us")).collect::<Vec<_>>().join(" ");
         eprintln!("[perf] search {:?} mode={} phase={phase} : {breakdown} total={total}us", q.q, q.mode);
     }
+    perf::record_search(perf::SearchRecord {
+        ts_ms: perf::now_ms(),
+        q: q.q.clone(),
+        mode: q.mode.clone(),
+        kind: q.kind.clone(),
+        col: q.col.clone(),
+        doc: q.doc.clone(),
+        offset: q.offset,
+        phase: phase.to_owned(),
+        total_us: total as u64,
+        stages: stages.iter().map(|(n, us)| ((*n).to_owned(), *us as u64)).collect(),
+        lex_n: ranker.lex_n,
+        sem_n: ranker.sem_n,
+        rel_killed,
+        img_fetched,
+        img_killed,
+        img_top,
+        img_floor,
+        served: hits.len(),
+        zero: hits.is_empty(),
+        text_hits: text_prov,
+        img_hits: img_prov,
+    });
     Response { seq: q.seq, phase, us: total, hits }
 }

@@ -267,7 +267,7 @@ pub fn search_tool<R: fold::stream::Readable>(
     // dedup_doc_pages below).
     let mut hits = search(r, query, Some(&qemb), TOOL_K * 2, member.as_ref(), false, true, false, |key| {
         lib.get(key)
-    });
+    }, None);
     hits.retain(|h| h.rel >= MIN_REL);
     let keep = {
         let keys: Vec<(&str, u32)> =

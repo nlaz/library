@@ -120,6 +120,11 @@ pub fn ocr_pdf(
         "ocr complete: {layered} text-layer, {} ocr'd, {skipped} cached, {n} total",
         done - layered
     )));
+    progress(Progress::OcrSummary {
+        text_layer: layered as u32,
+        vision: (done - layered) as u32,
+        cached: skipped as u32,
+    });
     Ok(())
 }
 

@@ -23,6 +23,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use library_core::perf::IngestMetrics;
 use library_core::{ChunkRec, ImageRec, Images, Library};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -266,7 +267,7 @@ struct StatusMirror<'a> {
 impl StatusMirror<'_> {
     fn update(&mut self, p: &Progress) {
         let (stage, done, total) = match *p {
-            Progress::Log(_) => return,
+            Progress::Log(_) | Progress::OcrSummary { .. } => return,
             Progress::Ocr { done, total } => ("ocr", done as u64, total as u64),
             Progress::Clean { done, total } => ("clean", done as u64, total as u64),
             Progress::Embed { done, total } => ("embed", done as u64, total as u64),
@@ -292,6 +293,88 @@ impl StatusMirror<'_> {
     }
 }
 
+/// Accumulates the persisted ingest metrics: per-stage wall-clock from the
+/// `Progress` stream (a stage's time runs from its first event to the next
+/// stage's first event), counts from stage totals and commit returns, plus
+/// explicitly timed sections (commits, legibility). Seeded with a prior
+/// run's metrics so a resumed doc sums across runs rather than losing the
+/// committed stages' numbers.
+struct MetricsClock {
+    m: IngestMetrics,
+    stage: &'static str,
+    started: std::time::Instant,
+}
+
+impl MetricsClock {
+    fn new(prior: Option<IngestMetrics>) -> Self {
+        MetricsClock {
+            m: prior.unwrap_or_default(),
+            stage: "",
+            started: std::time::Instant::now(),
+        }
+    }
+
+    fn add(&mut self, name: &str, ms: u64) {
+        *self
+            .m
+            .timings_ms
+            .get_or_insert_default()
+            .entry(name.to_string())
+            .or_insert(0) += ms;
+    }
+
+    /// Close the open stage, attributing its elapsed time.
+    fn close(&mut self) {
+        if !self.stage.is_empty() {
+            let ms = self.started.elapsed().as_millis() as u64;
+            let stage = self.stage;
+            self.add(stage, ms);
+            self.stage = "";
+        }
+    }
+
+    fn flip(&mut self, stage: &'static str) {
+        if stage != self.stage {
+            self.close();
+            self.stage = stage;
+            self.started = std::time::Instant::now();
+        }
+    }
+
+    fn update(&mut self, p: &Progress) {
+        match *p {
+            Progress::Log(_) => {}
+            Progress::OcrSummary { text_layer, vision, cached } => {
+                self.m.ocr = Some((text_layer, vision, cached));
+            }
+            Progress::Ocr { total, .. } => {
+                self.m.pages = Some(total);
+                self.flip("ocr");
+            }
+            Progress::Clean { .. } => self.flip("clean"),
+            Progress::Embed { .. } => self.flip("embed"),
+            Progress::Figures { .. } => self.flip("figures"),
+            Progress::Clip { .. } => self.flip("clip"),
+            Progress::Indexing => self.flip("indexing"),
+        }
+    }
+
+    /// Metrics as of now (open stage closed, `total` and stamp refreshed),
+    /// for attaching to a status transition.
+    fn snapshot(&mut self, t0: std::time::Instant) -> IngestMetrics {
+        self.close();
+        let m = self.m.timings_ms.get_or_insert_default();
+        *m.entry("total".to_string()).or_insert(0) = m
+            .iter()
+            .filter(|(k, _)| *k != "total")
+            .map(|(_, v)| v)
+            .sum::<u64>()
+            .max(t0.elapsed().as_millis() as u64);
+        self.m.at = library_core::perf::now_ms();
+        self.m.clone()
+    }
+}
+
 /// Drive `doc` from whatever state it's in toward `ready`. Idempotent and
 /// resume-safe: staged records commit without recompute, page caches make
 /// a redone prepare cheap, and commits are diff-based upserts.
@@ -305,18 +388,16 @@ pub fn process_doc(
     let Some(_claim) = claim(data, doc) else {
         return Outcome::Skipped;
     };
-    let prior = status::read(data, doc).map(|s| s.state);
+    let prior_status = status::read(data, doc);
+    let prior = prior_status.as_ref().map(|s| s.state);
     if prior == Some(DocState::Ready) || prior == Some(DocState::Deleted) {
         return Outcome::Ready; // nothing to do; don't resurrect tombstones
     }
 
+    let t0 = std::time::Instant::now();
+    let mut clock = MetricsClock::new(prior_status.and_then(|s| s.metrics));
     let mut mirror =
         StatusMirror { data, doc, last: std::time::Instant::now(), stage: "" };
-    // one composed callback: host events + the throttled status file
-    let mut cb = |p: Progress| {
-        mirror.update(&p);
-        progress(p);
-    };
 
     let indexing = || DocStatus {
         stage: Some("indexing".to_string()),
@@ -333,7 +414,12 @@ pub fn process_doc(
                 None => {
                     let _ = status::write(data, doc, &DocStatus::new(DocState::Preparing));
                     let pdf = data.join("pdfs").join(format!("{doc}.pdf"));
-                    match crate::prepare_text(ctx, &pdf, doc, None, &mut cb) {
+                    let res = crate::prepare_text(ctx, &pdf, doc, None, &mut |p| {
+                        mirror.update(&p);
+                        clock.update(&p);
+                        progress(p);
+                    });
+                    match res {
                         Ok((recs, pages)) => (recs, Some(pages)),
                         Err(e) => {
                             let _ = status::write(data, doc, &DocStatus::failed(format!("{e:#}")));
@@ -344,21 +430,30 @@ pub fn process_doc(
             };
 
         let _ = status::write(data, doc, &indexing());
+        let t = std::time::Instant::now();
         match committer.text(doc, &recs) {
-            Ok(_) => {
+            Ok((removed, added)) => {
+                clock.add("commit_text", t.elapsed().as_millis() as u64);
+                clock.m.chunks = Some((added as u32, removed as u32));
                 let _ = std::fs::remove_file(staged_dir(data, doc).join("text.postcard"));
                 let md = match &pages {
                     Some(pages) => crate::textout::write_doc_pages(data, doc, pages),
                     None => crate::textout::write_doc(data, doc),
                 };
                 if let Err(e) = md {
-                    cb(Progress::Log(format!("text edition failed: {e:#}")));
+                    progress(Progress::Log(format!("text edition failed: {e:#}")));
                 }
+                // OCR-quality summary while the page caches are warm; the
+                // perf view reads it off the status file
+                let t = std::time::Instant::now();
+                clock.m.legibility = library_core::perf::legibility_summary(data, doc);
+                clock.add("legibility", t.elapsed().as_millis() as u64);
                 let _ = status::write(
                     data,
                     doc,
                     &DocStatus {
                         stage: Some("figures".to_string()),
+                        metrics: Some(clock.snapshot(t0)),
                         ..DocStatus::new(DocState::TextReady)
                     },
                 );
@@ -382,20 +477,37 @@ pub fn process_doc(
     // -- figures --------------------------------------------------------------
     let figs: Vec<ImageRec> = match staged(data, doc, "figures.postcard") {
         Some(figs) => figs,
-        None => match crate::prepare_figures(ctx, doc, &mut cb) {
-            Ok(figs) => figs,
-            Err(e) => {
-                let _ = status::write(data, doc, &DocStatus::failed(format!("{e:#}")));
-                return Outcome::Failed;
+        None => {
+            let res = crate::prepare_figures(ctx, doc, &mut |p| {
+                mirror.update(&p);
+                clock.update(&p);
+                progress(p);
+            });
+            match res {
+                Ok(figs) => figs,
+                Err(e) => {
+                    let _ = status::write(data, doc, &DocStatus::failed(format!("{e:#}")));
+                    return Outcome::Failed;
+                }
             }
-        },
+        }
     };
 
     let _ = status::write(data, doc, &indexing());
+    let t = std::time::Instant::now();
     match committer.figures(doc, &figs) {
-        Ok(_) => {
+        Ok((removed, added)) => {
+            clock.add("commit_figures", t.elapsed().as_millis() as u64);
+            clock.m.figures = Some((added as u32, removed as u32));
             clear_staged(data, doc);
-            let _ = status::write(data, doc, &DocStatus::new(DocState::Ready));
+            let _ = status::write(
+                data,
+                doc,
+                &DocStatus {
+                    metrics: Some(clock.snapshot(t0)),
+                    ..DocStatus::new(DocState::Ready)
+                },
+            );
             Outcome::Ready
         }
         Err(CommitErr::Locked) => {

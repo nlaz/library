@@ -229,6 +229,46 @@ async fn main() -> Result<()> {
                 }
             }
         }))
+        // hidden perf view (Cmd+.): the search ring (per-stage timings +
+        // per-hit ranker provenance) plus the constants/corpus-counts header
+        .route("/api/perf/searches", get({
+            let app = app.clone();
+            move || {
+                let app = app.clone();
+                async move {
+                    let out = tokio::task::spawn_blocking(move || {
+                        let chunks = app.lib.rtx(|((_, vec), _)| vec.len());
+                        let figures = app.images.rtx(|(vec, _)| vec.len());
+                        let docs = std::fs::read_dir(app.data.join("pages"))
+                            .map(|d| d.filter_map(|e| e.ok()).count())
+                            .unwrap_or(0);
+                        serde_json::json!({
+                            "meta": library_core::perf::meta(chunks, figures, docs),
+                            "searches": library_core::perf::search_log(),
+                        })
+                    })
+                    .await
+                    .expect("perf searches task panicked");
+                    Json(out)
+                }
+            }
+        }))
+        // per-doc ingest metrics; lazily backfills legibility for docs from
+        // before metrics existed (first call on a big library takes seconds)
+        .route("/api/perf/ingest", get({
+            let data = args.data.clone();
+            move || {
+                let data = data.clone();
+                async move {
+                    let out = tokio::task::spawn_blocking(move || {
+                        library_core::perf::ingest_rows(&data)
+                    })
+                    .await
+                    .expect("perf ingest task panicked");
+                    Json(out)
+                }
+            }
+        }))
         // chat agent: relay the librarian sidecar's NDJSON as SSE. The
         // sidecar (apps/librarian) runs the Apple Foundation Models agent
         // loop; its tools call back into /api/search and /api/text here.

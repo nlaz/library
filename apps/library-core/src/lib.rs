@@ -3,13 +3,14 @@
 use anny::metric::Cosine;
 use fold::pipeline::terminal::search::{Bm25, Bm25Reader, Hnsw, HnswReader};
 use fold::pipeline::terminal::{InvertedIndex, InvertedIndexReader};
-use fold::pipeline::{FlatMap, Keyed, Map, Push};
+use fold::pipeline::{FlatMap, Keyed, Map, Push, Scored};
 use fold::stream::{KeyedStream, PipelineInitCtx, Readable, WriteTx};
 use fxhash::FxHashMap;
 pub use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 pub mod legibility;
+pub mod perf;
 pub mod search_api;
 pub mod tools;
 pub mod wire;
@@ -361,8 +362,27 @@ pub struct Hit {
     /// must look here.
     #[serde(default)]
     pub bm25: f32,
+    /// 0-based rank in the lexical (BM25) list; `None` = semantic-only —
+    /// exactly the hits that take the `rel = 1.0` default above and so
+    /// bypass the [`MIN_REL`] cutoff.
+    #[serde(default)]
+    pub lex_rank: Option<u32>,
+    /// 0-based rank in the semantic (HNSW) list; `None` = lexical-only.
+    #[serde(default)]
+    pub sem_rank: Option<u32>,
+    /// Cosine distance from the vector index (lower = closer).
+    #[serde(default)]
+    pub sem_dist: Option<f32>,
     pub key: ChunkKey,
     pub words: Vec<Word>,
+}
+
+/// Pre-fusion ranker list sizes, reported through the `stats` out-param of
+/// [`search`] — the fused hit list alone can't reconstruct them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RankerStats {
+    pub lex_n: usize,
+    pub sem_n: usize,
 }
 
 /// Hits scoring below this fraction of the query's top BM25 hit are noise;
@@ -390,7 +410,7 @@ pub const IMG_MIN_REL: f32 = 0.35;
 /// ranks between page requests). Also caps stable pagination depth at
 /// ~LEX_FETCH lexical + TOP_K semantic hits. BM25 cost is limit-independent
 /// (full postings scan, truncate at end), so the extra depth is nearly free.
-const LEX_FETCH: usize = 512;
+pub const LEX_FETCH: usize = 512;
 
 /// Max edit distance for fuzzy term correction ([`TermDictReader::correct`]).
 const MAX_FUZZ_DIST: usize = 2;
@@ -549,6 +569,7 @@ pub fn search<R: Readable>(
     fuzzy: bool,
     diversify: bool,
     resolve: impl Fn(&ChunkKey) -> Option<ChunkRec>,
+    mut stats: Option<&mut RankerStats>,
 ) -> Vec<Hit> {
     let ((lex, vec), (_, terms)) = r;
 
@@ -607,21 +628,29 @@ pub fn search<R: Readable>(
         })
         .collect();
     let lexical: Vec<ChunkKey> = scored.into_iter().map(|h| h.val).collect();
+    let lex_rank: FxHashMap<ChunkKey, u32> =
+        lexical.iter().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
     if cfg!(debug_assertions) {
         eprintln!("[perf] lex_search elapsed={}us hits={}", t.elapsed().as_micros(), lexical.len());
     }
     let t = std::time::Instant::now();
-    let semantic: Vec<ChunkKey> = match (qemb, filter) {
-        (Some(e), Some(f)) => vec
-            .search_filtered(e, |key: &ChunkKey| f.contains(&key.doc))
-            .into_iter()
-            .map(|h| h.val)
-            .collect(),
-        (Some(e), None) => vec.search(e).into_iter().map(|h| h.val).collect(),
+    let sem_scored: Vec<Scored<f32, ChunkKey>> = match (qemb, filter) {
+        (Some(e), Some(f)) => vec.search_filtered(e, |key: &ChunkKey| f.contains(&key.doc)),
+        (Some(e), None) => vec.search(e),
         (None, _) => Vec::new(),
     };
+    let sem_rank: FxHashMap<ChunkKey, (u32, f32)> = sem_scored
+        .iter()
+        .enumerate()
+        .map(|(i, h)| (h.val.clone(), (i as u32, h.score)))
+        .collect();
+    let semantic: Vec<ChunkKey> = sem_scored.into_iter().map(|h| h.val).collect();
     if cfg!(debug_assertions) {
         eprintln!("[perf] vec_search elapsed={}us hits={}", t.elapsed().as_micros(), semantic.len());
+    }
+    if let Some(s) = stats.as_deref_mut() {
+        s.lex_n = lexical.len();
+        s.sem_n = semantic.len();
     }
 
     let t = std::time::Instant::now();
@@ -636,7 +665,20 @@ pub fn search<R: Readable>(
         .filter_map(|(score, key)| {
             let rec = resolve(&key)?;
             let (r, bm25) = rel.get(&key).copied().unwrap_or((1.0, 0.0));
-            Some(Hit { score, rel: r, bm25, key, words: rec.words })
+            let (sem_rank, sem_dist) = match sem_rank.get(&key) {
+                Some(&(rank, dist)) => (Some(rank), Some(dist)),
+                None => (None, None),
+            };
+            Some(Hit {
+                score,
+                rel: r,
+                bm25,
+                lex_rank: lex_rank.get(&key).copied(),
+                sem_rank,
+                sem_dist,
+                key,
+                words: rec.words,
+            })
         })
         .collect();
     if cfg!(debug_assertions) {

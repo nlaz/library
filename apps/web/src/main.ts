@@ -12,6 +12,7 @@ import {
   setReaderHits,
   stepHit,
 } from "./reader";
+import { perfOpen, togglePerf } from "./perf";
 import { isTauri, makeTransport, type Transport } from "./transport";
 import type { Collections, DocInfo, IngestEvent, WireHit, WireResponse } from "./types";
 
@@ -695,6 +696,25 @@ function openSearchPop() {
 function closeSearchPop() {
   $searchPop.hidden = true;
 }
+
+// window + capture phase: the perf view sits above every other layer, so its
+// keys must run before all the document-level handlers below (and before
+// inputs' stopPropagation). Cmd+. toggles; Escape closes exactly this layer.
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === ".") {
+      e.preventDefault();
+      e.stopPropagation();
+      togglePerf();
+    } else if (e.key === "Escape" && perfOpen()) {
+      e.preventDefault();
+      e.stopPropagation();
+      togglePerf();
+    }
+  },
+  true,
+);
 
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === "f") {

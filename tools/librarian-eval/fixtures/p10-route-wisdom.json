@@ -1,0 +1,8 @@
+{
+  "id": "p10-route-wisdom",
+  "prompt": "give me some wisdom from the books that we have",
+  "expect": [
+    { "kind": "tools_include", "value": "sample_page" },
+    { "kind": "content_not_regex", "value": "(?i)^here is" }
+  ]
+}

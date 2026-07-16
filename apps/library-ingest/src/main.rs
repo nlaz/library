@@ -720,8 +720,8 @@ fn search(query: &str, data: &Path, k: usize, lex_only: bool) -> Result<()> {
 
     let t = Instant::now();
     let hits = st.rtx(|r| {
-        library_core::search(&r, query, qemb.as_ref(), k, None, true, |key| {
-            st.get(key).map(|rec| rec.words)
+        library_core::search(&r, query, qemb.as_ref(), k, None, true, false, false, |key| {
+            st.get(key)
         })
     });
     let dur = t.elapsed();

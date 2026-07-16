@@ -53,6 +53,12 @@ struct SearchParams {
 }
 
 #[derive(Deserialize)]
+struct CompleteParams {
+    q: String,
+    k: Option<usize>,
+}
+
+#[derive(Deserialize)]
 struct TextParams {
     from: Option<u32>,
     to: Option<u32>,
@@ -142,6 +148,13 @@ async fn main() -> Result<()> {
             let data = args.data.clone();
             move || async move { Json(read_collections(&data)) }
         }))
+        // slim library gestalt for the chat sidecar's library_overview tool:
+        // collection names, sizes, example titles — sized for a 4k-context
+        // model to orient with, unlike /api/collections' full id dump
+        .route("/api/overview", get({
+            let data = args.data.clone();
+            move || async move { Json(library_core::tools::overview_tool(&data)) }
+        }))
         // plain-JSON search for programmatic callers (the chat sidecar's
         // search_library tool, the eval harness). Delegates to the shared
         // agent tools in library_core::tools: complete=false, absolute
@@ -189,6 +202,29 @@ async fn main() -> Result<()> {
                     })
                     .await
                     .expect("search task panicked");
+                    Json(out)
+                }
+            }
+        }))
+        // frequency-ranked word completions for the search box's type-ahead
+        // dropdown: one prefix scan over the term dictionary, no embedding
+        // and no image path. A plain route (not a WebTransport datagram mode)
+        // keeps type-ahead off the seq/instant/full state machine.
+        .route("/api/complete", get({
+            let app = app.clone();
+            move |axum::extract::Query(p): axum::extract::Query<CompleteParams>| {
+                let app = app.clone();
+                async move {
+                    let out = tokio::task::spawn_blocking(move || {
+                        let q = p.q.trim();
+                        if q.is_empty() {
+                            return Vec::<String>::new();
+                        }
+                        let k = p.k.unwrap_or(8);
+                        app.lib.rtx(|(_, (_, terms))| terms.complete_ranked(q, k))
+                    })
+                    .await
+                    .expect("complete task panicked");
                     Json(out)
                 }
             }

@@ -229,6 +229,28 @@ async fn search(state: State<'_, AppState>, query: Query) -> Result<Response, St
         .map_err(|e| e.to_string())
 }
 
+/// Frequency-ranked word completions for the search box's type-ahead
+/// dropdown — the desktop analogue of the server's `/api/complete` route.
+/// One prefix scan over the term dictionary; no embedding.
+#[tauri::command]
+async fn complete(
+    state: State<'_, AppState>,
+    prefix: String,
+    k: Option<usize>,
+) -> Result<Vec<String>, String> {
+    let eng = engine(&state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let q = prefix.trim();
+        if q.is_empty() {
+            return Vec::<String>::new();
+        }
+        let lib = eng.lib.read().unwrap();
+        lib.rtx(|(_, (_, terms))| terms.complete_ranked(q, k.unwrap_or(8)))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn ready(state: State<'_, AppState>) -> bool {
     state.engine.read().unwrap().is_some()
@@ -342,6 +364,7 @@ fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value)
             let to = args["to"].as_u64().map(|n| n as u32);
             tools::read_pages_tool(data, doc, from, to).to_string()
         }
+        "library_overview" => tools::overview_tool(data).to_string(),
         "list_collections" => tools::collections_tool(data).to_string(),
         _ => serde_json::json!({ "error": format!("unknown tool {name:?}") }).to_string(),
     }
@@ -918,6 +941,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             search,
+            complete,
             ready,
             collections,
             docs,

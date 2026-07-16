@@ -82,8 +82,11 @@ pub fn answer(
 
     if want_text {
         let t = Instant::now();
-        let qemb: Option<Emb> =
-            (q.mode == "full" && q.doc.is_empty()).then(|| ese::encode_single(&q.q));
+        // "full" query, library-wide: the settled query gets semantic search,
+        // fuzzy term correction, and MMR diversity. Instant (per-keystroke) and
+        // doc-scoped browser-find stay lexical-only and exact.
+        let full = q.mode == "full" && q.doc.is_empty();
+        let qemb: Option<Emb> = full.then(|| ese::encode_single(&q.q));
         if cfg!(debug_assertions) {
             stages.push(("ese_embed", t.elapsed().as_micros()));
         }
@@ -94,8 +97,8 @@ pub fn answer(
         let k = if q.doc.is_empty() { q.offset as usize + K } else { K_DOC };
         let t = Instant::now();
         let mut found = lib.rtx(|r| {
-            crate::search(&r, &q.q, qemb.as_ref(), k, member.as_ref(), true, |key| {
-                lib.get(key).map(|rec| rec.words)
+            crate::search(&r, &q.q, qemb.as_ref(), k, member.as_ref(), true, full, full, |key| {
+                lib.get(key)
             })
         });
         if q.doc.is_empty() {

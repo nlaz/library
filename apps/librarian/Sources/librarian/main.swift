@@ -217,10 +217,37 @@ final class SeenPages: @unchecked Sendable {
     }
 }
 
+/// The sample fetch, shared by the model-visible tool and the plan
+/// pre-pass (browse turns run it host-side — see plannedPrompt).
+func fetchSample(collection col: String, seen: SeenPages) async -> String {
+    recorder.record("sample_page", ["collection": col])
+    emit.line(["e": "tool", "name": "sample_page", "status": "started", "args": ["collection": col]])
+    var params: [String: String] = [:]
+    if !col.isEmpty { params["col"] = col }
+    let avoid = seen.csv()
+    if !avoid.isEmpty { params["avoid"] = avoid }
+    let body = await callTool(
+        "sample_page", ["collection": col, "avoid": avoid], path: "/api/sample", query: params)
+    var summary = "sampled a page"
+    var chips: [[String: Any]] = []
+    if let obj = json(body) as? [String: Any] {
+        if let err = obj["error"] as? String {
+            summary = err
+        } else if let d = obj["doc"] as? String {
+            let page = obj["page"] ?? 0
+            summary = "opened \(d) p.\(page)"
+            chips = [["doc": d, "title": obj["title"] ?? NSNull(), "page": page]]
+            if let p = obj["page"] as? Int { seen.add("\(d):\(p)") }
+        }
+    }
+    emit.line(["e": "tool", "name": "sample_page", "status": "done", "summary": summary, "hits": chips])
+    return body
+}
+
 struct SamplePage: Tool {
     let name = "sample_page"
     let description =
-        "Open one page of the library at random and return its text. Use whenever the user wants something interesting or fun rather than a specific topic: \"tell me an interesting fact\", \"another one\", \"surprise me\". Pass collection to browse one shelf."
+        "Open one page of the library at random and return its text. Use when the user leaves the choice of material to you — open-ended, browsing, or inspiration asks with no specific topic to search for. Pass collection to browse one shelf."
     let seen: SeenPages
 
     var parameters: GenerationSchema {
@@ -233,41 +260,20 @@ struct SamplePage: Tool {
 
     func call(arguments: GeneratedContent) async throws -> String {
         let col = ((try? arguments.value(String?.self, forProperty: "collection")) ?? nil) ?? ""
-        recorder.record(name, ["collection": col])
-        emit.line(["e": "tool", "name": name, "status": "started", "args": ["collection": col]])
-        var params: [String: String] = [:]
-        if !col.isEmpty { params["col"] = col }
-        let avoid = seen.csv()
-        if !avoid.isEmpty { params["avoid"] = avoid }
-        let body = await callTool(
-            name, ["collection": col, "avoid": avoid], path: "/api/sample", query: params)
-        var summary = "sampled a page"
-        var chips: [[String: Any]] = []
-        if let obj = json(body) as? [String: Any] {
-            if let err = obj["error"] as? String {
-                summary = err
-            } else if let d = obj["doc"] as? String {
-                let page = obj["page"] ?? 0
-                summary = "opened \(d) p.\(page)"
-                chips = [["doc": d, "title": obj["title"] ?? NSNull(), "page": page]]
-                if let p = obj["page"] as? Int { seen.add("\(d):\(p)") }
-            }
-        }
-        emit.line(["e": "tool", "name": name, "status": "done", "summary": summary, "hits": chips])
-        return body
+        return await fetchSample(collection: col, seen: seen)
     }
 }
 
 struct ReadPages: Tool {
     let name = "read_pages"
     let description =
-        "Read the full text of specific pages of a document, in reading order. Use after search_library to read the pages a hit points at. Returns at most 2 pages per call."
+        "Read the full text of specific pages of a document, in reading order. Use to dig into a page another tool surfaced, or to keep reading nearby pages. Returns at most 2 pages per call."
 
     var parameters: GenerationSchema {
         GenerationSchema(
             type: GeneratedContent.self,
             properties: [
-                .init(name: "doc", description: "Document id from a search hit", type: String.self),
+                .init(name: "doc", description: "Document id or book title from a tool result", type: String.self),
                 .init(name: "from", description: "First page to read", type: Int.self),
                 .init(name: "to", description: "Last page to read (at most from+1)", type: Int?.self),
             ])
@@ -301,54 +307,90 @@ struct ReadPages: Tool {
     }
 }
 
-struct ListCollections: Tool {
-    let name = "list_collections"
-    let description = "List the library's collections and the document ids in each."
+/// The overview fetch, shared by the model-visible tool and the plan
+/// pre-pass (which injects it host-side rather than trusting the model to
+/// make the call — see plannedPrompt).
+func fetchOverview() async -> String {
+    recorder.record("library_overview", [:])
+    emit.line(["e": "tool", "name": "library_overview", "status": "started", "args": [String: String]()])
+    let body = await callTool("library_overview", [:], path: "/api/overview", query: [:])
+    var summary = "library overview"
+    if let obj = json(body) as? [String: Any], let n = obj["books"] {
+        summary = "\(n) books on the shelves"
+    }
+    emit.line(["e": "tool", "name": "library_overview", "status": "done", "summary": summary, "hits": [[String: Any]]()])
+    return body
+}
+
+/// Compact plain-text rendering of the overview JSON for prompt injection.
+func overviewText(_ body: String) -> String {
+    guard let obj = json(body) as? [String: Any] else { return body }
+    var parts: [String] = []
+    if let n = obj["books"] { parts.append("\(n) books.") }
+    for c in (obj["collections"] as? [[String: Any]]) ?? [] {
+        let name = c["collection"] as? String ?? "?"
+        let n = c["books"] ?? 0
+        let ex = (c["examples"] as? [String] ?? []).joined(separator: ", ")
+        parts.append("\(name): \(n) books, e.g. \(ex).")
+    }
+    if let loose = obj["uncollected_books"] {
+        parts.append("\(loose) not in any collection.")
+    }
+    return parts.joined(separator: " ")
+}
+
+struct LibraryOverview: Tool {
+    let name = "library_overview"
+    let description =
+        "See what the library holds: each collection with its size and a few example titles. Use to orient yourself before deciding where to look, or when the user asks what the library contains."
 
     var parameters: GenerationSchema {
         GenerationSchema(type: GeneratedContent.self, properties: [])
     }
 
     func call(arguments: GeneratedContent) async throws -> String {
-        recorder.record(name, [:])
-        emit.line(["e": "tool", "name": name, "status": "started", "args": [String: String]()])
-        let body = await callTool(name, [:], path: "/api/collections", query: [:])
-        emit.line(["e": "tool", "name": name, "status": "done", "summary": "collections", "hits": [[String: Any]]()])
-        return body
+        await fetchOverview()
     }
 }
 
 // MARK: - Session
 
+/// Process instructions, not use-case instructions: the model is told how a
+/// librarian works — orient, find, dig, answer — and chooses tools itself.
+/// The judgment-heavy choices (which tool, what query) are made in the plan
+/// pre-pass (PLAN_SCHEMA) where decoding is schema-constrained; these prose
+/// rules carry only the process and the honesty/grounding behaviors that
+/// probes showed the model follows reliably.
 let INSTRUCTIONS = """
-    You are the librarian for a personal library of scanned books: cookbooks, \
-    Whole Earth Catalogs, and books about software and computing. You answer \
-    only from the library's contents, using your tools. For questions about \
-    the books, call search_library first; pass collection when the user \
-    names one\(COLLECTIONS.isEmpty ? "" : " (\(COLLECTIONS))"). For browsing \
-    — "tell me something interesting", "another one", "surprise me" — call \
-    sample_page and share the single most interesting thing on that page in \
-    your own words; quote only short clean phrases, and never open with \
-    announcements like "Here is an interesting fact". Vague follow-ups ("more", \
-    "another", "no, a different one") are still library requests: call a \
+    You are the librarian for a personal library of scanned books. You \
+    answer only from the library's contents, using your tools — never from \
+    your own knowledge. Work as a process: if you need to know what the \
+    library holds, orient with library_overview; then find material — \
+    search_library for anything specific, sample_page when the user leaves \
+    the choice to you, search_figures only for pictures; then dig with \
+    read_pages when the text you found is not enough; then answer from \
+    what the tools returned, in your own words. Pass collection when the \
+    user names one\(COLLECTIONS.isEmpty ? "" : " (\(COLLECTIONS))"). \
+    Follow-ups like "more" or "another" are still library requests: call a \
     tool again; never decline them. Search results include a "confidence" \
-    field and sometimes a "note" — when confidence is "none" or "weak", say \
-    plainly that the library may not cover the question. Results may \
-    include the top hit's full page text; answer from it when it suffices, \
-    and use read_pages only for a different page. If a tool returns an \
-    error, relay it honestly — never guess at a page's contents. Call books \
-    by their "title" from tool results — never show raw document ids. Cite \
-    every claim as [Title p.N]. Be concise.
+    field — when it is "none" or "weak", say plainly that the library may \
+    not cover the question. Results may include the top hit's full page \
+    text; answer from it when it suffices. If a tool returns an error, \
+    relay it honestly — never guess at a page's contents. Quote only short \
+    clean phrases. Call books by their "title" from tool results — never \
+    show raw document ids. Cite every claim as [Title p.N]. Be concise.
     """
 
-/// Fresh tool instances per session: SamplePage carries per-conversation
-/// state (its SeenPages avoid list) that must not leak across sessions.
-func defaultTools() -> [any Tool] {
-    [SearchLibrary(), SearchFigures(), SamplePage(seen: SeenPages()), ReadPages(), ListCollections()]
+/// Fresh tool instances per session/conversation. `seen` is the
+/// conversation's sample-page avoid list — the caller holds it so the
+/// plan pre-pass (which runs browse turns host-side) shares it with the
+/// model-visible SamplePage tool.
+func defaultTools(seen: SeenPages) -> [any Tool] {
+    [SearchLibrary(), SearchFigures(), SamplePage(seen: seen), ReadPages(), LibraryOverview()]
 }
 
 func makeSession(tools: [any Tool]? = nil) -> LanguageModelSession {
-    let tools = tools ?? defaultTools()
+    let tools = tools ?? defaultTools(seen: SeenPages())
     // Permissive guardrails are deliberate: benign questions about this
     // corpus (butchering a chicken, curing meat, sharpening a knife, home
     // brewing, lighting a wood stove) trip AFM's default guardrail. The
@@ -357,6 +399,170 @@ func makeSession(tools: [any Tool]? = nil) -> LanguageModelSession {
         model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
         tools: tools,
         instructions: INSTRUCTIONS)
+}
+
+// MARK: - Plan pre-pass (structured reasoning via guided generation)
+
+// The routing decision — what does the user want, which tool serves it,
+// what are the actual search terms — used to live as trigger phrases in the
+// instructions ("surprise me", "another one"), which generalized to nothing
+// unscripted. It is now a decision the model makes itself, one guided-
+// generation call before the tool loop, because schema-constrained decoding
+// is where the 3B model is most reliable (chat-spike P4). This also attacks
+// the spike's "query formulation is naive" finding: the plan's `query`
+// field asks for reformulated content words, not the user's sentence.
+
+let PLAN_INSTRUCTIONS = """
+    You triage requests for a librarian agent over a personal library of \
+    scanned books\(COLLECTIONS.isEmpty ? "" : " (collections: \(COLLECTIONS))"). \
+    Decide how the librarian should handle the user's message. Do not \
+    answer the message yourself. Examples: "what temperature for tandoori \
+    chicken" → search. "do I have books about bread?" → search. "show me a \
+    picture of a dome" → figures. "tell me an interesting fact" → browse. \
+    "give me some wisdom from the books" → browse. "an interesting fact \
+    from the cookbooks" → browse. "what kinds of books do I have?" → \
+    overview. "hello!" → reply.
+    """
+
+let PLAN_SCHEMA: GenerationSchema = {
+    let approach = DynamicGenerationSchema(
+        name: "Approach",
+        anyOf: ["search", "figures", "browse", "overview", "reply"])
+    var props: [DynamicGenerationSchema.Property] = [
+        .init(
+            name: "intent",
+            description: "What the user actually wants, in one short sentence.",
+            schema: DynamicGenerationSchema(type: String.self)),
+        .init(
+            name: "approach",
+            description: """
+                figures: they want to SEE something — a picture, diagram, photograph, or map. \
+                search: they want to know about something specific they name — a topic, \
+                recipe, or book — answered from the books' text. \
+                browse: they want an interesting fact, wisdom, inspiration, a surprise, \
+                or another one — anything where the library picks the material. \
+                overview: they ask what the library contains. \
+                reply: no library material needed — a greeting or a question about you.
+                """,
+            schema: approach),
+        .init(
+            name: "query",
+            description:
+                "For search only: the terms to search with — plain content words, not the user's sentence. Otherwise empty.",
+            schema: DynamicGenerationSchema(type: String.self)),
+    ]
+    // collection scoping is decode-constrained to the real shelf names
+    if !COLLECTIONS.isEmpty {
+        let choices = COLLECTIONS.split(separator: ",").map(String.init) + ["any"]
+        props.append(
+            .init(
+                name: "collection",
+                description: "The collection the user names, else \"any\".",
+                schema: DynamicGenerationSchema(name: "Collection", anyOf: choices)))
+    }
+    let root = DynamicGenerationSchema(name: "Plan", properties: props)
+    // hand-built (macro-free), same reason as ANSWER_SCHEMA
+    return try! GenerationSchema(root: root, dependencies: [])
+}()
+
+struct Plan {
+    let intent: String
+    let approach: String
+    let query: String
+    let collection: String
+}
+
+/// One schema-constrained call that shapes the turn before the tool loop
+/// runs. Returns nil on any failure — the turn then runs planless on the
+/// raw prompt, which is exactly the pre-plan behavior.
+func planTurn(_ context: String) async -> Plan? {
+    let session = LanguageModelSession(
+        model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
+        instructions: PLAN_INSTRUCTIONS)
+    // near-greedy: routing is a classification, not prose — sampling
+    // variance here flipped the same ask between approaches across runs
+    let options = GenerationOptions(temperature: 0.1)
+    guard let resp = try? await session.respond(to: context, schema: PLAN_SCHEMA, options: options)
+    else {
+        return nil
+    }
+    let col = (try? resp.content.value(String.self, forProperty: "collection")) ?? ""
+    let plan = Plan(
+        intent: (try? resp.content.value(String.self, forProperty: "intent")) ?? "",
+        approach: (try? resp.content.value(String.self, forProperty: "approach")) ?? "",
+        query: (try? resp.content.value(String.self, forProperty: "query")) ?? "",
+        collection: col == "any" ? "" : col)
+    emit.line([
+        "e": "plan", "intent": plan.intent, "approach": plan.approach,
+        "query": plan.query, "collection": plan.collection,
+    ])
+    recorder.record("plan", ["approach": plan.approach, "query": plan.query])
+    return plan
+}
+
+/// Plain-text rendering of a search result for prompt injection (raw JSON
+/// braces in the prompt broke the guided answer decode).
+func searchResultText(_ body: String) -> String {
+    guard let obj = json(body) as? [String: Any] else { return body }
+    var parts: [String] = []
+    if let conf = obj["confidence"] as? String { parts.append("Confidence: \(conf).") }
+    if let note = obj["note"] as? String { parts.append(note) }
+    for h in (obj["hits"] as? [[String: Any]]) ?? [] {
+        let title = h["title"] as? String ?? h["doc"] as? String ?? "?"
+        parts.append("[\(title) p.\(h["page"] ?? 0)] \(h["snippet"] as? String ?? "")")
+    }
+    if let thp = obj["top_hit_page"] as? [String: Any], let text = thp["text"] as? String {
+        if let note = thp["note"] as? String { parts.append(note) }
+        parts.append("Full text of the top hit's page: \(text)")
+    }
+    return parts.joined(separator: " ")
+}
+
+/// Plain-text rendering of a sampled page for prompt injection.
+func sampleTextForPrompt(_ body: String) -> String {
+    guard let obj = json(body) as? [String: Any] else { return body }
+    if let err = obj["error"] as? String { return err }
+    let title = obj["title"] as? String ?? obj["doc"] as? String ?? "?"
+    return "[\(title) p.\(obj["page"] ?? 0)] \(obj["text"] as? String ?? "")"
+}
+
+/// Weave the plan into the turn prompt. "reply" (and a failed plan) adds
+/// nothing — the raw prompt stands alone and the main session answers
+/// directly. Every other approach executes its first hop host-side and
+/// injects the result as context: the plan already made the decision, and
+/// probe runs showed that delegating the call back to the model lets it
+/// skip the tool and answer from imagination with fake citations
+/// (p10-route-overview invented whole shelves; half the p1-search probes
+/// never searched; browse turns wandered into library_overview). The model
+/// still has every tool for follow-up hops (read_pages, another search);
+/// only the first, planned hop is guaranteed.
+func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages) async -> String {
+    guard let plan else { return prompt }
+    switch plan.approach {
+    case "search":
+        if plan.query.isEmpty {
+            return "\(prompt)\n\nPlan: search the library first."
+        }
+        let body = await runSearch(
+            toolName: "search_library", query: plan.query,
+            collection: plan.collection, kind: "")
+        return "\(prompt)\n\nLibrary search results for \"\(plan.query)\": \(searchResultText(body))"
+    case "figures":
+        if plan.query.isEmpty {
+            return "\(prompt)\n\nPlan: find it with search_figures."
+        }
+        let body = await runSearch(
+            toolName: "search_figures", query: plan.query,
+            collection: plan.collection, kind: "images")
+        return "\(prompt)\n\nFigure search results for \"\(plan.query)\": \(searchResultText(body))"
+    case "browse":
+        let body = await fetchSample(collection: plan.collection, seen: seen)
+        return "\(prompt)\n\nA page opened at random — share the most interesting thing on it: \(sampleTextForPrompt(body))"
+    case "overview":
+        return "\(prompt)\n\nAnswer from this library overview: \(overviewText(await fetchOverview()))"
+    default:
+        return prompt
+    }
 }
 
 /// Guide for the final answer's single `text` field. Constraining generation
@@ -504,9 +710,14 @@ func runTurn() async {
         emit.line(["e": "error", "message": "no user message in request"])
         return
     }
-    let session = makeSession()
-    session.prewarm()
-    await executeTurn(session: session, prompt: prompt, fallback: messages.last?.content ?? prompt)
+    let seen = SeenPages()
+    let session = makeSession(tools: defaultTools(seen: seen))
+    session.prewarm()  // main session warms while the plan pre-pass runs
+    let plan = await planTurn(prompt)
+    await executeTurn(
+        session: session,
+        prompt: await plannedPrompt(prompt, plan, seen: seen),
+        fallback: messages.last?.content ?? prompt)
 }
 
 // MARK: - serve mode (persistent: sessions per conversation, cancellation)
@@ -526,23 +737,29 @@ func parseMessages(_ raw: Any?) -> [Msg] {
 final class ServeState: @unchecked Sendable {
     private let lock = NSLock()
     private var sessions: [String: LanguageModelSession] = [:]
+    private var seenPages: [String: SeenPages] = [:]
     private var lastUsed: [String: Date] = [:]
     private var active: Task<Void, Never>?
 
-    /// Returns (session, isNew), evicting idle conversations first.
-    func checkout(_ conv: String) -> (LanguageModelSession, Bool) {
+    /// Returns (session, seen, isNew), evicting idle conversations first.
+    /// `seen` outlives session replacement (overflow retry) so "another
+    /// one" keeps walking new shelves across the whole conversation.
+    func checkout(_ conv: String) -> (LanguageModelSession, SeenPages, Bool) {
         lock.lock()
         defer { lock.unlock() }
         let now = Date()
         for (k, t) in lastUsed where now.timeIntervalSince(t) > SESSION_IDLE_EVICT {
             sessions.removeValue(forKey: k)
+            seenPages.removeValue(forKey: k)
             lastUsed.removeValue(forKey: k)
         }
         lastUsed[conv] = now
-        if let s = sessions[conv] { return (s, false) }
-        let s = makeSession()
+        let seen = seenPages[conv] ?? SeenPages()
+        seenPages[conv] = seen
+        if let s = sessions[conv] { return (s, seen, false) }
+        let s = makeSession(tools: defaultTools(seen: seen))
         sessions[conv] = s
-        return (s, true)
+        return (s, seen, true)
     }
 
     func replace(_ conv: String, with s: LanguageModelSession) {
@@ -597,11 +814,20 @@ func runServe() async {
                 }
                 // session transcripts carry history natively; only a brand-new
                 // (or evicted) conversation needs the folded-history rebuild
-                let (session, isNew) = state.checkout(conv)
+                let (session, seen, isNew) = state.checkout(conv)
                 let prompt = isNew ? buildPrompt(messages) : last.content
                 let task = Task {
+                    // plan over the folded history, not the bare message —
+                    // "another one" only classifies with context
+                    let plan = await planTurn(buildPrompt(messages))
+                    if Task.isCancelled {
+                        emit.line(["e": "cancelled"])
+                        emit.line(["e": "turn_end"])
+                        return
+                    }
                     if let replacement = await executeTurn(
-                        session: session, prompt: prompt, fallback: last.content)
+                        session: session, prompt: await plannedPrompt(prompt, plan, seen: seen),
+                        fallback: last.content)
                     {
                         state.replace(conv, with: replacement)
                     }
@@ -644,14 +870,15 @@ func runProbe(_ path: String) async {
     var options = GenerationOptions()
     if let t = fx["temperature"] as? Double { options = GenerationOptions(temperature: t) }
 
+    let seen = SeenPages()
     let session: LanguageModelSession
     if let instructions = fx["instructions"] as? String {
         session = LanguageModelSession(
             model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
-            tools: useTools ? defaultTools() : [],
+            tools: useTools ? defaultTools(seen: seen) : [],
             instructions: instructions)
     } else {
-        session = makeSession(tools: useTools ? defaultTools() : [])
+        session = makeSession(tools: useTools ? defaultTools(seen: seen) : [])
     }
 
     let start = Date()
@@ -665,11 +892,22 @@ func runProbe(_ path: String) async {
             contents = [content]
         } else {
             content = ""
+            // probes run the same planned path as serve/turn mode, so
+            // fixtures assert real routing; plan decisions land in
+            // tool_calls (name "plan") via the recorder
+            var transcript: [Msg] = []
             for (i, turn) in turns.enumerated() {
+                transcript.append(Msg(role: "user", content: turn))
+                var prompt = turn
+                if useTools {
+                    prompt = await plannedPrompt(
+                        turn, await planTurn(buildPrompt(transcript)), seen: seen)
+                }
                 // guided generation, matching serve/turn mode
-                let resp = try await session.respond(to: turn, schema: ANSWER_SCHEMA, options: options)
+                let resp = try await session.respond(to: prompt, schema: ANSWER_SCHEMA, options: options)
                 content = answerText(resp.content) ?? resp.content.jsonString
                 contents.append(content)
+                transcript.append(Msg(role: "assistant", content: content))
                 if turns.count > 1 {
                     emit.line(["e": "turn_result", "id": id, "turn": i, "content": content])
                 }

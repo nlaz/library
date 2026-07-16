@@ -1022,6 +1022,34 @@ mark {
   color: var(--ink-faint);
 }
 
+#ac {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+}
+
+#ac[hidden] {
+  display: none;
+}
+
+#ac li {
+  padding: 5px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#ac li:hover,
+#ac li.on {
+  background: var(--ink);
+  color: var(--surface);
+}
+
 #q:focus {
   outline: 1px solid var(--ink);
   outline-offset: 1px;

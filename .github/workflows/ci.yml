@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Cross-platform crates: everything that builds without Apple frameworks.
+  rust-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The ese model download (build.rs, network-once) lives outside what
+      # rust-cache preserves; key on build.rs since it owns the source URLs.
+      - uses: actions/cache@v4
+        with:
+          path: target/ese-cache
+          key: ese-model-${{ hashFiles('ese/build.rs') }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo test --locked -p fold -p anny -p ese -p library-core
+      - run: cargo test --locked -p ese --features tests
+      - run: cargo check --locked -p starter -p timeseries -p chat -p search
+
+  # App crates need macOS: Vision/PDFKit (objc2) in library-ingest, tauri in
+  # library-app. Tests themselves are hermetic (temp dirs, no models).
+  rust-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: target/ese-cache
+          key: ese-model-${{ hashFiles('ese/build.rs') }}
+      - uses: Swatinem/rust-cache@v2
+      # tauri-build resolves frontendDist (../web/dist) at compile time; the
+      # built frontend isn't needed for tests, just the directory.
+      - run: mkdir -p apps/web/dist
+      - run: cargo test --locked -p library-ingest -p library-server -p library-app -p librarian-eval
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build

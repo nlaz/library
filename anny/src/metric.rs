@@ -26,8 +26,8 @@ where
         i += 8;
     }
     let mut s = zero;
-    for l in 0..8 {
-        s = reduce(s, acc[l]);
+    for &lane in &acc {
+        s = reduce(s, lane);
     }
     while i < n {
         s = reduce(s, map(a[i], b[i]));

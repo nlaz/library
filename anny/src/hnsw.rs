@@ -313,8 +313,7 @@ where
         while let Some((_cd, c)) = fr.next() {
             let c = c as usize;
             let nbrs = self.nbr(c, layer);
-            for k in 0..nbrs.len() {
-                let n = nbrs[k];
+            for &n in nbrs {
                 if n == NONE {
                     continue;
                 }
@@ -575,8 +574,7 @@ where
         let mut chosen: Vec<u32> = Vec::with_capacity(cap);
         self.select_heuristic(&sel, cap, n as u32, &mut chosen);
 
-        for i in 0..len {
-            let z = cur[i];
+        for &z in cur.iter().take(len) {
             if z != newid && !chosen.contains(&z) {
                 self.remove_link(z as usize, n as u32, layer);
             }
@@ -620,8 +618,8 @@ where
                     sl += 1;
                 }
             }
-            for i in 0..sl {
-                self.remove_link(s[i] as usize, id, layer);
+            for &nb in s.iter().take(sl) {
+                self.remove_link(nb as usize, id, layer);
             }
             for i in 0..sl {
                 let n = s[i] as usize;
@@ -637,9 +635,9 @@ where
                         push(x, &mut pool);
                     }
                 }
-                for j in 0..sl {
+                for (j, &v) in s.iter().enumerate().take(sl) {
                     if j != i {
-                        push(s[j], &mut pool);
+                        push(v, &mut pool);
                     }
                 }
                 let mut sel: Vec<Item<Distance::Out>> = pool
@@ -748,8 +746,7 @@ where
             while let Some((_cd, c)) = fr.next() {
                 let c = c as usize;
                 let nbrs = self.nbr(c, 0);
-                for k in 0..nbrs.len() {
-                    let n = nbrs[k];
+                for &n in nbrs {
                     if n == NONE {
                         continue;
                     }
@@ -979,9 +976,13 @@ impl<'a> Cursor<'a> {
         Ok(s)
     }
     fn u32(&mut self) -> Result<u32, LoadError> {
+        // invariant: take(4)? returned a slice of exactly 4 bytes, so the
+        // conversion to [u8; 4] cannot fail.
         Ok(u32::from_ne_bytes(self.take(4)?.try_into().unwrap()))
     }
     fn u64(&mut self) -> Result<u64, LoadError> {
+        // invariant: take(8)? returned a slice of exactly 8 bytes, so the
+        // conversion to [u8; 8] cannot fail.
         Ok(u64::from_ne_bytes(self.take(8)?.try_into().unwrap()))
     }
     // Read `n` T values by raw byte copy into a fresh, properly aligned Vec.

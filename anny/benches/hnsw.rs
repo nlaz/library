@@ -51,8 +51,8 @@ fn read_fvecs(path: &str) -> Vec<[f32; DIM]> {
         assert_eq!(dim, DIM, "fvecs dim {dim} != {DIM}");
         i += 4;
         let mut v = [0f32; DIM];
-        for d in 0..DIM {
-            v[d] = f32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+        for slot in &mut v {
+            *slot = f32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
             i += 4;
         }
         out.push(v);

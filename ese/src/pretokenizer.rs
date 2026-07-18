@@ -5,14 +5,11 @@ pub fn normalize_into(input: &str, out: &mut String) {
     out.extend(
         input
             .chars()
-            .filter_map(|ch| {
+            .filter(|&ch| {
                 if ch == '\0' || ch == '\u{FFFD}' {
-                    return None;
+                    return false;
                 }
-                if ch.is_control() && ch != '\t' && ch != '\n' && ch != '\r' {
-                    return None;
-                }
-                Some(ch)
+                !ch.is_control() || ch == '\t' || ch == '\n' || ch == '\r'
             })
             .flat_map(|ch| {
                 if ch.is_whitespace() {

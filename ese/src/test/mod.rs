@@ -53,7 +53,7 @@ fn test_fuzz() {
     // Also fuzz with valid unicode strings built from char ranges
     for cp in (0u32..0x10000).step_by(37) {
         if let Some(ch) = char::from_u32(cp) {
-            let s: String = std::iter::repeat(ch).take(5).collect();
+            let s: String = std::iter::repeat_n(ch, 5).collect();
             let _ = crate::encode_single(&s);
         }
     }

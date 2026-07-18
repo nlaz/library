@@ -64,7 +64,7 @@ pub fn clean_doc(data: &Path, doc: &str, progress: ProgressFn) -> Result<(usize,
         .stderr(Stdio::inherit())
         .spawn()
         .with_context(|| format!("spawning {}", tool.display()))?;
-    for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines() {
+    for line in std::io::BufReader::new(child.stdout.take().expect("piped stdout")).lines() {
         let line = line?;
         // "clean <done>/<total>"
         if let Some((done, total)) = line

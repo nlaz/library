@@ -369,7 +369,11 @@ async fn main() -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], args.http_port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("http: http://{addr}");
-    tokio::spawn(async move { axum::serve(listener, http).await.unwrap() });
+    tokio::spawn(async move {
+        axum::serve(listener, http)
+            .await
+            .expect("http server failed")
+    });
 
     // --- accept loop ---------------------------------------------------------
     loop {

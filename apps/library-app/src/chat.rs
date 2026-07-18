@@ -54,8 +54,10 @@ fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("librarian sidecar failed to start ({}): {e}", bin.display()))?;
-    let stdin = std::sync::Arc::new(std::sync::Mutex::new(child.stdin.take().expect("piped")));
-    let mut lines = std::io::BufReader::new(child.stdout.take().expect("piped")).lines();
+    let stdin = std::sync::Arc::new(std::sync::Mutex::new(
+        child.stdin.take().expect("piped stdin"),
+    ));
+    let mut lines = std::io::BufReader::new(child.stdout.take().expect("piped stdout")).lines();
     match lines.next() {
         Some(Ok(l)) if l.contains("\"ready\"") => {}
         _ => return Err("librarian sidecar did not become ready".into()),
@@ -82,7 +84,7 @@ fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value)
             .and_then(|v| v.try_into().ok());
         let found = qemb
             .map(|e| {
-                eng.images.read().unwrap().rtx(|r| {
+                eng.images.read().expect("images lock poisoned").rtx(|r| {
                     library_core::image_search(&r, &e, library_core::IMG_FETCH, member.as_ref())
                 })
             })
@@ -93,7 +95,7 @@ fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value)
     let col = args["collection"].as_str().unwrap_or("");
     match name {
         "search_library" => {
-            let lib = eng.lib.read().unwrap();
+            let lib = eng.lib.read().expect("library lock poisoned");
             lib.rtx(|r| tools::search_tool(&r, &lib, data, q, col, tools::TOOL_K))
                 .to_string()
         }
@@ -136,14 +138,14 @@ fn chat_turn_blocking(
     let eng = engine(&state)?;
     let data = state.settings.data.clone();
 
-    let mut guard = state.chat.lock().unwrap();
+    let mut guard = state.chat.lock().expect("chat bridge lock poisoned");
     if guard.is_none()
         || guard
             .as_mut()
             .is_some_and(|b| b.child.try_wait().is_ok_and(|s| s.is_some()))
     {
         let bridge = spawn_chat(&app)?;
-        *state.chat_stdin.lock().unwrap() = Some(bridge.stdin.clone());
+        *state.chat_stdin.lock().expect("chat stdin lock poisoned") = Some(bridge.stdin.clone());
         *guard = Some(bridge);
     }
     // take the bridge out for the turn: any error path drops (and kills) the
@@ -152,7 +154,7 @@ fn chat_turn_blocking(
 
     let line = serde_json::json!({ "e": "turn", "conv": conv, "messages": messages });
     {
-        let mut stdin = bridge.stdin.lock().unwrap();
+        let mut stdin = bridge.stdin.lock().expect("sidecar stdin lock poisoned");
         if writeln!(stdin, "{line}")
             .and_then(|_| stdin.flush())
             .is_err()
@@ -180,7 +182,7 @@ fn chat_turn_blocking(
                         let resp = serde_json::json!({
                             "e": "tool_response", "id": ev["id"], "result": result,
                         });
-                        let mut stdin = bridge.stdin.lock().unwrap();
+                        let mut stdin = bridge.stdin.lock().expect("sidecar stdin lock poisoned");
                         if writeln!(stdin, "{resp}")
                             .and_then(|_| stdin.flush())
                             .is_err()
@@ -212,8 +214,13 @@ pub(crate) async fn chat_turn(
 #[tauri::command]
 pub(crate) fn chat_cancel(state: State<'_, AppState>) {
     use std::io::Write;
-    if let Some(stdin) = state.chat_stdin.lock().unwrap().as_ref() {
-        let mut stdin = stdin.lock().unwrap();
+    if let Some(stdin) = state
+        .chat_stdin
+        .lock()
+        .expect("chat stdin lock poisoned")
+        .as_ref()
+    {
+        let mut stdin = stdin.lock().expect("sidecar stdin lock poisoned");
         let _ = writeln!(stdin, "{}", serde_json::json!({ "e": "cancel" }));
         let _ = stdin.flush();
     }

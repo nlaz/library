@@ -559,8 +559,9 @@ fn page_figures(
         with_parts.extend(subdivide::subdivide(&luma, full, *r));
     }
     let mut regions = with_parts;
-    // stable idx assignment in reading order
-    regions.sort_by(|a, b| (a[1], a[0]).partial_cmp(&(b[1], b[0])).unwrap());
+    // stable idx assignment in reading order (total_cmp: a NaN coordinate
+    // from the layout model must not panic the ingest worker)
+    regions.sort_by(|a, b| a[1].total_cmp(&b[1]).then(a[0].total_cmp(&b[0])));
     let mut idx = 0u32;
     for bbox in regions {
         if region_inked(&luma, bbox) {
@@ -635,7 +636,7 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
     while !crops.is_empty() {
         let batch: Vec<_> = crops.drain(..CLIP_BATCH.min(crops.len())).collect();
         for e in model.embed_images(batch)? {
-            let (key, bbox) = it.next().unwrap();
+            let (key, bbox) = it.next().expect("one key per crop");
             let emb: ClipEmb = e.try_into().expect("CLIP emits 512-dim vectors");
             recs.push(ImageRec { key, bbox, emb });
         }

@@ -17,7 +17,7 @@ pub(crate) fn serve_static(
             .status(404)
             .header("access-control-allow-origin", "*")
             .body(Vec::new())
-            .unwrap()
+            .unwrap() // invariant: static status + valid header names cannot fail to build
     };
     let raw = request.uri().path();
     let Ok(path) = percent_decode_str(raw).decode_utf8() else {
@@ -37,7 +37,7 @@ pub(crate) fn serve_static(
             .header("cache-control", "public, max-age=31536000, immutable")
             .header("access-control-allow-origin", "*")
             .body(bytes)
-            .unwrap(),
+            .unwrap(), // invariant: static status + valid header names cannot fail to build
         Err(_) => not_found(),
     }
 }

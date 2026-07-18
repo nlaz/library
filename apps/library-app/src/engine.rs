@@ -105,7 +105,10 @@ pub(crate) fn init_engine(app: AppHandle) {
         images: RwLock::new(images),
         clip_text,
     });
-    *app.state::<AppState>().engine.write().unwrap() = Some(engine);
+    *app.state::<AppState>()
+        .engine
+        .write()
+        .expect("engine slot lock poisoned") = Some(engine);
     let _ = app.emit("app:ready", ());
 }
 
@@ -113,14 +116,14 @@ pub(crate) fn engine(state: &AppState) -> Result<std::sync::Arc<Engine>, String>
     state
         .engine
         .read()
-        .unwrap()
+        .expect("engine slot lock poisoned")
         .clone()
         .ok_or_else(|| "warming up".to_string())
 }
 
 pub(crate) fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
-    let lib = eng.lib.read().unwrap();
-    let images = eng.images.read().unwrap();
+    let lib = eng.lib.read().expect("library lock poisoned");
+    let images = eng.images.read().expect("images lock poisoned");
     library_core::answer(&lib, &images, data, q, |s| {
         eng.clip_text
             .embed(vec![s.to_string()], None)
@@ -142,7 +145,7 @@ impl Committer for EngineCommitter {
         doc: &str,
         recs: &[library_core::ChunkRec],
     ) -> Result<(usize, usize), CommitErr> {
-        let mut lib = self.eng.lib.write().unwrap();
+        let mut lib = self.eng.lib.write().expect("library lock poisoned");
         Ok(library_ingest::commit_text(&mut lib, doc, recs))
     }
 
@@ -151,7 +154,7 @@ impl Committer for EngineCommitter {
         doc: &str,
         recs: &[library_core::ImageRec],
     ) -> Result<(usize, usize), CommitErr> {
-        let mut images = self.eng.images.write().unwrap();
+        let mut images = self.eng.images.write().expect("images lock poisoned");
         Ok(library_ingest::commit_figures(&mut images, doc, recs))
     }
 }

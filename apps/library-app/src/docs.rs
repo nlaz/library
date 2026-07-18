@@ -160,11 +160,11 @@ pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Resul
         // retract from the stores first so search can't hand out hits whose
         // page images are already gone
         {
-            let mut lib = eng.lib.write().unwrap();
+            let mut lib = eng.lib.write().expect("library lock poisoned");
             library_ingest::commit_text(&mut lib, &doc, &[]);
         }
         {
-            let mut images = eng.images.write().unwrap();
+            let mut images = eng.images.write().expect("images lock poisoned");
             library_ingest::commit_figures(&mut images, &doc, &[]);
         }
         for dir in ["pages", "ocr"] {

@@ -31,7 +31,7 @@ pub(crate) async fn complete(
         if q.is_empty() {
             return Vec::<String>::new();
         }
-        let lib = eng.lib.read().unwrap();
+        let lib = eng.lib.read().expect("library lock poisoned");
         lib.rtx(|(_, (_, terms))| terms.complete_ranked(q, k.unwrap_or(8)))
     })
     .await
@@ -40,7 +40,11 @@ pub(crate) async fn complete(
 
 #[tauri::command]
 pub(crate) fn ready(state: State<'_, AppState>) -> bool {
-    state.engine.read().unwrap().is_some()
+    state
+        .engine
+        .read()
+        .expect("engine slot lock poisoned")
+        .is_some()
 }
 
 /// Hidden perf view (Cmd+.): the search ring (per-stage timings + per-hit
@@ -51,8 +55,16 @@ pub(crate) async fn perf_searches(state: State<'_, AppState>) -> Result<serde_js
     let eng = engine(&state)?;
     let data = state.settings.data.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let chunks = eng.lib.read().unwrap().rtx(|((_, vec), _)| vec.len());
-        let figures = eng.images.read().unwrap().rtx(|(vec, _)| vec.len());
+        let chunks = eng
+            .lib
+            .read()
+            .expect("library lock poisoned")
+            .rtx(|((_, vec), _)| vec.len());
+        let figures = eng
+            .images
+            .read()
+            .expect("images lock poisoned")
+            .rtx(|(vec, _)| vec.len());
         let docs = std::fs::read_dir(data.join("pages"))
             .map(|d| d.filter_map(|e| e.ok()).count())
             .unwrap_or(0);

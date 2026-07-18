@@ -99,7 +99,12 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
 
     // engine must be up before we can commit (stores are shared)
     let eng = loop {
-        if let Some(e) = state.engine.read().unwrap().clone() {
+        if let Some(e) = state
+            .engine
+            .read()
+            .expect("engine slot lock poisoned")
+            .clone()
+        {
             break e;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -109,7 +114,7 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
     // already in the manifest get `ready` so the sweep never re-ingests them
     {
         let pend = worker::pending(&data);
-        let lib = eng.lib.read().unwrap();
+        let lib = eng.lib.read().expect("library lock poisoned");
         if let Err(e) = worker::backfill_ready_with(&data, &pend, |d| worker::manifest_has(&lib, d))
         {
             eprintln!("status backfill failed: {e:#}");

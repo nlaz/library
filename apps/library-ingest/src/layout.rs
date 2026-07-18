@@ -146,7 +146,7 @@ impl LayoutModel {
             .context("layout model produced no outputs")?;
         let out = outputs
             .get(key)
-            .unwrap()
+            .expect("key just came from outputs.keys()")
             .try_extract_tensor::<f32>()
             .context("layout output is not an f32 tensor")?;
 

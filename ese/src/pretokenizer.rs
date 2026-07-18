@@ -150,3 +150,82 @@ fn is_punctuation(ch: char) -> bool {
             | unicode_general_category::GeneralCategory::OtherPunctuation
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chinese_char_boundaries() {
+        // Main CJK Unified Ideographs block: U+4E00..=U+9FFF.
+        assert!(is_chinese_char('\u{4E00}'), "block start should be CJK");
+        assert!(is_chinese_char('\u{9FFF}'), "block end should be CJK");
+        // One codepoint outside each edge. U+4DFF sits in the Yijing Hexagram
+        // Symbols block (between Extension A and the main block) and is not
+        // covered by any of the impl's ranges; U+A000 (Yi Syllables) is past
+        // the main block's end.
+        assert!(
+            !is_chinese_char('\u{4DFF}'),
+            "just below block start should not be CJK"
+        );
+        assert!(
+            !is_chinese_char('\u{A000}'),
+            "just above block end should not be CJK"
+        );
+    }
+
+    #[test]
+    fn punctuation_covers_ascii_and_unicode_categories() {
+        // ASCII punctuation, covered by the impl's literal codepoint ranges.
+        for ch in [
+            '.', ',', '-', '!', '?', '(', ')', '[', ']', '{', '}', ':', '@',
+        ] {
+            assert!(is_punctuation(ch), "{ch:?} should be punctuation (ascii)");
+        }
+        assert!(!is_punctuation('A'), "ascii letter is not punctuation");
+        assert!(!is_punctuation('0'), "ascii digit is not punctuation");
+
+        // Non-ASCII Unicode punctuation categories the impl matches via
+        // unicode_general_category: Pd (dash), Pi/Pf (quotes), Ps (open).
+        assert!(
+            is_punctuation('\u{2014}'),
+            "em dash (Pd) should be punctuation"
+        );
+        assert!(
+            is_punctuation('\u{201C}'),
+            "left double quotation mark (Pi) should be punctuation"
+        );
+        assert!(
+            is_punctuation('\u{201D}'),
+            "right double quotation mark (Pf) should be punctuation"
+        );
+        assert!(
+            is_punctuation('\u{3010}'),
+            "CJK left black lenticular bracket (Ps) should be punctuation"
+        );
+
+        // The impl only matches Unicode Punctuation (P*) categories, not
+        // Symbol (S*) categories, for non-ASCII input -- a plain currency /
+        // copyright symbol is not treated as punctuation.
+        assert!(
+            !is_punctuation('\u{00A9}'),
+            "copyright sign (So, a Symbol category) should not be punctuation"
+        );
+        assert!(!is_punctuation('猫'), "a CJK ideograph is not punctuation");
+    }
+
+    #[test]
+    fn small_char_iter_roundtrip() {
+        // Mixed ascii + multibyte accented + CJK + emoji (surrogate-pair-range) input.
+        let s = "a-b café 猫犬 🎉!";
+        let via_small_iter: Vec<char> = s.chars().flat_map(SmallCharIter::one).collect();
+        let via_std_chars: Vec<char> = s.chars().collect();
+        assert_eq!(via_small_iter, via_std_chars);
+        assert_eq!(via_small_iter.into_iter().collect::<String>(), s);
+
+        // `three` is used by normalize_into to pad CJK chars with spaces; confirm
+        // its iteration order and length independently of that call site.
+        let padded: Vec<char> = SmallCharIter::three(' ', '猫', ' ').collect();
+        assert_eq!(padded, vec![' ', '猫', ' ']);
+    }
+}

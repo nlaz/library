@@ -82,11 +82,11 @@ fn split_once(luma: &GrayImage, bbox: Bbox) -> Vec<Bbox> {
 
     let mut cols = vec![0f32; w];
     let mut rows = vec![0f32; h];
-    for y in 0..h {
-        for x in 0..w {
+    for (y, row) in rows.iter_mut().enumerate() {
+        for (x, col) in cols.iter_mut().enumerate() {
             let d = (255 - luma.get_pixel(x0 + x as u32, y0 + y as u32).0[0]) as f32;
-            cols[x] += d;
-            rows[y] += d;
+            *col += d;
+            *row += d;
         }
     }
     for c in cols.iter_mut() {
@@ -155,10 +155,11 @@ fn valley_cuts(profile: &[f32]) -> Vec<usize> {
     for (i, &v) in smooth.iter().enumerate() {
         if v < thr {
             start.get_or_insert(i);
-        } else if let Some(s) = start.take() {
-            if i - s >= min_run && s > 0 {
-                cuts.push((s + i) / 2);
-            }
+        } else if let Some(s) = start.take()
+            && i - s >= min_run
+            && s > 0
+        {
+            cuts.push((s + i) / 2);
         }
     }
     // an unclosed run reaches the trailing edge: margin, not a cut

@@ -90,10 +90,10 @@ pub(crate) const MMR_LAMBDA: f32 = 0.7;
 pub(crate) fn bump_sim(max_sim: &mut [f32], picked: &[bool], embs: &[Option<Emb>], sel: usize) {
     let Some(se) = &embs[sel] else { return };
     for (i, mi) in max_sim.iter_mut().enumerate() {
-        if !picked[i] {
-            if let Some(e) = &embs[i] {
-                *mi = mi.max(cosine(e, se));
-            }
+        if !picked[i]
+            && let Some(e) = &embs[i]
+        {
+            *mi = mi.max(cosine(e, se));
         }
     }
 }
@@ -177,6 +177,10 @@ pub(crate) fn rrf(lists: &[Vec<ChunkKey>]) -> Vec<(f32, ChunkKey)> {
 /// value"), so looking words up through it means every hit pays for
 /// comparing against huge keys. `Library::get` reads the same words back out
 /// of a value instead, which is what point-reads are fast at.
+// The one search entry point takes orthogonal, individually-documented knobs;
+// bundling them into a params struct would churn every caller for no clarity
+// gain (audited under the behavior-preserving lint uplift).
+#[expect(clippy::too_many_arguments)]
 pub fn search<R: Readable>(
     r: &Readers<'_, R>,
     query: &str,
@@ -187,7 +191,7 @@ pub fn search<R: Readable>(
     fuzzy: bool,
     diversify: bool,
     resolve: impl Fn(&ChunkKey) -> Option<ChunkRec>,
-    mut stats: Option<&mut RankerStats>,
+    stats: Option<&mut RankerStats>,
 ) -> Vec<Hit> {
     let ((lex, vec), (_, terms)) = r;
 
@@ -279,7 +283,7 @@ pub fn search<R: Readable>(
             semantic.len()
         );
     }
-    if let Some(s) = stats.as_deref_mut() {
+    if let Some(s) = stats {
         s.lex_n = lexical.len();
         s.sem_n = semantic.len();
     }

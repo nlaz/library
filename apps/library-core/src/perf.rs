@@ -120,14 +120,19 @@ static SEARCH_LOG: Mutex<VecDeque<SearchRecord>> = Mutex::new(VecDeque::new());
 
 /// Push a record (newest first), truncating to [`SEARCH_LOG_CAP`].
 pub fn record_search(r: SearchRecord) {
-    let mut log = SEARCH_LOG.lock().unwrap();
+    let mut log = SEARCH_LOG.lock().expect("search log lock poisoned");
     log.push_front(r);
     log.truncate(SEARCH_LOG_CAP);
 }
 
 /// Snapshot of the ring, newest first.
 pub fn search_log() -> Vec<SearchRecord> {
-    SEARCH_LOG.lock().unwrap().iter().cloned().collect()
+    SEARCH_LOG
+        .lock()
+        .expect("search log lock poisoned")
+        .iter()
+        .cloned()
+        .collect()
 }
 
 /// Unix millis now — the timestamp stamped onto records and metrics.
@@ -326,24 +331,25 @@ pub fn ingest_rows(data: &Path) -> Vec<Value> {
 
         // lazy backfill: legibility (and page count) for terminal docs
         // ingested before metrics existed
-        if terminal(&state) && status["metrics"]["legibility"].is_null() {
-            if let Some(leg) = legibility_summary(data, &doc) {
-                let mut m: IngestMetrics = serde_json::from_value(status["metrics"].clone())
-                    .ok()
-                    .unwrap_or_default();
-                m.pages = m.pages.or(Some(leg.pages));
-                m.legibility = Some(leg);
-                if m.at == 0 {
-                    m.at = now_ms();
-                }
-                if let (Some(obj), Ok(mv)) = (status.as_object_mut(), serde_json::to_value(&m)) {
-                    obj.insert("metrics".into(), mv);
-                    let tmp = path.with_extension("json.tmp");
-                    if let Ok(bytes) = serde_json::to_vec_pretty(&status)
-                        && std::fs::write(&tmp, bytes).is_ok()
-                    {
-                        let _ = std::fs::rename(&tmp, &path);
-                    }
+        if terminal(&state)
+            && status["metrics"]["legibility"].is_null()
+            && let Some(leg) = legibility_summary(data, &doc)
+        {
+            let mut m: IngestMetrics = serde_json::from_value(status["metrics"].clone())
+                .ok()
+                .unwrap_or_default();
+            m.pages = m.pages.or(Some(leg.pages));
+            m.legibility = Some(leg);
+            if m.at == 0 {
+                m.at = now_ms();
+            }
+            if let (Some(obj), Ok(mv)) = (status.as_object_mut(), serde_json::to_value(&m)) {
+                obj.insert("metrics".into(), mv);
+                let tmp = path.with_extension("json.tmp");
+                if let Ok(bytes) = serde_json::to_vec_pretty(&status)
+                    && std::fs::write(&tmp, bytes).is_ok()
+                {
+                    let _ = std::fs::rename(&tmp, &path);
                 }
             }
         }

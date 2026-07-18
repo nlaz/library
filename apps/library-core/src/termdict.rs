@@ -64,7 +64,10 @@ impl<R: Readable> TermDictReader<'_, R> {
         self.tx
             .prefix(&self.ks, prefix.as_bytes())
             .take(k)
-            .map(|kv| String::from_utf8(kv.key().unwrap().to_vec()).unwrap())
+            .map(|kv| {
+                let key = kv.key().expect("term dict scan failed");
+                String::from_utf8(key.to_vec()).expect("corrupt term key: not utf-8")
+            })
             .collect()
     }
 
@@ -83,9 +86,16 @@ impl<R: Readable> TermDictReader<'_, R> {
             .prefix(&self.ks, prefix.as_bytes())
             .take(SCAN_CAP)
             .map(|kv| {
-                let (key, val) = kv.into_inner().unwrap();
-                let freq = i64::from_be_bytes(val.as_ref().try_into().unwrap());
-                (freq, String::from_utf8(key.to_vec()).unwrap())
+                let (key, val) = kv.into_inner().expect("term dict scan failed");
+                let freq = i64::from_be_bytes(
+                    val.as_ref()
+                        .try_into()
+                        .expect("corrupt term frequency: not 8 bytes"),
+                );
+                (
+                    freq,
+                    String::from_utf8(key.to_vec()).expect("corrupt term key: not utf-8"),
+                )
             })
             .collect();
         cands.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
@@ -95,7 +105,10 @@ impl<R: Readable> TermDictReader<'_, R> {
     /// Whether `term` is a live vocabulary term (exact match). Used to decide
     /// if a query token needs fuzzy correction.
     pub fn contains(&self, term: &str) -> bool {
-        self.tx.get(&self.ks, term.as_bytes()).unwrap().is_some()
+        self.tx
+            .get(&self.ks, term.as_bytes())
+            .expect("term dict read failed")
+            .is_some()
     }
 
     /// Up to `k` live terms within edit distance [`MAX_FUZZ_DIST`] of `token`,
@@ -114,14 +127,18 @@ impl<R: Readable> TermDictReader<'_, R> {
             .prefix(&self.ks, prefix.as_bytes())
             .take(SCAN_CAP)
             .filter_map(|kv| {
-                let (key, val) = kv.into_inner().unwrap();
+                let (key, val) = kv.into_inner().expect("term dict scan failed");
                 let term = String::from_utf8(key.to_vec()).ok()?;
                 if term == token {
                     return None; // an exact match isn't a correction
                 }
                 let d = levenshtein(token, &term, MAX_FUZZ_DIST);
                 (d <= MAX_FUZZ_DIST).then(|| {
-                    let freq = i64::from_be_bytes(val.as_ref().try_into().unwrap());
+                    let freq = i64::from_be_bytes(
+                        val.as_ref()
+                            .try_into()
+                            .expect("corrupt term frequency: not 8 bytes"),
+                    );
                     (d, freq, term)
                 })
             })
@@ -143,14 +160,23 @@ impl Push<String> for TermDict {
     }
 
     fn commit(&mut self, tx: &mut WriteTx<'_>) {
-        let ks = self.ks.clone().unwrap();
+        let ks = self
+            .ks
+            .clone()
+            .expect("term dict used before pipeline init");
         for (key, delta) in self.pending.drain() {
             if delta == 0 {
                 continue;
             }
             let cur = tx
                 .get(&ks, &key)
-                .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+                .map(|v| {
+                    i64::from_be_bytes(
+                        v.as_ref()
+                            .try_into()
+                            .expect("corrupt term frequency: not 8 bytes"),
+                    )
+                })
                 .unwrap_or(0);
             let new = cur + delta;
             if new > 0 {
@@ -168,7 +194,10 @@ impl Push<String> for TermDict {
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         TermDictReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self
+                .ks
+                .clone()
+                .expect("term dict used before pipeline init"),
         }
     }
 }

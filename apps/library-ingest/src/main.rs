@@ -129,9 +129,10 @@ enum Cli {
         hot: bool,
     },
     /// Run the model-backed OCR cleanup for an already-ingested doc:
-    /// tools/clean-pages proposes edits (cached in data/edits/<doc>), gated
-    /// + applied to data/clean/<doc>. `ingest` runs this automatically.
-    /// Re-run `ingest` (or `text`) afterwards to pick up the cleaned pages.
+    /// tools/clean-pages proposes edits (cached in data/edits/<doc>),
+    /// gated + applied to data/clean/<doc>. `ingest` runs this
+    /// automatically. Re-run `ingest` (or `text`) afterwards to pick up
+    /// the cleaned pages.
     Clean {
         doc: String,
         #[arg(long, default_value = "data")]
@@ -378,17 +379,17 @@ fn main() -> Result<()> {
             // doc-id match keeps resolving a doc that no longer exists
             for dir in ["pages", "ocr", "clean", "edits"] {
                 let p = data.join(dir).join(&doc);
-                if let Err(e) = std::fs::remove_dir_all(&p) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        anyhow::bail!("removing {}: {e}", p.display());
-                    }
+                if let Err(e) = std::fs::remove_dir_all(&p)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    anyhow::bail!("removing {}: {e}", p.display());
                 }
             }
             let md = data.join("text").join(format!("{doc}.md"));
-            if let Err(e) = std::fs::remove_file(&md) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    anyhow::bail!("removing {}: {e}", md.display());
-                }
+            if let Err(e) = std::fs::remove_file(&md)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                anyhow::bail!("removing {}: {e}", md.display());
             }
             worker::clear_staged(&data, &doc);
             status::write(&data, &doc, &DocStatus::new(DocState::Deleted))?;
@@ -494,6 +495,9 @@ fn worker(data: &Path) -> Result<()> {
     Ok(())
 }
 
+// CLI plumbing: one arg per `Ingest` flag; a params struct would just mirror
+// the clap variant field-for-field (audited under the lint uplift).
+#[expect(clippy::too_many_arguments)]
 fn ingest(
     pdf: &Path,
     data: &Path,

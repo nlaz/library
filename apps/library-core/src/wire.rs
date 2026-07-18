@@ -179,7 +179,7 @@ pub fn wire_hit(hit: &Hit, qtoks: &[String]) -> WireHit {
             .any(|t| qtoks.iter().any(|q| t.starts_with(q.as_str())))
     };
 
-    let first = hit.words.iter().position(|w| matched(w)).unwrap_or(0);
+    let first = hit.words.iter().position(&matched).unwrap_or(0);
     let lo = first.saturating_sub(12);
     let hi = (first + 18).min(hit.words.len());
     let snippet = hit.words[lo..hi]

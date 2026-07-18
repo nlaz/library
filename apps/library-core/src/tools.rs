@@ -983,7 +983,7 @@ mod tests {
         // avoid steers to the other readable page of doc-a...
         let first = sample_page_tool(&dir, "field-guides", Some(42), &[]);
         let avoid = format!("doc-a:{}", first["page"].as_u64().unwrap());
-        let second = sample_page_tool(&dir, "field-guides", Some(42), &[avoid.clone()]);
+        let second = sample_page_tool(&dir, "field-guides", Some(42), std::slice::from_ref(&avoid));
         assert_eq!(second["doc"], "doc-a");
         assert_ne!(first["page"], second["page"]);
         // ...and is ignored, not fatal, when every candidate is avoided

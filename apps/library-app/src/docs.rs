@@ -79,7 +79,7 @@ pub(crate) fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
                 title: titles.get(&id).cloned(),
                 collections: cols
                     .iter()
-                    .filter(|(_, docs)| docs.iter().any(|d| *d == id))
+                    .filter(|(_, docs)| docs.contains(&id))
                     .map(|(c, _)| c.clone())
                     .collect(),
                 processing: is_processing(st),
@@ -168,10 +168,10 @@ pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Resul
             library_ingest::commit_figures(&mut images, &doc, &[]);
         }
         for dir in ["pages", "ocr"] {
-            if let Err(e) = std::fs::remove_dir_all(data.join(dir).join(&doc)) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    return Err(format!("removing {dir}/{doc}: {e}"));
-                }
+            if let Err(e) = std::fs::remove_dir_all(data.join(dir).join(&doc))
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(format!("removing {dir}/{doc}: {e}"));
             }
         }
         worker::clear_staged(&data, &doc);

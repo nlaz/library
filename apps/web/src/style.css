@@ -1455,11 +1455,34 @@ mark {
   background: var(--surface);
 }
 
-#perf tr.detail td {
+/* child combinator: the wrapper cell alone gets the roomy padding — the
+   nested provenance-table cells keep the dense 3px base, or the expanded
+   record balloons to ~2300px and buries the rest of the view */
+#perf tr.detail > td {
   background: var(--surface);
   border: 1px solid var(--line-strong);
   padding: var(--sp-3);
   white-space: normal;
+}
+
+#perf .twist {
+  color: var(--ink-dim);
+  font-size: var(--fs-micro);
+}
+
+/* text hits and image hits sit side by side; each column scrolls its own
+   overflow rather than widening the page */
+#perf .prov-cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  align-items: flex-start;
+}
+
+#perf .prov-col {
+  flex: 1 1 480px;
+  min-width: 0;
+  overflow-x: auto;
 }
 
 #perf .flag {

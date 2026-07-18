@@ -26,7 +26,8 @@ cat > "$project_dir/Cargo.toml" <<EOF
 [package]
 name = "$name"
 version = "0.0.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]

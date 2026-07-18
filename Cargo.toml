@@ -12,6 +12,11 @@ members = [
     "apps/library-app",
 ]
 
+[workspace.package]
+edition = "2024"
+# edition 2024 floor; CI pins the actual toolchain in rust-toolchain.toml
+rust-version = "1.85"
+
 [workspace.dependencies]
 fold = { path = "fold" }
 anny = { path = "anny" }

@@ -81,10 +81,12 @@ async function pollSearches() {
     return;
   }
   if (!perfOpen()) return;
-  const json = JSON.stringify(p);
+  // head is cheap and carries the clock; the table only re-renders on real
+  // change (meta.now_ms moves every poll and would churn away text selection)
+  renderHead(p.meta);
+  const json = JSON.stringify(p.searches);
   if (json === lastSearches) return;
   lastSearches = json;
-  renderHead(p.meta);
   renderSearches(p.searches);
 }
 
@@ -119,6 +121,21 @@ function hhmmss(ts: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
 }
 
+/** Local wall-clock with UTC offset, matching the row timestamps (a mixed
+ * local/ISO header sends screenshot readers down the wrong hour). */
+function localStamp(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, "0");
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  const [oh, om] = [Math.floor(Math.abs(off) / 60), Math.abs(off) % 60];
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` +
+    ` ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}` +
+    ` UTC${sign}${oh}${om ? `:${p(om)}` : ""}`
+  );
+}
+
 /** "—" for not-recorded, distinct from a real 0. */
 function opt(v: number | undefined | null, f: (n: number) => string = String): string {
   return v === undefined || v === null ? "—" : f(v);
@@ -129,7 +146,7 @@ function renderHead(m: PerfMeta) {
   // f32 constants arrive with f64 noise (0.3499999940395355) — trim for display
   const f = (n: number) => parseFloat(n.toPrecision(4));
   $head.innerHTML =
-    `<b>PERF</b> · ${new Date(m.now_ms).toISOString()} · host=${host} · debug=${m.debug}` +
+    `<b>PERF</b> · ${localStamp(m.now_ms)} · host=${host} · debug=${m.debug}` +
     ` · emb_dim=${m.emb_dim} clip_dim=${m.clip_dim}` +
     ` · K=${m.k} K_DOC=${m.k_doc} LEX_FETCH=${m.lex_fetch} IMG_FETCH=${m.img_fetch}` +
     ` · MIN_REL=${f(m.min_rel)} IMG_MIN_REL=${f(m.img_min_rel)} RRF_K=${m.rrf_k}` +
@@ -151,16 +168,19 @@ function renderSearches(recs: SearchRecord[]) {
     $searchBody.textContent = "no searches recorded yet — type a query in the main view, then reopen";
     return;
   }
-  const expandTs = pinned ?? recs[0].ts_ms;
+  // auto-expand the newest *primary* search — not an instant keystroke or an
+  // infinite-scroll continuation (offset > 0)
+  const primary = recs.find((r) => r.mode !== "instant" && !r.offset) ?? recs[0];
+  const expandTs = pinned ?? primary.ts_ms;
   const rows = recs
     .map((r) => {
       const stages = r.stages.map(([n, t]) => `${esc(n)}=${us(t)}`).join(" ");
       const killed = `rel:${r.rel_killed} img:${r.img_killed}`;
-      const cls = r.ts_ms === expandTs ? "sel" : "";
+      const open = r.ts_ms === expandTs;
       const zero = r.zero ? ` <span class="flag">ZERO</span>` : "";
       return (
-        `<tr class="${cls}" data-ts="${r.ts_ms}">` +
-        `<td>${hhmmss(r.ts_ms)}</td>` +
+        `<tr class="${open ? "sel" : ""}" data-ts="${r.ts_ms}">` +
+        `<td><span class="twist">${open ? "▾" : "▸"}</span> ${hhmmss(r.ts_ms)}</td>` +
         `<td class="q">${esc(r.q)}</td>` +
         `<td>${esc(scopeLabel(r))}</td>` +
         `<td>${esc(r.phase)}</td>` +
@@ -250,7 +270,11 @@ function detail(r: SearchRecord): string {
       `<tbody>${rows}</tbody></table>`;
   }
 
-  return `<div class="waterfall">${bars}</div>${text}${imgs}`;
+  const cols = [text, imgs]
+    .filter(Boolean)
+    .map((c) => `<div class="prov-col">${c}</div>`)
+    .join("");
+  return `<div class="waterfall">${bars}</div>${cols ? `<div class="prov-cols">${cols}</div>` : ""}`;
 }
 
 // --- ingest -----------------------------------------------------------------

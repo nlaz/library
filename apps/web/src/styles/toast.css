@@ -1,0 +1,51 @@
+
+/* --- §14 toast ---------------------------------------------------------------
+   Transient notices, bottom-left. Severity by inversion, not hue. */
+
+#toast {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 12;
+  max-width: 420px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+
+#toast[hidden] {
+  display: none;
+}
+
+#toast.error {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+
+#toast::before,
+#toast::after {
+  content: "";
+  position: absolute;
+  background: var(--dither-50) 0 0 / 2px 2px;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+#toast::before {
+  top: 4px;
+  bottom: -5px;
+  right: -5px;
+  width: 4px;
+}
+
+#toast::after {
+  left: 4px;
+  right: -5px;
+  bottom: -5px;
+  height: 4px;
+}

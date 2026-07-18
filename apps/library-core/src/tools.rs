@@ -826,6 +826,89 @@ mod tests {
         assert_eq!(derive_title("a-history-of-tea"), "a History of Tea");
     }
 
+    fn hit(doc: &str, words: &[&str]) -> Hit {
+        Hit {
+            score: 1.0,
+            rel: 1.0,
+            bm25: 10.0,
+            lex_rank: Some(0),
+            sem_rank: None,
+            sem_dist: None,
+            key: crate::ChunkKey {
+                doc: doc.to_string(),
+                page: 1,
+                idx: 0,
+            },
+            words: words
+                .iter()
+                .map(|t| crate::Word {
+                    t: t.to_string(),
+                    x: 0.1,
+                    y: 0.2,
+                    w: 0.3,
+                    h: 0.4,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn query_coverage_partial_and_full() {
+        // per-hit max, not a union: one book on "quantum", another on
+        // "entanglement" is two half-covered hits, not full coverage
+        let hits = [hit("a", &["quantum"]), hit("b", &["entanglement"])];
+        assert_eq!(query_coverage("quantum entanglement", &hits), 0.5);
+        let both = [hit("c", &["quantum", "entanglement", "primer"])];
+        assert_eq!(query_coverage("quantum entanglement", &both), 1.0);
+        // prefix match: "dome" covers "domes"
+        assert_eq!(query_coverage("dome", &[hit("d", &["domes"])]), 1.0);
+        // stopwords and short tokens leave no content: coverage is
+        // meaningless, defined as 1.0 (BM25 decides)
+        assert_eq!(query_coverage("the of an", &hits), 1.0);
+        // no hits at all: nothing covers the content tokens
+        assert_eq!(query_coverage("quantum", &[]), 0.0);
+    }
+
+    #[test]
+    fn truncate_chars_respects_utf8_boundaries() {
+        // cutting mid-'é' must back up to the char boundary, not panic
+        let mut s = "ééé".to_string(); // 6 bytes
+        truncate_chars(&mut s, 3);
+        assert_eq!(s, "é…");
+        // at or under the cap: untouched, no ellipsis
+        let mut s = "short".to_string();
+        truncate_chars(&mut s, 5);
+        assert_eq!(s, "short");
+        // over the cap: content is cut to <= max bytes, then the ellipsis
+        // is appended on top (the final string may exceed max by '…')
+        let mut s = "x".repeat(210);
+        truncate_chars(&mut s, 200);
+        assert!(s.ends_with('…'));
+        assert_eq!(s.len(), 200 + '…'.len_utf8());
+    }
+
+    #[test]
+    fn slim_hit_drops_word_boxes_and_truncates_snippet() {
+        let words: Vec<String> = (0..60).map(|i| format!("word{i}")).collect();
+        let refs: Vec<&str> = words.iter().map(|s| s.as_str()).collect();
+        let h = hit("doc-a", &refs);
+        let out = slim_hit(&h, &Default::default(), &Default::default());
+        // agent-facing shape: metadata + snippet only — no word boxes,
+        // scores, or ranks (that's the point of "slim")
+        let keys: Vec<&str> = out
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(keys, vec!["col", "doc", "page", "snippet", "title"]);
+        let snippet = out["snippet"].as_str().unwrap();
+        assert!(snippet.ends_with('…'));
+        assert!(snippet.len() <= 200 + '…'.len_utf8());
+        // no titles.json entry: falls back to derive_title
+        assert_eq!(out["title"], "Doc a");
+    }
+
     fn sample_fixture(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("tools-test-{name}"));
         std::fs::remove_dir_all(&dir).ok();

@@ -77,16 +77,35 @@ pub struct IngestCtx {
 pub enum Progress {
     /// A human-readable pipeline event (summaries, per-page warnings).
     Log(String),
-    Ocr { done: u32, total: u32 },
+    Ocr {
+        done: u32,
+        total: u32,
+    },
     /// End-of-OCR page-source split, for the persisted ingest metrics.
-    OcrSummary { text_layer: u32, vision: u32, cached: u32 },
+    OcrSummary {
+        text_layer: u32,
+        vision: u32,
+        cached: u32,
+    },
     /// Model-backed OCR cleanup, counted in pages.
-    Clean { done: usize, total: usize },
-    Embed { done: usize, total: usize },
+    Clean {
+        done: usize,
+        total: usize,
+    },
+    Embed {
+        done: usize,
+        total: usize,
+    },
     /// Figure detection, counted in pages.
-    Figures { done: usize, total: usize },
+    Figures {
+        done: usize,
+        total: usize,
+    },
     /// CLIP embedding of figure crops.
-    Clip { done: usize, total: usize },
+    Clip {
+        done: usize,
+        total: usize,
+    },
     /// Committing prepared records to a store (emitted by the worker loop).
     Indexing,
 }
@@ -242,9 +261,7 @@ pub fn move_pdf(ctx: &IngestCtx, pdf: &Path, name: Option<String>) -> Result<(St
         if same_bytes(pdf, &dest)? {
             return Ok((doc, dest));
         }
-        bail!(
-            "a different '{doc}' is already in the library — rename the file and try again"
-        );
+        bail!("a different '{doc}' is already in the library — rename the file and try again");
     }
 
     match std::fs::rename(pdf, &dest) {
@@ -284,7 +301,15 @@ pub fn prepare_text(
     std::fs::create_dir_all(&ocr_dir)?;
 
     // 1. render + words (cached: pages that already have JSON are skipped)
-    ocr::ocr_pdf(pdf, &pages_dir, &ocr_dir, ctx.width, limit, ctx.text_layer, progress)?;
+    ocr::ocr_pdf(
+        pdf,
+        &pages_dir,
+        &ocr_dir,
+        ctx.width,
+        limit,
+        ctx.text_layer,
+        progress,
+    )?;
 
     prepare_text_cached(ctx, doc, limit, progress)
 }
@@ -320,7 +345,11 @@ pub fn prepare_text_cached(
         while start < page.words.len() {
             let end = (start + CHUNK_WORDS).min(page.words.len());
             chunks.push((
-                ChunkKey { doc: doc.to_string(), page: page.page, idx },
+                ChunkKey {
+                    doc: doc.to_string(),
+                    page: page.page,
+                    idx,
+                },
                 page.words[start..end].to_vec(),
             ));
             if end == page.words.len() {
@@ -337,10 +366,19 @@ pub fn prepare_text_cached(
     for batch in chunks.chunks(EMBED_BATCH) {
         let texts: Vec<String> = batch
             .iter()
-            .map(|(_, words)| words.iter().map(|w| w.t.as_str()).collect::<Vec<_>>().join(" "))
+            .map(|(_, words)| {
+                words
+                    .iter()
+                    .map(|w| w.t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .collect();
         embs.extend(ese::encode(&texts));
-        progress(Progress::Embed { done: embs.len(), total: chunks.len() });
+        progress(Progress::Embed {
+            done: embs.len(),
+            total: chunks.len(),
+        });
     }
 
     let recs = chunks
@@ -358,8 +396,7 @@ pub fn prepare_text_cached(
 /// Returns (removed, added) — removed counts keys actually deleted.
 pub fn commit_text(st: &mut Library, doc: &str, recs: &[ChunkRec]) -> (usize, usize) {
     let counts = st.wtx(|tx| {
-        let old: Vec<ChunkKey> =
-            tx.rtx(|(_, (manifest, _))| manifest.search(&doc.to_string()));
+        let old: Vec<ChunkKey> = tx.rtx(|(_, (manifest, _))| manifest.search(&doc.to_string()));
         let new: FxHashSet<&ChunkKey> = recs.iter().map(|r| &r.key).collect();
         for rec in recs {
             tx.upsert(&rec.key, rec);
@@ -468,11 +505,17 @@ fn page_figures(
     model: Option<&layout::LayoutModel>,
     page: &PageOcr,
 ) -> PageFigures {
-    let mut out = PageFigures { keys: Vec::new(), crops: Vec::new(), log: None };
+    let mut out = PageFigures {
+        keys: Vec::new(),
+        crops: Vec::new(),
+        log: None,
+    };
     let jpg = pages_dir.join(format!("page-{:04}.jpg", page.page));
     let (img, regions): (image::DynamicImage, Vec<Bbox>) = match model {
         Some(m) => {
-            let Ok(img) = image::open(&jpg) else { return out };
+            let Ok(img) = image::open(&jpg) else {
+                return out;
+            };
             let mut dets: Vec<layout::Detection> = match m.detect(&img) {
                 Ok(d) => d,
                 Err(e) => {
@@ -485,8 +528,9 @@ fn page_figures(
             // union: keep heuristic gap-bands the model didn't cover, so a
             // whiffed full-bleed spread still gets indexed
             for hb in detect_regions(&page.words) {
-                let covered =
-                    regions.iter().any(|mb| inter_area(hb, *mb) > 0.3 * (hb[2] * hb[3]));
+                let covered = regions
+                    .iter()
+                    .any(|mb| inter_area(hb, *mb) > 0.3 * (hb[2] * hb[3]));
                 if !covered {
                     regions.push(hb);
                 }
@@ -498,7 +542,9 @@ fn page_figures(
             if regions.is_empty() {
                 return out;
             }
-            let Ok(img) = image::open(&jpg) else { return out };
+            let Ok(img) = image::open(&jpg) else {
+                return out;
+            };
             (img, regions)
         }
     };
@@ -518,7 +564,14 @@ fn page_figures(
     let mut idx = 0u32;
     for bbox in regions {
         if region_inked(&luma, bbox) {
-            out.keys.push((ImageKey { doc: doc.to_string(), page: page.page, idx }, bbox));
+            out.keys.push((
+                ImageKey {
+                    doc: doc.to_string(),
+                    page: page.page,
+                    idx,
+                },
+                bbox,
+            ));
             out.crops.push(crop_for_clip(&img, bbox));
             idx += 1;
         }
@@ -544,7 +597,10 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
     let mut crops: Vec<image::DynamicImage> = Vec::new();
     let mut done = 0usize;
     for group in pages.chunks(chunk) {
-        progress(Progress::Figures { done, total: pages.len() });
+        progress(Progress::Figures {
+            done,
+            total: pages.len(),
+        });
         let results: Vec<PageFigures> = group
             .par_iter()
             .map(|page| page_figures(doc, &pages_dir, model.as_ref(), page))
@@ -558,7 +614,10 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
         }
         done += group.len();
     }
-    progress(Progress::Figures { done: pages.len(), total: pages.len() });
+    progress(Progress::Figures {
+        done: pages.len(),
+        total: pages.len(),
+    });
 
     if crops.is_empty() {
         return Ok(Vec::new()); // nothing to embed: skip the CLIP load
@@ -580,7 +639,10 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
             let emb: ClipEmb = e.try_into().expect("CLIP emits 512-dim vectors");
             recs.push(ImageRec { key, bbox, emb });
         }
-        progress(Progress::Clip { done: recs.len(), total });
+        progress(Progress::Clip {
+            done: recs.len(),
+            total,
+        });
     }
     Ok(recs)
 }
@@ -616,7 +678,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fold-move-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
-        let ctx = IngestCtx { data: dir.join("data"), width: 1600, clean: false, text_layer: true };
+        let ctx = IngestCtx {
+            data: dir.join("data"),
+            width: 1600,
+            clean: false,
+            text_layer: true,
+        };
 
         // move: source disappears, dest exists
         let src = dir.join("src/My Book.pdf");

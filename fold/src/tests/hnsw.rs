@@ -96,7 +96,8 @@ fn hnsw_checkpoint_blob_reopen() {
             tx.insert(&Keyed::new(format!("k{i}"), v(i as f32)));
         }
     });
-    let baseline: Vec<String> = st.rtx(|ix| ix.search(&v(42.3)).into_iter().map(|h| h.val).collect());
+    let baseline: Vec<String> =
+        st.rtx(|ix| ix.search(&v(42.3)).into_iter().map(|h| h.val).collect());
     st.checkpoint();
     drop(st);
 

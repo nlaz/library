@@ -96,7 +96,6 @@ impl App {
     }
 }
 
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -104,7 +103,10 @@ async fn main() -> Result<()> {
     let t = Instant::now();
     let lib = library_core::open(args.data.join("library.db"));
     let n = lib.rtx(|((_, vec), _)| vec.len());
-    println!("store open: {n} chunks, {:?} (incl. hnsw rebuild)", t.elapsed());
+    println!(
+        "store open: {n} chunks, {:?} (incl. hnsw rebuild)",
+        t.elapsed()
+    );
 
     let t = Instant::now();
     let images = library_core::open_images(args.data.join("images.db"));
@@ -115,14 +117,26 @@ async fn main() -> Result<()> {
     let clip = TextEmbedding::try_new(
         InitOptions::new(EmbeddingModel::ClipVitB32).with_cache_dir(args.data.join("models")),
     )?;
-    println!("embedding model ready (clip-text; ese needs no load): {:?}", t.elapsed());
+    println!(
+        "embedding model ready (clip-text; ese needs no load): {:?}",
+        t.elapsed()
+    );
 
-    let app = Arc::new(App { lib, images, clip, data: args.data.clone() });
+    let app = Arc::new(App {
+        lib,
+        images,
+        clip,
+        data: args.data.clone(),
+    });
 
     // real collection names ride into the sidecar's tool schema +
     // instructions (Sidecar::spawn has no data-dir access of its own)
-    let _ = SIDECAR_COLLECTIONS
-        .set(read_collections(&args.data).into_keys().collect::<Vec<_>>().join(","));
+    let _ = SIDECAR_COLLECTIONS.set(
+        read_collections(&args.data)
+            .into_keys()
+            .collect::<Vec<_>>()
+            .join(","),
+    );
 
     // --- WebTransport endpoint ---------------------------------------------
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])?;
@@ -412,10 +426,16 @@ impl Sidecar {
         match tokio::time::timeout(std::time::Duration::from_secs(30), lines.next_line()).await {
             Ok(Ok(Some(l))) if l.contains("\"ready\"") => {}
             _ => {
-                return Err(std::io::Error::other("librarian sidecar did not become ready"));
+                return Err(std::io::Error::other(
+                    "librarian sidecar did not become ready",
+                ));
             }
         }
-        Ok(Sidecar { child, stdin, lines })
+        Ok(Sidecar {
+            child,
+            stdin,
+            lines,
+        })
     }
 
     fn alive(&mut self) -> bool {
@@ -427,10 +447,13 @@ type SharedSidecar = Arc<tokio::sync::Mutex<Option<Sidecar>>>;
 
 fn sidecar_slot() -> SharedSidecar {
     static SLOT: std::sync::OnceLock<SharedSidecar> = std::sync::OnceLock::new();
-    SLOT.get_or_init(|| Arc::new(tokio::sync::Mutex::new(None))).clone()
+    SLOT.get_or_init(|| Arc::new(tokio::sync::Mutex::new(None)))
+        .clone()
 }
 
-async fn chat(body: String) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+async fn chat(
+    body: String,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
     use tokio::io::AsyncWriteExt;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
@@ -447,7 +470,9 @@ async fn chat(body: String) -> Sse<impl tokio_stream::Stream<Item = Result<Event
             *guard = match Sidecar::spawn().await {
                 Ok(s) => Some(s),
                 Err(e) => {
-                    let _ = tx.send(err_event(format!("librarian sidecar failed to start: {e}"))).await;
+                    let _ = tx
+                        .send(err_event(format!("librarian sidecar failed to start: {e}")))
+                        .await;
                     return;
                 }
             };
@@ -461,9 +486,16 @@ async fn chat(body: String) -> Sse<impl tokio_stream::Stream<Item = Result<Event
             "conv": req.get("conv").and_then(|c| c.as_str()).unwrap_or("default"),
             "messages": req.get("messages").cloned().unwrap_or(serde_json::json!([])),
         });
-        if sidecar.stdin.write_all(format!("{line}\n").as_bytes()).await.is_err() {
+        if sidecar
+            .stdin
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .is_err()
+        {
             *guard = None; // dead child; next turn respawns
-            let _ = tx.send(err_event("could not reach the librarian sidecar".into())).await;
+            let _ = tx
+                .send(err_event("could not reach the librarian sidecar".into()))
+                .await;
             return;
         }
 
@@ -480,7 +512,10 @@ async fn chat(body: String) -> Sse<impl tokio_stream::Stream<Item = Result<Event
                         return; // turn complete; keep the child for the next one
                     }
                     if !client_gone
-                        && tx.send(Ok(Event::default().event(name).data(line))).await.is_err()
+                        && tx
+                            .send(Ok(Event::default().event(name).data(line)))
+                            .await
+                            .is_err()
                     {
                         // client disconnected: cancel, then drain to turn_end
                         client_gone = true;
@@ -489,7 +524,9 @@ async fn chat(body: String) -> Sse<impl tokio_stream::Stream<Item = Result<Event
                 }
                 Ok(Ok(None)) | Ok(Err(_)) => {
                     *guard = None; // EOF/read error: child is gone
-                    let _ = tx.send(err_event("librarian sidecar exited early".into())).await;
+                    let _ = tx
+                        .send(err_event("librarian sidecar exited early".into()))
+                        .await;
                     return;
                 }
                 Err(_) => {

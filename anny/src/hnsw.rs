@@ -876,7 +876,11 @@ where
             if level as usize >= MAX_LEVEL {
                 return Err(LoadError::Corrupt);
             }
-            meta.push(NodeMeta { level, upper, alive });
+            meta.push(NodeMeta {
+                level,
+                upper,
+                alive,
+            });
         }
         let upper: Vec<u32> = c.raw_vec(upper_len)?;
         let free_nodes: Vec<u32> = c.raw_vec(free_nodes_len)?;
@@ -982,9 +986,7 @@ impl<'a> Cursor<'a> {
     }
     // Read `n` T values by raw byte copy into a fresh, properly aligned Vec.
     fn raw_vec<T: Copy>(&mut self, n: usize) -> Result<Vec<T>, LoadError> {
-        let nbytes = n
-            .checked_mul(size_of::<T>())
-            .ok_or(LoadError::Corrupt)?;
+        let nbytes = n.checked_mul(size_of::<T>()).ok_or(LoadError::Corrupt)?;
         let src = self.take(nbytes)?;
         let mut v: Vec<T> = Vec::with_capacity(n);
         unsafe {
@@ -1568,10 +1570,16 @@ mod tests {
         let good = ix.to_bytes();
 
         assert_eq!(Ix8::from_bytes(L2, b"no").err(), Some(LoadError::Truncated));
-        assert_eq!(Ix8::from_bytes(L2, b"nope").err(), Some(LoadError::BadMagic));
+        assert_eq!(
+            Ix8::from_bytes(L2, b"nope").err(),
+            Some(LoadError::BadMagic)
+        );
         let mut bad_magic = good.clone();
         bad_magic[0] = b'X';
-        assert_eq!(Ix8::from_bytes(L2, &bad_magic).err(), Some(LoadError::BadMagic));
+        assert_eq!(
+            Ix8::from_bytes(L2, &bad_magic).err(),
+            Some(LoadError::BadMagic)
+        );
         // truncated mid-array
         assert_eq!(
             Ix8::from_bytes(L2, &good[..good.len() / 2]).err(),
@@ -1582,7 +1590,10 @@ mod tests {
         long.extend_from_slice(&[0u8; 16]);
         assert_eq!(Ix8::from_bytes(L2, &long).err(), Some(LoadError::Corrupt));
         // wrong shape: DIM 16 index reading a DIM 8 blob
-        assert_eq!(Ix16::from_bytes(L2, &good).err(), Some(LoadError::ShapeMismatch));
+        assert_eq!(
+            Ix16::from_bytes(L2, &good).err(),
+            Some(LoadError::ShapeMismatch)
+        );
     }
 
     // ======================= filtered search =======================
@@ -1657,12 +1668,20 @@ mod tests {
         for _ in 0..25 {
             let q: [f32; 8] = qrng.vec();
             let truth = brute(&subset, &q, 10);
-            let got: Vec<u32> = ix.search_among(&q, &ids).into_iter().map(|(_, i)| i).collect();
+            let got: Vec<u32> = ix
+                .search_among(&q, &ids)
+                .into_iter()
+                .map(|(_, i)| i)
+                .collect();
             assert_eq!(got, truth, "search_among must be exact");
         }
         // dead ids are skipped
         ix.remove(ids[0]);
-        let got: Vec<u32> = ix.search_among(&[0.5; 8], &ids).into_iter().map(|(_, i)| i).collect();
+        let got: Vec<u32> = ix
+            .search_among(&[0.5; 8], &ids)
+            .into_iter()
+            .map(|(_, i)| i)
+            .collect();
         assert!(!got.contains(&ids[0]));
     }
 }

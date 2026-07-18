@@ -89,8 +89,8 @@ pub fn ocr_pdf(
                 // undocumented, and reopening is nothing next to a page of
                 // OCR. The progress callback isn't Send, so results go back
                 // over the channel and the caller's thread reports them.
-                let Some(doc) = CFURL::from_file_path(pdf)
-                    .and_then(|url| CGPDFDocument::with_url(Some(&url)))
+                let Some(doc) =
+                    CFURL::from_file_path(pdf).and_then(|url| CGPDFDocument::with_url(Some(&url)))
                 else {
                     let _ = tx.send(Err(anyhow::anyhow!("cannot open {}", pdf.display())));
                     return;
@@ -112,7 +112,10 @@ pub fn ocr_pdf(
         for msg in rx {
             layered += usize::from(msg?);
             done += 1;
-            progress(Progress::Ocr { done: (skipped + done) as u32, total: n as u32 });
+            progress(Progress::Ocr {
+                done: (skipped + done) as u32,
+                total: n as u32,
+            });
         }
         Ok(())
     })?;
@@ -153,7 +156,13 @@ fn process_page(
     })?;
     // tmp + rename so a crash can't leave a half-written page json
     let tmp = js.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&PageOcr { page: i as u32, words })?)?;
+    std::fs::write(
+        &tmp,
+        serde_json::to_vec(&PageOcr {
+            page: i as u32,
+            words,
+        })?,
+    )?;
     std::fs::rename(&tmp, &js)?;
     Ok(layered)
 }
@@ -185,7 +194,10 @@ fn render_page(doc: &CGPDFDocument, i: usize, width: u32) -> Result<CFRetained<C
     .context("cannot create bitmap context")?;
     let rect = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
-        size: CGSize { width: w as f64, height: h as f64 },
+        size: CGSize {
+            width: w as f64,
+            height: h as f64,
+        },
     };
     CGContext::set_rgb_fill_color(Some(&ctx), 1.0, 1.0, 1.0, 1.0);
     CGContext::fill_rect(Some(&ctx), rect);
@@ -196,7 +208,10 @@ fn render_page(doc: &CGPDFDocument, i: usize, width: u32) -> Result<CFRetained<C
     CGContext::scale_ctm(Some(&ctx), scale, scale);
     let natural = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
-        size: CGSize { width: pw, height: ph },
+        size: CGSize {
+            width: pw,
+            height: ph,
+        },
     };
     let tf = CGPDFPage::drawing_transform(Some(&page), CGPDFBox::MediaBox, natural, 0, true);
     CGContext::concat_ctm(Some(&ctx), tf);
@@ -272,12 +287,11 @@ fn ocr_words(img: &CGImage) -> Result<Vec<Word>> {
 
 /// Whitespace-split `line`, yielding each token with its byte offset.
 pub(crate) fn split_tokens(line: &str) -> impl Iterator<Item = (usize, &str)> {
-    line.split_whitespace()
-        .scan(0usize, |pos, tok| {
-            let loc = line[*pos..].find(tok).expect("token comes from this line") + *pos;
-            *pos = loc + tok.len();
-            Some((loc, tok))
-        })
+    line.split_whitespace().scan(0usize, |pos, tok| {
+        let loc = line[*pos..].find(tok).expect("token comes from this line") + *pos;
+        *pos = loc + tok.len();
+        Some((loc, tok))
+    })
 }
 
 pub(crate) fn utf16_len(s: &str) -> usize {

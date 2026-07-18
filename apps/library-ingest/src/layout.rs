@@ -45,8 +45,17 @@ impl Class {
     fn from_id(id: usize) -> Option<Class> {
         use Class::*;
         [
-            Caption, Footnote, Formula, ListItem, PageFooter, PageHeader, Picture,
-            SectionHeader, Table, Text, Title,
+            Caption,
+            Footnote,
+            Formula,
+            ListItem,
+            PageFooter,
+            PageHeader,
+            Picture,
+            SectionHeader,
+            Table,
+            Text,
+            Title,
         ]
         .get(id)
         .copied()
@@ -88,7 +97,9 @@ pub struct LayoutModel {
 
 impl LayoutModel {
     pub fn model_path(data: &Path) -> PathBuf {
-        data.join("models").join("layout").join("yolov10m-doclaynet.onnx")
+        data.join("models")
+            .join("layout")
+            .join("yolov10m-doclaynet.onnx")
     }
 
     /// Ok(None) when the model file is absent — caller falls back to the
@@ -129,7 +140,10 @@ impl LayoutModel {
         let outputs = self
             .session
             .run(ort::inputs![input_name => Value::from_array(input)?]?)?;
-        let key = outputs.keys().next().context("layout model produced no outputs")?;
+        let key = outputs
+            .keys()
+            .next()
+            .context("layout model produced no outputs")?;
         let out = outputs
             .get(key)
             .unwrap()
@@ -137,7 +151,11 @@ impl LayoutModel {
             .context("layout output is not an f32 tensor")?;
 
         // [1, 300, 6] -> [300, 6]
-        anyhow::ensure!(out.ndim() == 3 && out.shape()[2] == 6, "unexpected output shape {:?}", out.shape());
+        anyhow::ensure!(
+            out.ndim() == 3 && out.shape()[2] == 6,
+            "unexpected output shape {:?}",
+            out.shape()
+        );
         let rows = out.index_axis(Axis(0), 0);
 
         let mut dets = Vec::new();
@@ -146,12 +164,18 @@ impl LayoutModel {
             if score < SCORE_MIN {
                 continue;
             }
-            let Some(class) = Class::from_id(id as usize) else { continue };
+            let Some(class) = Class::from_id(id as usize) else {
+                continue;
+            };
             let bx = (x0 / scale / pw as f32).clamp(0.0, 1.0);
             let by = (y0 / scale / ph as f32).clamp(0.0, 1.0);
             let bw = ((x1 - x0) / scale / pw as f32).clamp(0.0, 1.0 - bx);
             let bh = ((y1 - y0) / scale / ph as f32).clamp(0.0, 1.0 - by);
-            dets.push(Detection { class, score, bbox: [bx, by, bw, bh] });
+            dets.push(Detection {
+                class,
+                score,
+                bbox: [bx, by, bw, bh],
+            });
         }
         Ok(dets)
     }

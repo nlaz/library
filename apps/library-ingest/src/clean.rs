@@ -79,7 +79,10 @@ pub fn clean_doc(data: &Path, doc: &str, progress: ProgressFn) -> Result<(usize,
     if !status.success() {
         // model unavailable (Apple Intelligence off) or helper failure:
         // report and carry on with raw OCR — cleanup is best-effort
-        progress(Progress::Log(format!("cleanup skipped: {} exited {status}", tool.display())));
+        progress(Progress::Log(format!(
+            "cleanup skipped: {} exited {status}",
+            tool.display()
+        )));
         return Ok((0, read_pages(data, doc)?));
     }
 
@@ -115,8 +118,8 @@ pub fn apply_edits(data: &Path, doc: &str, progress: ProgressFn) -> Result<(usiz
         let ef = edits_dir.join(format!("page-{:04}.json", page.page));
         let mut edited = false;
         if let Ok(bytes) = std::fs::read(&ef) {
-            let pe: PageEdits =
-                serde_json::from_slice(&bytes).context(format!("bad edits json {}", ef.display()))?;
+            let pe: PageEdits = serde_json::from_slice(&bytes)
+                .context(format!("bad edits json {}", ef.display()))?;
             for e in pe.edits {
                 match apply(&mut words, &e) {
                     Ok(()) => {
@@ -131,7 +134,10 @@ pub fn apply_edits(data: &Path, doc: &str, progress: ProgressFn) -> Result<(usiz
             }
         }
 
-        let rec = PageOcr { page: page.page, words };
+        let rec = PageOcr {
+            page: page.page,
+            words,
+        };
         if fused || edited {
             let out = clean_dir.join(format!("page-{:04}.json", page.page));
             let tmp = out.with_extension("json.tmp");
@@ -166,7 +172,11 @@ fn fuse_hyphens(words: &[Word], vocab: &FxHashSet<String>) -> Vec<Word> {
         {
             let fused = format!("{}{}", &prev.t[..prev.t.len() - 1], w.t);
             let known = tokenize(&fused).first().is_some_and(|t| vocab.contains(t));
-            prev.t = if known { fused } else { format!("{}{}", prev.t, w.t) };
+            prev.t = if known {
+                fused
+            } else {
+                format!("{}{}", prev.t, w.t)
+            };
             continue;
         }
         out.push(w.clone());
@@ -266,7 +276,13 @@ mod tests {
     use super::*;
 
     fn w(t: &str) -> Word {
-        Word { t: t.into(), x: 0.1, y: 0.1, w: 0.04, h: 0.02 }
+        Word {
+            t: t.into(),
+            x: 0.1,
+            y: 0.1,
+            w: 0.04,
+            h: 0.02,
+        }
     }
 
     fn words(ts: &[&str]) -> Vec<Word> {
@@ -274,16 +290,40 @@ mod tests {
     }
 
     fn edit(o: &str, c: &str) -> Edit {
-        Edit { original: o.into(), corrected: c.into(), verified: true }
+        Edit {
+            original: o.into(),
+            corrected: c.into(),
+            verified: true,
+        }
     }
 
     #[test]
     fn applies_single_and_multi_word_edits() {
-        let mut ws = words(&["the", "creation", "of", "preadsheets", "and", "impor", "tant", "things"]);
+        let mut ws = words(&[
+            "the",
+            "creation",
+            "of",
+            "preadsheets",
+            "and",
+            "impor",
+            "tant",
+            "things",
+        ]);
         apply(&mut ws, &edit("preadsheets", "spreadsheets")).unwrap();
         apply(&mut ws, &edit("impor tant", "important")).unwrap();
         let ts: Vec<&str> = ws.iter().map(|w| w.t.as_str()).collect();
-        assert_eq!(ts, vec!["the", "creation", "of", "spreadsheets", "and", "important", "things"]);
+        assert_eq!(
+            ts,
+            vec![
+                "the",
+                "creation",
+                "of",
+                "spreadsheets",
+                "and",
+                "important",
+                "things"
+            ]
+        );
     }
 
     #[test]
@@ -292,9 +332,15 @@ mod tests {
         let mut e = edit("plain", "plane");
         e.verified = false;
         assert_eq!(apply(&mut ws, &e), Err("unverified"));
-        assert_eq!(apply(&mut ws, &edit("missing", "present")), Err("no anchor"));
+        assert_eq!(
+            apply(&mut ws, &edit("missing", "present")),
+            Err("no anchor")
+        );
         // "text" -> something entirely different: distance gate
-        assert_eq!(apply(&mut ws, &edit("text", "manuscript")), Err("edit distance"));
+        assert_eq!(
+            apply(&mut ws, &edit("text", "manuscript")),
+            Err("edit distance")
+        );
         // partial-word matches must not anchor ("plain" != "plai")
         assert_eq!(apply(&mut ws, &edit("plai", "play")), Err("no anchor"));
     }
@@ -313,14 +359,25 @@ mod tests {
 
         // punctuation strictly inside the span still blocks the anchor
         let mut ws = words(&["impor,", "tant"]);
-        assert_eq!(apply(&mut ws, &edit("impor tant", "important")), Err("no anchor"));
+        assert_eq!(
+            apply(&mut ws, &edit("impor tant", "important")),
+            Err("no anchor")
+        );
     }
 
     #[test]
     fn rejects_boundary_duplication() {
-        let mut ws = words(&["folded", "in", "1979,", "a", "victim", "of", "its", "strategy"]);
-        assert_eq!(apply(&mut ws, &edit("a victim", "a victim of")), Err("duplicates next word"));
-        assert_eq!(apply(&mut ws, &edit("victim of", "a victim of")), Err("duplicates previous word"));
+        let mut ws = words(&[
+            "folded", "in", "1979,", "a", "victim", "of", "its", "strategy",
+        ]);
+        assert_eq!(
+            apply(&mut ws, &edit("a victim", "a victim of")),
+            Err("duplicates next word")
+        );
+        assert_eq!(
+            apply(&mut ws, &edit("victim of", "a victim of")),
+            Err("duplicates previous word")
+        );
     }
 
     #[test]

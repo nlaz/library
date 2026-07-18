@@ -322,7 +322,10 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
         let mut map = FxHashMap::default();
         for kv in self.tx.prefix(&self.ks, [DOCLEN]) {
             let (key, val) = kv.into_inner().unwrap();
-            map.insert(key.to_vec(), i64::from_be_bytes(*val.as_array::<8>().unwrap()));
+            map.insert(
+                key.to_vec(),
+                i64::from_be_bytes(*val.as_array::<8>().unwrap()),
+            );
         }
         let dl = map.get(doclen_key).copied().unwrap_or(0) as f64;
         *self.doc_len_cache.write().unwrap() = Some(map);
@@ -384,7 +387,11 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
                 bufs.key.push(POSTING);
                 postcard::to_io(term, &mut bufs.key).unwrap();
                 let plen = bufs.key.len();
-                let t = if cfg!(debug_assertions) { Some(std::time::Instant::now()) } else { None };
+                let t = if cfg!(debug_assertions) {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 bufs.postings
                     .extend(self.tx.prefix(&self.ks, &bufs.key[..]).map(|kv| {
                         let (key, val) = kv.into_inner().unwrap();

@@ -189,7 +189,10 @@ mod tests {
         let mut img = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
         for b in blocks {
             let (x0, y0) = ((b[0] * w as f32) as u32, (b[1] * h as f32) as u32);
-            let (x1, y1) = (((b[0] + b[2]) * w as f32) as u32, ((b[1] + b[3]) * h as f32) as u32);
+            let (x1, y1) = (
+                ((b[0] + b[2]) * w as f32) as u32,
+                ((b[1] + b[3]) * h as f32) as u32,
+            );
             for y in y0..y1.min(h) {
                 for x in x0..x1.min(w) {
                     img.put_pixel(x, y, image::Luma([0u8]));
@@ -208,10 +211,16 @@ mod tests {
         let parts = subdivide(&luma, FULL, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(parts.len(), 2, "one vertical cut -> two parts: {parts:?}");
         // cut lands inside the gutter
-        assert!(parts[0][0] == 0.0 && (0.45..=0.55).contains(&parts[0][2]), "{parts:?}");
+        assert!(
+            parts[0][0] == 0.0 && (0.45..=0.55).contains(&parts[0][2]),
+            "{parts:?}"
+        );
         assert!((0.45..=0.55).contains(&parts[1][0]), "{parts:?}");
         // parts span the bbox on the uncut axis
-        assert!(parts.iter().all(|p| p[1] == 0.0 && p[3] == 1.0), "{parts:?}");
+        assert!(
+            parts.iter().all(|p| p[1] == 0.0 && p[3] == 1.0),
+            "{parts:?}"
+        );
     }
 
     #[test]
@@ -220,7 +229,11 @@ mod tests {
         let luma = page(&[[0.0, 0.0, 1.0, 1.0]]);
         let parts = subdivide(&luma, FULL, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(parts.len(), 4, "{parts:?}");
-        assert!(parts.iter().all(|p| (p[2] - 0.6).abs() < 1e-4 && (p[3] - 0.6).abs() < 1e-4));
+        assert!(
+            parts
+                .iter()
+                .all(|p| (p[2] - 0.6).abs() < 1e-4 && (p[3] - 0.6).abs() < 1e-4)
+        );
     }
 
     #[test]

@@ -20,7 +20,9 @@ pub const LABEL: &str = "computer.flower.library.ingest";
 
 pub fn plist_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("no HOME")?;
-    Ok(PathBuf::from(home).join("Library/LaunchAgents").join(format!("{LABEL}.plist")))
+    Ok(PathBuf::from(home)
+        .join("Library/LaunchAgents")
+        .join(format!("{LABEL}.plist")))
 }
 
 pub fn plist_body(bin: &Path, data: &Path) -> String {

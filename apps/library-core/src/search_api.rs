@@ -100,12 +100,25 @@ pub fn answer(
             phase = "hybrid";
         }
         let qtoks = tokenize(&q.q);
-        let k = if q.doc.is_empty() { q.offset as usize + K } else { K_DOC };
+        let k = if q.doc.is_empty() {
+            q.offset as usize + K
+        } else {
+            K_DOC
+        };
         let t = Instant::now();
         let mut found = lib.rtx(|r| {
-            crate::search(&r, &q.q, qemb.as_ref(), k, member.as_ref(), true, full, full, |key| {
-                lib.get(key)
-            }, Some(&mut ranker))
+            crate::search(
+                &r,
+                &q.q,
+                qemb.as_ref(),
+                k,
+                member.as_ref(),
+                true,
+                full,
+                full,
+                |key| lib.get(key),
+                Some(&mut ranker),
+            )
         });
         if q.doc.is_empty() {
             // degradation cutoff, every page — doc-scoped find is exempt
@@ -115,7 +128,12 @@ pub fn answer(
             rel_killed = before - found.len();
         }
         stages.push(("lex+rrf", t.elapsed().as_micros()));
-        text_prov.extend(found.iter().take(perf::HITS_PER_RECORD).map(perf::HitProv::from));
+        text_prov.extend(
+            found
+                .iter()
+                .take(perf::HITS_PER_RECORD)
+                .map(perf::HitProv::from),
+        );
         text_hits.extend(found.iter().map(|h| wire::wire_hit(h, &qtoks)));
     }
 
@@ -129,9 +147,8 @@ pub fn answer(
         if let Some(e) = qemb {
             phase = if want_text { "hybrid+img" } else { "img" };
             let t = Instant::now();
-            let mut found = images.rtx(|r| {
-                crate::image_search(&r, &e, crate::IMG_FETCH, member.as_ref())
-            });
+            let mut found =
+                images.rtx(|r| crate::image_search(&r, &e, crate::IMG_FETCH, member.as_ref()));
             img_fetched = found.len();
             img_top = found.first().map(|h| h.score).unwrap_or(0.0);
             img_floor = found.last().map(|h| h.score).unwrap_or(0.0);
@@ -143,7 +160,12 @@ pub fn answer(
                 img_killed = img_fetched - found.len();
             }
             stages.push(("image_search", t.elapsed().as_micros()));
-            img_prov.extend(found.iter().take(perf::HITS_PER_RECORD).map(perf::ImgProv::from));
+            img_prov.extend(
+                found
+                    .iter()
+                    .take(perf::HITS_PER_RECORD)
+                    .map(perf::ImgProv::from),
+            );
             img_hits.extend(wire::group_image_hits(&found, k));
         }
     }
@@ -160,9 +182,15 @@ pub fn answer(
 
     let total = start.elapsed().as_micros();
     if cfg!(debug_assertions) {
-        let breakdown: String =
-            stages.iter().map(|(n, us)| format!("{n}={us}us")).collect::<Vec<_>>().join(" ");
-        eprintln!("[perf] search {:?} mode={} phase={phase} : {breakdown} total={total}us", q.q, q.mode);
+        let breakdown: String = stages
+            .iter()
+            .map(|(n, us)| format!("{n}={us}us"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!(
+            "[perf] search {:?} mode={} phase={phase} : {breakdown} total={total}us",
+            q.q, q.mode
+        );
     }
     perf::record_search(perf::SearchRecord {
         ts_ms: perf::now_ms(),
@@ -174,7 +202,10 @@ pub fn answer(
         offset: q.offset,
         phase: phase.to_owned(),
         total_us: total as u64,
-        stages: stages.iter().map(|(n, us)| ((*n).to_owned(), *us as u64)).collect(),
+        stages: stages
+            .iter()
+            .map(|(n, us)| ((*n).to_owned(), *us as u64))
+            .collect(),
         lex_n: ranker.lex_n,
         sem_n: ranker.sem_n,
         rel_killed,
@@ -187,5 +218,10 @@ pub fn answer(
         text_hits: text_prov,
         img_hits: img_prov,
     });
-    Response { seq: q.seq, phase, us: total, hits }
+    Response {
+        seq: q.seq,
+        phase,
+        us: total,
+        hits,
+    }
 }

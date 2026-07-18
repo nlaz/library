@@ -14,7 +14,9 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::legibility::{LEGIBLE_OK, NOISY_MIN, legibility, legible_excerpt, min_window, squash_ws};
+use crate::legibility::{
+    LEGIBLE_OK, NOISY_MIN, legibility, legible_excerpt, min_window, squash_ws,
+};
 use crate::wire::read_collections;
 use crate::{ChunkKey, Emb, FxHashSet, Hit, Library, MIN_REL, Readers, search};
 
@@ -46,9 +48,9 @@ const BM25_WEAK: f32 = 6.0;
 /// Stopword-ish tokens excluded from coverage (coverage over these would
 /// let "how to keep..." score high on any page of running prose).
 const STOP: &[&str] = &[
-    "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
-    "from", "that", "this", "how", "what", "why", "when", "where", "which",
-    "is", "are", "was", "do", "does", "can", "you", "your", "my", "about",
+    "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with", "from", "that", "this",
+    "how", "what", "why", "when", "where", "which", "is", "are", "was", "do", "does", "can", "you",
+    "your", "my", "about",
 ];
 
 /// Absolute confidence for a query's hits. Raw BM25 alone can't call a
@@ -128,7 +130,10 @@ pub fn derive_title(doc: &str) -> String {
 /// The model-facing title: titles.json first, derived otherwise — never
 /// null, so the model always has something better than a raw id to say.
 fn title_for(titles: &std::collections::BTreeMap<String, String>, doc: &str) -> String {
-    titles.get(doc).cloned().unwrap_or_else(|| derive_title(doc))
+    titles
+        .get(doc)
+        .cloned()
+        .unwrap_or_else(|| derive_title(doc))
 }
 
 /// Reverse doc → collection-name map (first collection wins). Hits carry
@@ -146,16 +151,16 @@ fn collection_of(data: &Path) -> std::collections::BTreeMap<String, String> {
 /// Resolve a collection argument: Ok(None) for "", Ok(Some(docs)) on a
 /// fuzzy match ("Field Guides" resolves to "field-guides"), Err(json) the
 /// model can act on when nothing matches — never a silent search-everything.
-pub fn resolve_collection(
-    data: &Path,
-    col: &str,
-) -> Result<Option<FxHashSet<String>>, Value> {
+pub fn resolve_collection(data: &Path, col: &str) -> Result<Option<FxHashSet<String>>, Value> {
     if col.is_empty() {
         return Ok(None);
     }
     let cols = read_collections(data);
     let norm = |s: &str| {
-        s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
     };
     let n = norm(col);
     // exact first; else the LONGEST overlapping name — "Field Guides
@@ -183,10 +188,7 @@ pub fn resolve_collection(
 /// *distinct* docs share a base.
 pub(crate) fn base_id(doc: &str) -> &str {
     match doc.rfind('-') {
-        Some(i)
-            if !doc[i + 1..].is_empty()
-                && doc[i + 1..].bytes().all(|b| b.is_ascii_digit()) =>
-        {
+        Some(i) if !doc[i + 1..].is_empty() && doc[i + 1..].bytes().all(|b| b.is_ascii_digit()) => {
             &doc[..i]
         }
         _ => doc,
@@ -265,13 +267,24 @@ pub fn search_tool<R: fold::stream::Readable>(
     // (only unknown tokens get corrected, so real words are untouched — this
     // recovers typos and OCR garble); diversify off (the tool does its own
     // dedup_doc_pages below).
-    let mut hits = search(r, query, Some(&qemb), TOOL_K * 2, member.as_ref(), false, true, false, |key| {
-        lib.get(key)
-    }, None);
+    let mut hits = search(
+        r,
+        query,
+        Some(&qemb),
+        TOOL_K * 2,
+        member.as_ref(),
+        false,
+        true,
+        false,
+        |key| lib.get(key),
+        None,
+    );
     hits.retain(|h| h.rel >= MIN_REL);
     let keep = {
-        let keys: Vec<(&str, u32)> =
-            hits.iter().map(|h| (h.key.doc.as_str(), h.key.page)).collect();
+        let keys: Vec<(&str, u32)> = hits
+            .iter()
+            .map(|h| (h.key.doc.as_str(), h.key.page))
+            .collect();
         dedup_doc_pages(&keys)
     };
     let mut i = 0;
@@ -308,7 +321,9 @@ pub fn search_tool<R: fold::stream::Readable>(
              so if they don't actually cover the question."
         );
     }
-    if conf != "none" && let Some(top) = hits.first() {
+    if conf != "none"
+        && let Some(top) = hits.first()
+    {
         // one hop instead of two: the top hit's whole page rides along
         if let Some(text) = page_slice(data, &top.key.doc, top.key.page, top.key.page) {
             let mut text = squash_ws(&text);
@@ -334,8 +349,12 @@ fn slim_hit(
     titles: &std::collections::BTreeMap<String, String>,
     cols: &std::collections::BTreeMap<String, String>,
 ) -> Value {
-    let mut snippet: String =
-        h.words.iter().map(|w| w.t.as_str()).collect::<Vec<_>>().join(" ");
+    let mut snippet: String = h
+        .words
+        .iter()
+        .map(|w| w.t.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     truncate_chars(&mut snippet, 200);
     json!({
         "doc": h.key.doc,
@@ -348,16 +367,14 @@ fn slim_hit(
 
 /// Figure-search results for kind="images"; `found` comes from the host's
 /// `image_search` call (the CLIP query embedding lives host-side).
-pub fn image_hits_for_tool(
-    found: &[crate::ImageHit],
-    data: &Path,
-    k: usize,
-) -> Value {
+pub fn image_hits_for_tool(found: &[crate::ImageHit], data: &Path, k: usize) -> Value {
     let titles = read_titles(data);
     let cols = collection_of(data);
     let keep = {
-        let keys: Vec<(&str, u32)> =
-            found.iter().map(|h| (h.key.doc.as_str(), h.key.page)).collect();
+        let keys: Vec<(&str, u32)> = found
+            .iter()
+            .map(|h| (h.key.doc.as_str(), h.key.page))
+            .collect();
         dedup_doc_pages(&keys)
     };
     let hits: Vec<Value> = keep
@@ -444,7 +461,10 @@ pub fn read_pages_tool(data: &Path, doc: &str, from: Option<u32>, to: Option<u32
         // stem's title, so "The Art of Plain Cookery" finds
         // the-art-of-plain-cookery and titles.json entries alike.
         let norm = |s: &str| {
-            s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+            s.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
         };
         let titles = read_titles(data);
         let needle = norm(doc);
@@ -490,7 +510,11 @@ pub fn read_pages_tool(data: &Path, doc: &str, from: Option<u32>, to: Option<u32
     for p in from..=to {
         let t = squash_ws(&slice_pages(&md, p, p).0);
         if !t.is_empty() {
-            parts.push(if from == to { t } else { format!("[p.{p}] {t}") });
+            parts.push(if from == to {
+                t
+            } else {
+                format!("[p.{p}] {t}")
+            });
         }
     }
     let text = parts.join(" ");
@@ -724,8 +748,11 @@ pub fn overview_tool(data: &Path) -> Value {
     let shelves: Vec<Value> = cols
         .iter()
         .map(|(name, docs)| {
-            let examples: Vec<String> =
-                docs.iter().take(OVERVIEW_EXAMPLES).map(|d| title_for(&titles, d)).collect();
+            let examples: Vec<String> = docs
+                .iter()
+                .take(OVERVIEW_EXAMPLES)
+                .map(|d| title_for(&titles, d))
+                .collect();
             json!({ "collection": name, "books": docs.len(), "examples": examples })
         })
         .collect();
@@ -739,7 +766,11 @@ pub fn overview_tool(data: &Path) -> Value {
 
 /// Used by hosts to expose the same key the resolve callback uses.
 pub fn chunk_key(doc: &str, page: u32, idx: u32) -> ChunkKey {
-    ChunkKey { doc: doc.into(), page, idx }
+    ChunkKey {
+        doc: doc.into(),
+        page,
+        idx,
+    }
 }
 
 #[cfg(test)]
@@ -784,7 +815,10 @@ mod tests {
 
     #[test]
     fn derive_title_handles_id_shapes() {
-        assert_eq!(derive_title("the-art-of-plain-cookery"), "The Art of Plain Cookery");
+        assert_eq!(
+            derive_title("the-art-of-plain-cookery"),
+            "The Art of Plain Cookery"
+        );
         assert_eq!(
             derive_title("Field Guide to Mushrooms (A. Botanist) (source.example)"),
             "Field Guide to Mushrooms"
@@ -826,7 +860,9 @@ mod tests {
         assert!(err["collections"].as_array().unwrap().len() == 4);
         // overlapping names pick the longest match, not map order:
         // "Field Guides Collection" must hit field-guides, not Guides
-        let m = resolve_collection(&dir, "Field Guides Collection").unwrap().unwrap();
+        let m = resolve_collection(&dir, "Field Guides Collection")
+            .unwrap()
+            .unwrap();
         assert!(m.contains("doc-a"));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -841,7 +877,10 @@ mod tests {
         assert!(a["text"].as_str().unwrap().len() >= BLANK_CHARS);
         assert!(!a["text"].as_str().unwrap().contains('\n'));
         assert_eq!(a["col"], "field-guides");
-        assert!(a["note"].is_null(), "clean page must not carry a noisy note");
+        assert!(
+            a["note"].is_null(),
+            "clean page must not carry a noisy note"
+        );
         // doc-b's only page is blank: exhaustion is an error, not empty text
         let blank = sample_page_tool(&dir, "recipes", Some(1), &[]);
         assert!(blank["error"].as_str().unwrap().contains("readable"));
@@ -854,7 +893,10 @@ mod tests {
         // the garbled collection's only page has no quotable stretch: it is
         // skipped like a blank, and exhaustion stays an explicit error
         let g = sample_page_tool(&dir, "garbled", Some(7), &[]);
-        assert!(g["error"].as_str().unwrap().contains("readable"), "got: {g}");
+        assert!(
+            g["error"].as_str().unwrap().contains("readable"),
+            "got: {g}"
+        );
         // avoid steers to the other readable page of doc-a...
         let first = sample_page_tool(&dir, "field-guides", Some(42), &[]);
         let avoid = format!("doc-a:{}", first["page"].as_u64().unwrap());
@@ -893,7 +935,12 @@ mod tests {
         assert_eq!(dedup_doc_pages(&keys), vec![0, 2, 5]);
         // journal-1891 strips to "journal" but is the only doc on that base:
         // no cap, only exact (doc, page) duplicates collapse
-        let lone = vec![("journal-1891", 3), ("journal-1891", 4), ("journal-1891", 5), ("journal-1891", 4)];
+        let lone = vec![
+            ("journal-1891", 3),
+            ("journal-1891", 4),
+            ("journal-1891", 5),
+            ("journal-1891", 4),
+        ];
         assert_eq!(dedup_doc_pages(&lone), vec![0, 1, 2]);
     }
 

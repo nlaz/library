@@ -55,10 +55,13 @@ mod f32_array {
         v[..].serialize(s)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(d: D) -> Result<[f32; N], D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(
+        d: D,
+    ) -> Result<[f32; N], D::Error> {
         let v = Vec::<f32>::deserialize(d)?;
-        v.try_into()
-            .map_err(|v: Vec<f32>| serde::de::Error::custom(format!("expected {N} floats, got {}", v.len())))
+        v.try_into().map_err(|v: Vec<f32>| {
+            serde::de::Error::custom(format!("expected {N} floats, got {}", v.len()))
+        })
     }
 }
 
@@ -296,7 +299,10 @@ pub type Readers<'tx, R> = (
         Bm25Reader<'tx, R, ChunkKey, LexTok>,
         HnswReader<'tx, R, ChunkKey, f32, Cosine, EMB_DIM, 32, 40, 80, 80, 16>,
     ),
-    (InvertedIndexReader<'tx, R, ChunkKey, String>, TermDictReader<'tx, R>),
+    (
+        InvertedIndexReader<'tx, R, ChunkKey, String>,
+        TermDictReader<'tx, R>,
+    ),
 );
 
 pub fn graph() -> Graph {
@@ -329,7 +335,10 @@ pub fn graph() -> Graph {
                 to_manifest as fn(&ChunkIn) -> Keyed<ChunkKey, String>,
                 InvertedIndex::new("manifest"),
             ),
-            FlatMap::new(to_terms as fn(&ChunkIn) -> Vec<String>, TermDict::new("terms")),
+            FlatMap::new(
+                to_terms as fn(&ChunkIn) -> Vec<String>,
+                TermDict::new("terms"),
+            ),
         ),
     )
 }
@@ -494,8 +503,10 @@ fn mmr_rerank(
     if pool_n <= 1 {
         return fused;
     }
-    let embs: Vec<Option<Emb>> =
-        fused[..pool_n].iter().map(|(_, k)| resolve(k).map(|r| r.emb)).collect();
+    let embs: Vec<Option<Emb>> = fused[..pool_n]
+        .iter()
+        .map(|(_, k)| resolve(k).map(|r| r.emb))
+        .collect();
     let top = fused[0].0;
     let norm = |s: f32| if top > 0.0 { s / top } else { 1.0 };
 
@@ -537,8 +548,7 @@ fn rrf(lists: &[Vec<ChunkKey>]) -> Vec<(f32, ChunkKey)> {
             *scores.entry(key).or_insert(0.0) += 1.0 / (60.0 + rank as f32);
         }
     }
-    let mut out: Vec<(f32, ChunkKey)> =
-        scores.into_iter().map(|(k, s)| (s, k.clone())).collect();
+    let mut out: Vec<(f32, ChunkKey)> = scores.into_iter().map(|(k, s)| (s, k.clone())).collect();
     out.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     out
 }
@@ -614,24 +624,33 @@ pub fn search<R: Readable>(
     let fetch = k.max(LEX_FETCH);
     let t = std::time::Instant::now();
     let scored = match filter {
-        Some(f) => {
-            lex.search_filtered(&expanded, fetch, |key: &ChunkKey| f.contains(&key.doc))
-        }
+        Some(f) => lex.search_filtered(&expanded, fetch, |key: &ChunkKey| f.contains(&key.doc)),
         None => lex.search(&expanded, fetch),
     };
     let top = scored.first().map(|h| h.score).unwrap_or(0.0);
     let rel: FxHashMap<ChunkKey, (f32, f32)> = scored
         .iter()
         .map(|h| {
-            let r = if top > 0.0 { (h.score / top) as f32 } else { 1.0 };
+            let r = if top > 0.0 {
+                (h.score / top) as f32
+            } else {
+                1.0
+            };
             (h.val.clone(), (r, h.score as f32))
         })
         .collect();
     let lexical: Vec<ChunkKey> = scored.into_iter().map(|h| h.val).collect();
-    let lex_rank: FxHashMap<ChunkKey, u32> =
-        lexical.iter().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
+    let lex_rank: FxHashMap<ChunkKey, u32> = lexical
+        .iter()
+        .enumerate()
+        .map(|(i, k)| (k.clone(), i as u32))
+        .collect();
     if cfg!(debug_assertions) {
-        eprintln!("[perf] lex_search elapsed={}us hits={}", t.elapsed().as_micros(), lexical.len());
+        eprintln!(
+            "[perf] lex_search elapsed={}us hits={}",
+            t.elapsed().as_micros(),
+            lexical.len()
+        );
     }
     let t = std::time::Instant::now();
     let sem_scored: Vec<Scored<f32, ChunkKey>> = match (qemb, filter) {
@@ -646,7 +665,11 @@ pub fn search<R: Readable>(
         .collect();
     let semantic: Vec<ChunkKey> = sem_scored.into_iter().map(|h| h.val).collect();
     if cfg!(debug_assertions) {
-        eprintln!("[perf] vec_search elapsed={}us hits={}", t.elapsed().as_micros(), semantic.len());
+        eprintln!(
+            "[perf] vec_search elapsed={}us hits={}",
+            t.elapsed().as_micros(),
+            semantic.len()
+        );
     }
     if let Some(s) = stats.as_deref_mut() {
         s.lex_n = lexical.len();
@@ -658,7 +681,11 @@ pub fn search<R: Readable>(
     // diversity: demote near-duplicates (same book/edition) among the top
     // hits. Full queries only — the per-keystroke path can't afford the
     // embedding reads, and doc-scoped browser-find must keep full coverage.
-    let ordered = if diversify { mmr_rerank(fused, &resolve) } else { fused };
+    let ordered = if diversify {
+        mmr_rerank(fused, &resolve)
+    } else {
+        fused
+    };
     let hits: Vec<Hit> = ordered
         .into_iter()
         .take(k)
@@ -682,7 +709,11 @@ pub fn search<R: Readable>(
         })
         .collect();
     if cfg!(debug_assertions) {
-        eprintln!("[perf] fuse_rerank_resolve elapsed={}us hits={}", t.elapsed().as_micros(), hits.len());
+        eprintln!(
+            "[perf] fuse_rerank_resolve elapsed={}us hits={}",
+            t.elapsed().as_micros(),
+            hits.len()
+        );
     }
     hits
 }
@@ -816,7 +847,11 @@ pub fn image_search<R: Readable>(
         .filter_map(|hit| {
             let bbox = meta.search(&hit.val).into_iter().next()?;
             // cosine distance -> similarity, so higher is better like text
-            Some(ImageHit { score: 1.0 - hit.score, key: hit.val, bbox })
+            Some(ImageHit {
+                score: 1.0 - hit.score,
+                key: hit.val,
+                bbox,
+            })
         })
         .collect();
     if cfg!(debug_assertions) {
@@ -826,12 +861,19 @@ pub fn image_search<R: Readable>(
         );
         // how many figures survive the spread cutoff at various strengths —
         // the data behind the IMG_MIN_REL choice
-        let above = |f: f32| hits.iter().filter(|h| h.score >= last + f * (top - last)).count();
+        let above = |f: f32| {
+            hits.iter()
+                .filter(|h| h.score >= last + f * (top - last))
+                .count()
+        };
         eprintln!(
             "[perf] image_search elapsed={}us n={} sims top={top:.3} floor={last:.3} above .2/.35/.5/.65={}/{}/{}/{}",
             t.elapsed().as_micros(),
             hits.len(),
-            above(0.2), above(0.35), above(0.5), above(0.65),
+            above(0.2),
+            above(0.35),
+            above(0.5),
+            above(0.65),
         );
     }
     hits
@@ -842,13 +884,21 @@ mod fuzzy_mmr_tests {
     use super::*;
 
     fn key(doc: &str) -> ChunkKey {
-        ChunkKey { doc: doc.to_string(), page: 1, idx: 0 }
+        ChunkKey {
+            doc: doc.to_string(),
+            page: 1,
+            idx: 0,
+        }
     }
 
     fn rec(doc: &str, hot: usize) -> ChunkRec {
         let mut emb = [0.0f32; EMB_DIM];
         emb[hot] = 1.0;
-        ChunkRec { key: key(doc), words: vec![], emb }
+        ChunkRec {
+            key: key(doc),
+            words: vec![],
+            emb,
+        }
     }
 
     #[test]
@@ -872,8 +922,10 @@ mod fuzzy_mmr_tests {
             "c" => Some(rec("c", 1)),
             _ => None,
         };
-        let out: Vec<String> =
-            mmr_rerank(fused, &resolve).into_iter().map(|(_, k)| k.doc).collect();
+        let out: Vec<String> = mmr_rerank(fused, &resolve)
+            .into_iter()
+            .map(|(_, k)| k.doc)
+            .collect();
         assert_eq!(out, vec!["a", "c", "b"]);
     }
 
@@ -887,9 +939,10 @@ mod fuzzy_mmr_tests {
             "c" => Some(rec("c", 2)),
             _ => None,
         };
-        let out: Vec<String> =
-            mmr_rerank(fused, &resolve).into_iter().map(|(_, k)| k.doc).collect();
+        let out: Vec<String> = mmr_rerank(fused, &resolve)
+            .into_iter()
+            .map(|(_, k)| k.doc)
+            .collect();
         assert_eq!(out, vec!["a", "b", "c"]);
     }
 }
-

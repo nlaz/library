@@ -73,7 +73,12 @@ pub struct ImgProv {
 
 impl From<&ImageHit> for ImgProv {
     fn from(h: &ImageHit) -> Self {
-        ImgProv { doc: h.key.doc.clone(), page: h.key.page, idx: h.key.idx, sim: h.score }
+        ImgProv {
+            doc: h.key.doc.clone(),
+            page: h.key.page,
+            idx: h.key.idx,
+            sim: h.score,
+        }
     }
 }
 
@@ -244,8 +249,12 @@ pub fn legibility_summary(data: &Path, doc: &str) -> Option<LegibilitySummary> {
     let mut scores: Vec<(u32, f32)> = Vec::new();
     let mut noisy = 0usize;
     for p in &pages {
-        let text: String =
-            p.words.iter().map(|w| w.t.as_str()).collect::<Vec<_>>().join(" ");
+        let text: String = p
+            .words
+            .iter()
+            .map(|w| w.t.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         if text.len() < BLANK_CHARS {
             continue;
         }
@@ -255,7 +264,10 @@ pub fn legibility_summary(data: &Path, doc: &str) -> Option<LegibilitySummary> {
         }
     }
     if scores.is_empty() {
-        return Some(LegibilitySummary { pages: total, ..Default::default() });
+        return Some(LegibilitySummary {
+            pages: total,
+            ..Default::default()
+        });
     }
     let mean = scores.iter().map(|(_, s)| s).sum::<f32>() / scores.len() as f32;
     let mut by_score = scores.clone();
@@ -301,8 +313,9 @@ pub fn ingest_rows(data: &Path) -> Vec<Value> {
         let Some(doc) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
             continue;
         };
-        let Some(mut status): Option<Value> =
-            std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok())
+        let Some(mut status): Option<Value> = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
         else {
             continue;
         };
@@ -323,9 +336,7 @@ pub fn ingest_rows(data: &Path) -> Vec<Value> {
                 if m.at == 0 {
                     m.at = now_ms();
                 }
-                if let (Some(obj), Ok(mv)) =
-                    (status.as_object_mut(), serde_json::to_value(&m))
-                {
+                if let (Some(obj), Ok(mv)) = (status.as_object_mut(), serde_json::to_value(&m)) {
                     obj.insert("metrics".into(), mv);
                     let tmp = path.with_extension("json.tmp");
                     if let Ok(bytes) = serde_json::to_vec_pretty(&status)
@@ -391,8 +402,8 @@ mod tests {
 
     #[test]
     fn ingest_rows_backfills_legibility() {
-        let data = std::env::temp_dir()
-            .join(format!("library-core-perf-test-{}", std::process::id()));
+        let data =
+            std::env::temp_dir().join(format!("library-core-perf-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data);
         let data = data.as_path();
         std::fs::create_dir_all(data.join("status")).unwrap();
@@ -408,7 +419,8 @@ mod tests {
         .unwrap();
         std::fs::write(
             data.join("status/somedoc.json"),
-            serde_json::to_vec(&json!({"state": "ready", "done": 0, "total": 0, "updated": 1})).unwrap(),
+            serde_json::to_vec(&json!({"state": "ready", "done": 0, "total": 0, "updated": 1}))
+                .unwrap(),
         )
         .unwrap();
 

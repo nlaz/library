@@ -56,7 +56,8 @@ pub struct AppState {
     /// serializes turns; `chat_stdin` is shared separately so `chat_cancel`
     /// can write while a turn holds the bridge.
     chat: std::sync::Mutex<Option<ChatBridge>>,
-    chat_stdin: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>>,
+    chat_stdin:
+        std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +104,12 @@ fn save_settings(app: &AppHandle, s: &Settings) -> Result<(), String> {
 fn ingest_ctx(s: &Settings) -> IngestCtx {
     // clean: false — the in-app ingest must never park the ~2GB on-device
     // model in memory implicitly; cached edits still get applied
-    IngestCtx { data: s.data.clone(), width: s.width, clean: false, text_layer: true }
+    IngestCtx {
+        data: s.data.clone(),
+        width: s.width,
+        clean: false,
+        text_layer: true,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +186,9 @@ fn init_engine(app: AppHandle) {
 fn install_agent(data: &Path) {
     let candidates = [
         // bundled sidecar next to the app binary
-        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("library-ingest"))),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("library-ingest"))),
         // dev builds share the workspace target dir
         Some(dev_root().join("target/release/library-ingest")),
         Some(dev_root().join("target/debug/library-ingest")),
@@ -328,11 +336,10 @@ fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
     let bin = librarian_bin(app);
     // real collection names ride into the tool schema + instructions so the
     // model can scope searches without guessing
-    let cols: Vec<String> = library_core::wire::read_collections(
-        &app.state::<AppState>().settings.data,
-    )
-    .into_keys()
-    .collect();
+    let cols: Vec<String> =
+        library_core::wire::read_collections(&app.state::<AppState>().settings.data)
+            .into_keys()
+            .collect();
     let mut child = std::process::Command::new(&bin)
         .args(["serve", "--tools-stdin", "--collections", &cols.join(",")])
         .stdin(std::process::Stdio::piped())
@@ -346,7 +353,11 @@ fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
         Some(Ok(l)) if l.contains("\"ready\"") => {}
         _ => return Err("librarian sidecar did not become ready".into()),
     }
-    Ok(ChatBridge { child, stdin, lines })
+    Ok(ChatBridge {
+        child,
+        stdin,
+        lines,
+    })
 }
 
 fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value) -> String {
@@ -376,7 +387,8 @@ fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value)
     match name {
         "search_library" => {
             let lib = eng.lib.read().unwrap();
-            lib.rtx(|r| tools::search_tool(&r, &lib, data, q, col, tools::TOOL_K)).to_string()
+            lib.rtx(|r| tools::search_tool(&r, &lib, data, q, col, tools::TOOL_K))
+                .to_string()
         }
         "search_figures" => figure_search(q, col),
         "sample_page" => {
@@ -406,7 +418,11 @@ fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value)
 /// executes tool requests in-process, returns at `turn_end`. Runs on the
 /// blocking pool; a wedged model is recovered by `chat_cancel` (the stop
 /// button), which the sidecar honors between stream snapshots.
-fn chat_turn_blocking(app: AppHandle, conv: String, messages: serde_json::Value) -> Result<(), String> {
+fn chat_turn_blocking(
+    app: AppHandle,
+    conv: String,
+    messages: serde_json::Value,
+) -> Result<(), String> {
     use std::io::Write;
 
     let state = app.state::<AppState>();
@@ -414,7 +430,11 @@ fn chat_turn_blocking(app: AppHandle, conv: String, messages: serde_json::Value)
     let data = state.settings.data.clone();
 
     let mut guard = state.chat.lock().unwrap();
-    if guard.is_none() || guard.as_mut().is_some_and(|b| b.child.try_wait().is_ok_and(|s| s.is_some())) {
+    if guard.is_none()
+        || guard
+            .as_mut()
+            .is_some_and(|b| b.child.try_wait().is_ok_and(|s| s.is_some()))
+    {
         let bridge = spawn_chat(&app)?;
         *state.chat_stdin.lock().unwrap() = Some(bridge.stdin.clone());
         *guard = Some(bridge);
@@ -426,7 +446,10 @@ fn chat_turn_blocking(app: AppHandle, conv: String, messages: serde_json::Value)
     let line = serde_json::json!({ "e": "turn", "conv": conv, "messages": messages });
     {
         let mut stdin = bridge.stdin.lock().unwrap();
-        if writeln!(stdin, "{line}").and_then(|_| stdin.flush()).is_err() {
+        if writeln!(stdin, "{line}")
+            .and_then(|_| stdin.flush())
+            .is_err()
+        {
             return Err("could not reach the librarian sidecar".into());
         }
     }
@@ -441,12 +464,20 @@ fn chat_turn_blocking(app: AppHandle, conv: String, messages: serde_json::Value)
                         return Ok(());
                     }
                     Some("tool_request") => {
-                        let result = execute_tool(&eng, &data, ev["name"].as_str().unwrap_or(""), &ev["args"]);
+                        let result = execute_tool(
+                            &eng,
+                            &data,
+                            ev["name"].as_str().unwrap_or(""),
+                            &ev["args"],
+                        );
                         let resp = serde_json::json!({
                             "e": "tool_response", "id": ev["id"], "result": result,
                         });
                         let mut stdin = bridge.stdin.lock().unwrap();
-                        if writeln!(stdin, "{resp}").and_then(|_| stdin.flush()).is_err() {
+                        if writeln!(stdin, "{resp}")
+                            .and_then(|_| stdin.flush())
+                            .is_err()
+                        {
                             return Err("could not reach the librarian sidecar".into());
                         }
                     }
@@ -461,7 +492,11 @@ fn chat_turn_blocking(app: AppHandle, conv: String, messages: serde_json::Value)
 }
 
 #[tauri::command]
-async fn chat_turn(app: AppHandle, conv: String, messages: serde_json::Value) -> Result<(), String> {
+async fn chat_turn(
+    app: AppHandle,
+    conv: String,
+    messages: serde_json::Value,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || chat_turn_blocking(app, conv, messages))
         .await
         .map_err(|e| e.to_string())?
@@ -560,9 +595,7 @@ fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
     // docs with a live status but no pages dir yet (just queued, or failed
     // before rendering) still get a card
     for (id, st) in &statuses {
-        if seen.contains(id)
-            || matches!(st.state, DocState::Ready | DocState::Deleted)
-        {
+        if seen.contains(id) || matches!(st.state, DocState::Ready | DocState::Deleted) {
             continue;
         }
         out.push(DocInfo {
@@ -698,14 +731,26 @@ fn emit_progress(app: &AppHandle, doc: &str, p: Progress) {
     };
     let _ = app.emit(
         "ingest:progress",
-        &IngestEvent { doc: doc.to_string(), stage, done, total, message },
+        &IngestEvent {
+            doc: doc.to_string(),
+            stage,
+            done,
+            total,
+            message,
+        },
     );
 }
 
 fn emit_stage(app: &AppHandle, doc: &str, stage: &'static str) {
     let _ = app.emit(
         "ingest:progress",
-        &IngestEvent { doc: doc.to_string(), stage, done: 0, total: 0, message: String::new() },
+        &IngestEvent {
+            doc: doc.to_string(),
+            stage,
+            done: 0,
+            total: 0,
+            message: String::new(),
+        },
     );
 }
 
@@ -799,9 +844,7 @@ fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
         }
         // drain buffered wake-ups so a burst of drops is one sweep
         match rx.recv_timeout(Duration::from_secs(30)) {
-            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {
-                while rx.try_recv().is_ok() {}
-            }
+            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => while rx.try_recv().is_ok() {},
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
     }
@@ -828,7 +871,11 @@ fn ingest_paths(
     let mut queued = Vec::new();
     for p in paths {
         let path = PathBuf::from(&p);
-        if path.extension().map(|e| !e.eq_ignore_ascii_case("pdf")).unwrap_or(true) {
+        if path
+            .extension()
+            .map(|e| !e.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(true)
+        {
             continue;
         }
         let (doc, _pdf) = mover(&ctx, &path, None).map_err(|e| e.to_string())?;
@@ -923,12 +970,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("pages", |ctx, request, responder| {
-            let data = ctx
-                .app_handle()
-                .state::<AppState>()
-                .settings
-                .data
-                .clone();
+            let data = ctx.app_handle().state::<AppState>().settings.data.clone();
             // a search response can carry ~20-26 hits, each firing a page-image
             // request — spawn_blocking uses tokio's bounded, reused blocking
             // pool instead of a raw OS thread per request, which used to mean
@@ -938,12 +980,7 @@ pub fn run() {
             });
         })
         .register_asynchronous_uri_scheme_protocol("ocr", |ctx, request, responder| {
-            let data = ctx
-                .app_handle()
-                .state::<AppState>()
-                .settings
-                .data
-                .clone();
+            let data = ctx.app_handle().state::<AppState>().settings.data.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 responder.respond(serve_static(data.join("ocr"), "application/json", request))
             });

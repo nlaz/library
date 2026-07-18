@@ -1,5 +1,4 @@
 /target
-agnews.txt
 testdata/
 test.db/
 *.db/

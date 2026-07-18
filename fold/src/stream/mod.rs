@@ -102,7 +102,7 @@ impl PipelineInitCtx<'_> {
                 format!("sink_{name}").as_str(),
                 fjall::KeyspaceCreateOptions::default,
             )
-            .unwrap()
+            .expect("sink keyspace open failed")
     }
 }
 
@@ -147,7 +147,7 @@ impl WriteTx<'_> {
         ks: &fjall::SingleWriterTxKeyspace,
         k: impl AsRef<[u8]>,
     ) -> Option<fjall::Slice> {
-        self.tx.get(ks, k).unwrap()
+        self.tx.get(ks, k).expect("store read failed in write tx")
     }
 
     /// Iterate the keyspace in key order, seeing this transaction's own
@@ -170,6 +170,6 @@ impl WriteTx<'_> {
     }
 
     pub fn commit(self) {
-        self.tx.commit().unwrap()
+        self.tx.commit().expect("store commit failed")
     }
 }

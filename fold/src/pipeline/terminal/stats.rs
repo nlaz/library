@@ -56,9 +56,13 @@ fn encode(count: i64, sum: f64, sumsq: f64) -> [u8; 24] {
 
 fn decode(v: &[u8]) -> (i64, f64, f64) {
     (
-        i64::from_be_bytes(v[..8].try_into().unwrap()),
-        f64::from_be_bytes(v[8..16].try_into().unwrap()),
-        f64::from_be_bytes(v[16..].try_into().unwrap()),
+        i64::from_be_bytes(v[..8].try_into().expect("corrupt stats row: not 24 bytes")),
+        f64::from_be_bytes(
+            v[8..16]
+                .try_into()
+                .expect("corrupt stats row: not 24 bytes"),
+        ),
+        f64::from_be_bytes(v[16..].try_into().expect("corrupt stats row: not 24 bytes")),
     )
 }
 
@@ -81,7 +85,7 @@ impl<D: Clone, F: Fn(&D) -> f64> Push<D> for Stats<D, F> {
         if self.count == 0 && self.sum == 0.0 && self.sumsq == 0.0 {
             return;
         }
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
         let (count, sum, sumsq) = tx
             .get(&ks, [0])
             .map(|v| decode(&v))
@@ -102,7 +106,7 @@ impl<D: Clone, F: Fn(&D) -> f64> Push<D> for Stats<D, F> {
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         StatsReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
         }
     }
 }
@@ -117,7 +121,7 @@ impl<'tx, R: Readable> StatsReader<'tx, R> {
     fn get(&self) -> (i64, f64, f64) {
         self.tx
             .get(&self.ks, [0])
-            .unwrap()
+            .expect("stats read failed")
             .map(|v| decode(&v))
             .unwrap_or((0, 0.0, 0.0))
     }

@@ -26,7 +26,7 @@ impl<D: Clone, P: Push<D>> Stream<D, P> {
     /// Panics if the store cannot be opened or if two nodes claim the same
     /// name.
     pub fn new(path: impl AsRef<Path>, pipeline: P) -> Self {
-        Self::try_new(path, pipeline).unwrap()
+        Self::try_new(path, pipeline).expect("failed to open store (use try_new to handle errors)")
     }
 
     /// Fallible [`new`](Stream::new): returns the store error instead of
@@ -103,7 +103,9 @@ impl<D: Clone, P: Push<D>> Stream<D, P> {
         let mut wtx = WriteTx::new(self.store.write_tx());
         self.pipeline.checkpoint(&mut wtx);
         wtx.commit();
-        self.store.persist(fjall::PersistMode::SyncAll).unwrap();
+        self.store
+            .persist(fjall::PersistMode::SyncAll)
+            .expect("store fsync failed");
     }
 
     pub(crate) fn store(&self) -> &fjall::SingleWriterTxDatabase {

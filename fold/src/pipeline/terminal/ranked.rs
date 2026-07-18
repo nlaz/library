@@ -25,7 +25,13 @@ fn fold_counts(
         }
         let cur = tx
             .get(ks, &key)
-            .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+            .map(|v| {
+                i64::from_be_bytes(
+                    v.as_ref()
+                        .try_into()
+                        .expect("corrupt ranked count: not 8 bytes"),
+                )
+            })
             .unwrap_or(0);
         let new = cur + delta;
         debug_assert!(new >= 0, "ranked multiplicity went negative");
@@ -46,6 +52,8 @@ fn prefix_successor(mut p: Vec<u8>) -> Option<Vec<u8>> {
         if last == 0xFF {
             p.pop();
         } else {
+            // invariant: the `while let` guard matched Some on p.last(), so
+            // last_mut() cannot fail
             *p.last_mut().unwrap() += 1;
             return Some(p);
         }
@@ -107,8 +115,11 @@ fn decode_scored<S: Score, V: DeserializeOwned>(
 ) -> (Scored<S, V>, i64) {
     let (score, rest) = S::decode(&key[skip..]);
     (
-        Scored::new(score, postcard::from_bytes(rest).unwrap()),
-        i64::from_be_bytes(val.try_into().unwrap()),
+        Scored::new(
+            score,
+            postcard::from_bytes(rest).expect("corrupt ranked value: postcard decode failed"),
+        ),
+        i64::from_be_bytes(val.try_into().expect("corrupt ranked count: not 8 bytes")),
     )
 }
 
@@ -174,12 +185,12 @@ impl<S: Score, V: Clone + Serialize + DeserializeOwned> Push<Scored<S, V>> for R
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &Scored<S, V>, delta: isize) {
         tx.buf.clear();
         data.score.encode(&mut tx.buf);
-        postcard::to_io(&data.val, &mut tx.buf).unwrap();
+        postcard::to_io(&data.val, &mut tx.buf).expect("postcard encode of ranked value failed");
         *self.pending.entry(tx.buf.clone()).or_insert(0) += delta as i64;
     }
 
     fn commit(&mut self, tx: &mut WriteTx<'_>) {
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
         fold_counts(tx, &ks, &mut self.pending);
     }
 
@@ -190,7 +201,7 @@ impl<S: Score, V: Clone + Serialize + DeserializeOwned> Push<Scored<S, V>> for R
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         RankedReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
             _p: PhantomData,
         }
     }
@@ -207,7 +218,7 @@ impl<'tx, R: Readable, S: Score, V: Clone + DeserializeOwned> RankedReader<'tx, 
     /// The lowest-scored record, if any.
     pub fn min(&self) -> Option<Scored<S, V>> {
         self.tx.first_key_value(&self.ks).map(|kv| {
-            let (key, val) = kv.into_inner().unwrap();
+            let (key, val) = kv.into_inner().expect("ranked scan failed");
             decode_scored(&key, &val, 0).0
         })
     }
@@ -215,7 +226,7 @@ impl<'tx, R: Readable, S: Score, V: Clone + DeserializeOwned> RankedReader<'tx, 
     /// The highest-scored record, if any.
     pub fn max(&self) -> Option<Scored<S, V>> {
         self.tx.last_key_value(&self.ks).map(|kv| {
-            let (key, val) = kv.into_inner().unwrap();
+            let (key, val) = kv.into_inner().expect("ranked scan failed");
             decode_scored(&key, &val, 0).0
         })
     }
@@ -224,7 +235,7 @@ impl<'tx, R: Readable, S: Score, V: Clone + DeserializeOwned> RankedReader<'tx, 
     /// `.rev()` scans descending.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (Scored<S, V>, i64)> + '_ {
         self.tx.iter(&self.ks).map(|kv| {
-            let (key, val) = kv.into_inner().unwrap();
+            let (key, val) = kv.into_inner().expect("ranked scan failed");
             decode_scored(&key, &val, 0)
         })
     }
@@ -237,7 +248,7 @@ impl<'tx, R: Readable, S: Score, V: Clone + DeserializeOwned> RankedReader<'tx, 
     ) -> impl DoubleEndedIterator<Item = (Scored<S, V>, i64)> + '_ {
         let bounds = byte_bounds(&[], range);
         MaybeIter(bounds.map(|b| self.tx.range(&self.ks, b))).map(|kv| {
-            let (key, val) = kv.into_inner().unwrap();
+            let (key, val) = kv.into_inner().expect("ranked scan failed");
             decode_scored(&key, &val, 0)
         })
     }
@@ -300,14 +311,15 @@ where
 
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &Keyed<K, Scored<S, V>>, delta: isize) {
         tx.buf.clear();
-        postcard::to_io(&data.key, &mut tx.buf).unwrap();
+        postcard::to_io(&data.key, &mut tx.buf).expect("postcard encode of ranked key failed");
         data.val.score.encode(&mut tx.buf);
-        postcard::to_io(&data.val.val, &mut tx.buf).unwrap();
+        postcard::to_io(&data.val.val, &mut tx.buf)
+            .expect("postcard encode of ranked value failed");
         *self.pending.entry(tx.buf.clone()).or_insert(0) += delta as i64;
     }
 
     fn commit(&mut self, tx: &mut WriteTx<'_>) {
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
         fold_counts(tx, &ks, &mut self.pending);
     }
 
@@ -318,7 +330,7 @@ where
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         KeyedRankedReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
             _p: PhantomData,
         }
     }
@@ -341,7 +353,7 @@ where
     // postcard encodings of one type are prefix-free, so the prefix scan
     // only matches this key's entries
     fn prefix(&self, key: &K) -> Vec<u8> {
-        postcard::to_stdvec(key).unwrap()
+        postcard::to_stdvec(key).expect("postcard encode of ranked key failed")
     }
 
     /// The lowest-scored record under `key`, if any.
@@ -360,7 +372,7 @@ where
         let prefix = self.prefix(key);
         let plen = prefix.len();
         self.tx.prefix(&self.ks, prefix).map(move |kv| {
-            let (key, val) = kv.into_inner().unwrap();
+            let (key, val) = kv.into_inner().expect("ranked scan failed");
             decode_scored(&key, &val, plen)
         })
     }
@@ -376,7 +388,7 @@ where
         let plen = prefix.len();
         let bounds = byte_bounds(&prefix, range);
         MaybeIter(bounds.map(|b| self.tx.range(&self.ks, b))).map(move |kv| {
-            let (key, val) = kv.into_inner().unwrap();
+            let (key, val) = kv.into_inner().expect("ranked scan failed");
             decode_scored(&key, &val, plen)
         })
     }

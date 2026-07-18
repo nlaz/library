@@ -880,6 +880,181 @@ pub fn image_search<R: Readable>(
 }
 
 #[cfg(test)]
+mod text_tests {
+    use super::*;
+
+    /// Inputs chosen to stress every branch: case, inner punctuation,
+    /// digits, unicode (accents, CJK), 1-char tokens, and emptiness.
+    const NASTY: &[&str] = &[
+        "",
+        " ",
+        "a",
+        "ok",
+        "The Watch-Maker's 2nd chain!",
+        "self-winding    self-winding",
+        "Ω-mega Ωmega",
+        "café CAFÉ",
+        "手表 zhōng biǎo",
+        "x7 7x 77 xx",
+        "…ellipsis… (parens) [brackets]",
+        "trailing-",
+        "-leading",
+        "under_score",
+        "MiXeD CaSe",
+        "ﬁligree", // ligature char is alphabetic
+        "naïve résumé",
+        "a.b.c d,e,f",
+        "1 22 333",
+        "I a an of ok",
+    ];
+
+    #[test]
+    fn tokenize_lowercases_strips_punct_and_splits() {
+        assert_eq!(
+            tokenize("The Watch-Maker's 2nd chain!"),
+            vec!["the", "watchmakers", "2nd", "chain"]
+        );
+        // 1-char tokens (after stripping) are dropped
+        assert_eq!(tokenize("a I x7 ok"), vec!["x7", "ok"]);
+        assert_eq!(tokenize(""), Vec::<String>::new());
+        assert_eq!(tokenize("!!! ..."), Vec::<String>::new());
+    }
+
+    /// Pins the contract in [`lex_tokenize`]'s doc comment: the Bm25 sink
+    /// MUST tokenize exactly like [`tokenize`], or TermDict completions stop
+    /// matching lexical postings. If you change either function, change the
+    /// other to match — this test is the tripwire.
+    #[test]
+    fn tokenize_agrees_with_lex_tokenize() {
+        let mut buf = Vec::new();
+        for s in NASTY {
+            lex_tokenize(s, &mut buf);
+            let expect: Vec<u8> = tokenize(s)
+                .iter()
+                .flat_map(|t| t.bytes().chain(std::iter::once(0)))
+                .collect();
+            assert_eq!(buf, expect, "tokenizers disagree on {s:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod termdict_tests {
+    use super::*;
+
+    /// Temp-dir store per test, cleaned from any earlier run — the same
+    /// pattern as fold's `fresh_db`.
+    fn fresh(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("library-core-termdict-{name}"));
+        let _ = std::fs::remove_dir_all(&p);
+        p
+    }
+
+    fn chunk(doc: &str, idx: u32, text: &str) -> (ChunkKey, ChunkRec) {
+        let key = ChunkKey {
+            doc: doc.to_string(),
+            page: 1,
+            idx,
+        };
+        let words = text
+            .split_whitespace()
+            .map(|t| Word {
+                t: t.to_string(),
+                x: 0.0,
+                y: 0.0,
+                w: 0.1,
+                h: 0.1,
+            })
+            .collect();
+        let mut emb = [0.0f32; EMB_DIM];
+        emb[idx as usize % EMB_DIM] = 1.0;
+        (key.clone(), ChunkRec { key, words, emb })
+    }
+
+    /// escapement x3, escape x1, plus unrelated vocabulary.
+    fn sample_library(name: &str) -> Library {
+        let mut lib = open(fresh(name));
+        lib.wtx(|tx| {
+            for (i, text) in [
+                "escapement escapement escapement",
+                "escape chain",
+                "rhodium watch",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let (k, r) = chunk("horology", i as u32, text);
+                tx.upsert(&k, &r);
+            }
+        });
+        lib
+    }
+
+    #[test]
+    fn complete_returns_prefix_matches_capped_at_k() {
+        let lib = sample_library("complete");
+        lib.rtx(|((_, _), (_, terms))| {
+            // lexicographic: "escape" < "escapement"
+            assert_eq!(terms.complete("esc", 10), vec!["escape", "escapement"]);
+            assert_eq!(terms.complete("esc", 1), vec!["escape"]);
+            assert_eq!(terms.complete("zz", 5), Vec::<String>::new());
+        });
+    }
+
+    #[test]
+    fn complete_ranked_prefers_frequent_terms() {
+        let lib = sample_library("ranked");
+        lib.rtx(|((_, _), (_, terms))| {
+            // corpus frequency beats lexicographic order
+            assert_eq!(
+                terms.complete_ranked("esc", 2),
+                vec!["escapement", "escape"]
+            );
+            // the empty prefix matches the whole (capped) vocabulary
+            assert_eq!(terms.complete("", 3).len(), 3);
+        });
+    }
+
+    #[test]
+    fn correct_recovers_single_edit_typo() {
+        let lib = sample_library("correct");
+        lib.rtx(|((_, _), (_, terms))| {
+            // missing letter (the classic OCR/typo case)
+            assert_eq!(terms.correct("escapment", 3), vec!["escapement"]);
+            // never proposes the token itself, and respects MAX_FUZZ_DIST:
+            // "escape" -> "escapement" is 4 edits, out of range
+            assert_eq!(terms.correct("escape", 3), Vec::<String>::new());
+            // corruption in the first two chars is out of scope by design
+            assert_eq!(terms.correct("zscapement", 3), Vec::<String>::new());
+        });
+    }
+
+    #[test]
+    fn contains_is_exact_only() {
+        let lib = sample_library("contains");
+        lib.rtx(|((_, _), (_, terms))| {
+            assert!(terms.contains("escape"));
+            assert!(terms.contains("rhodium"));
+            assert!(!terms.contains("esc"));
+            assert!(!terms.contains("escapements"));
+        });
+    }
+
+    #[test]
+    fn termdict_forgets_terms_of_removed_chunks() {
+        let mut lib = sample_library("retract");
+        let (k, _) = chunk("horology", 2, "");
+        lib.wtx(|tx| {
+            tx.remove(&k);
+        });
+        lib.rtx(|((_, _), (_, terms))| {
+            assert!(!terms.contains("rhodium"), "retracted term still live");
+            assert!(terms.contains("escapement"), "unrelated term lost");
+        });
+    }
+}
+
+#[cfg(test)]
 mod fuzzy_mmr_tests {
     use super::*;
 
@@ -901,6 +1076,62 @@ mod fuzzy_mmr_tests {
         }
     }
 
+    fn one_hot(hot: usize) -> Emb {
+        let mut e = [0.0f32; EMB_DIM];
+        e[hot] = 1.0;
+        e
+    }
+
+    #[test]
+    fn rrf_fuses_by_reciprocal_rank() {
+        let (a, b, c) = (key("a"), key("b"), key("c"));
+        // b is mid-rank in both lists and must beat the two single-list tops
+        let fused = rrf(&[vec![a.clone(), b.clone()], vec![b.clone(), c.clone()]]);
+        let order: Vec<&str> = fused.iter().map(|(_, k)| k.doc.as_str()).collect();
+        assert_eq!(order, vec!["b", "a", "c"]);
+        assert!((fused[0].0 - (1.0 / 61.0 + 1.0 / 60.0)).abs() < 1e-6);
+        assert!((fused[1].0 - 1.0 / 60.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rrf_single_list_and_empty() {
+        assert!(rrf(&[]).is_empty());
+        assert!(rrf(&[vec![], vec![]]).is_empty());
+        let order: Vec<String> = rrf(&[vec![key("a"), key("b"), key("c")]])
+            .into_iter()
+            .map(|(_, k)| k.doc)
+            .collect();
+        assert_eq!(order, vec!["a", "b", "c"]); // single list: order preserved
+        // equal scores tie-break on key order for determinism
+        let tied = rrf(&[vec![key("b")], vec![key("a")]]);
+        assert_eq!(tied[0].1.doc, "a");
+    }
+
+    #[test]
+    fn cosine_identical_is_one_orthogonal_is_zero() {
+        let (e0, e1) = (one_hot(0), one_hot(1));
+        assert!((cosine(&e0, &e0) - 1.0).abs() < 1e-6);
+        assert!(cosine(&e0, &e1).abs() < 1e-6);
+        // degenerate (zero) vectors are defined as 0, not NaN
+        let z = [0.0f32; EMB_DIM];
+        assert_eq!(cosine(&z, &e0), 0.0);
+        assert_eq!(cosine(&z, &z), 0.0);
+    }
+
+    #[test]
+    fn bump_sim_skips_picked_and_missing_embs() {
+        let embs = vec![Some(one_hot(0)), Some(one_hot(0)), None];
+        let picked = vec![true, false, false];
+        let mut max_sim = vec![0.0f32; 3];
+        bump_sim(&mut max_sim, &picked, &embs, 0);
+        assert_eq!(max_sim[0], 0.0); // picked: never updated
+        assert!((max_sim[1] - 1.0).abs() < 1e-6); // duplicate of selection
+        assert_eq!(max_sim[2], 0.0); // no embedding: stays novel
+        // selecting an item with no embedding is a no-op
+        bump_sim(&mut max_sim, &picked, &embs, 2);
+        assert!((max_sim[1] - 1.0).abs() < 1e-6);
+    }
+
     #[test]
     fn levenshtein_is_bounded() {
         assert_eq!(levenshtein("escapement", "escapement", 2), 0);
@@ -909,6 +1140,39 @@ mod fuzzy_mmr_tests {
         assert_eq!(levenshtein("abc", "abd", 2), 1);
         // beyond the cap: reports max+1, not the true distance (3)
         assert_eq!(levenshtein("kitten", "sitting", 2), 3);
+    }
+
+    #[test]
+    fn mmr_rerank_empty_and_single_pools_pass_through() {
+        let resolve = |_: &ChunkKey| -> Option<ChunkRec> { None };
+        assert!(mmr_rerank(Vec::new(), &resolve).is_empty());
+        let one = vec![(0.9f32, key("a"))];
+        assert_eq!(mmr_rerank(one.clone(), &resolve), one);
+    }
+
+    #[test]
+    fn mmr_rerank_all_identical_keeps_relevance_order() {
+        // every candidate is the same direction: nothing to diversify
+        // toward, so relevance order must survive intact
+        let fused = vec![(0.9f32, key("a")), (0.8, key("b")), (0.7, key("c"))];
+        let resolve = |k: &ChunkKey| Some(rec(&k.doc, 0));
+        let out: Vec<String> = mmr_rerank(fused, &resolve)
+            .into_iter()
+            .map(|(_, k)| k.doc)
+            .collect();
+        assert_eq!(out, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn mmr_rerank_unresolvable_embeddings_keep_fused_order() {
+        // resolve failing (e.g. raced deletion) must degrade to no-op, not panic
+        let fused = vec![(0.9f32, key("a")), (0.8, key("b")), (0.7, key("c"))];
+        let resolve = |_: &ChunkKey| -> Option<ChunkRec> { None };
+        let out: Vec<String> = mmr_rerank(fused, &resolve)
+            .into_iter()
+            .map(|(_, k)| k.doc)
+            .collect();
+        assert_eq!(out, vec!["a", "b", "c"]);
     }
 
     #[test]

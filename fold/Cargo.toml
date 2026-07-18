@@ -11,3 +11,6 @@ fxhash = "0"
 postcard = { version = "1", features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
 fjall = { version = "3", default-features = false }
+
+[lints]
+workspace = true

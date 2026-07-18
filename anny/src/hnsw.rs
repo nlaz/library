@@ -975,11 +975,13 @@ impl<'a> Cursor<'a> {
         self.pos += n;
         Ok(s)
     }
+    #[expect(clippy::unwrap_used)] // invariant below
     fn u32(&mut self) -> Result<u32, LoadError> {
         // invariant: take(4)? returned a slice of exactly 4 bytes, so the
         // conversion to [u8; 4] cannot fail.
         Ok(u32::from_ne_bytes(self.take(4)?.try_into().unwrap()))
     }
+    #[expect(clippy::unwrap_used)] // invariant below
     fn u64(&mut self) -> Result<u64, LoadError> {
         // invariant: take(8)? returned a slice of exactly 8 bytes, so the
         // conversion to [u8; 8] cannot fail.

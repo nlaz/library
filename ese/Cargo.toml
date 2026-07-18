@@ -45,3 +45,6 @@ minreq = { version = "2", features = ["https-native"] }
 [[bench]]
 name = "gooaq"
 harness = false
+
+[lints]
+workspace = true

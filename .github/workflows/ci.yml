@@ -24,6 +24,7 @@ jobs:
           key: ese-model-${{ hashFiles('ese/build.rs') }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      - run: cargo clippy --locked -p fold -p anny -p ese -p library-core --all-targets -- -D warnings
       - run: cargo test --locked -p fold -p anny -p ese -p library-core
       - run: cargo test --locked -p ese --features tests
       - run: cargo check --locked -p starter -p timeseries -p chat -p search
@@ -43,6 +44,7 @@ jobs:
       # tauri-build resolves frontendDist (../web/dist) at compile time; the
       # built frontend isn't needed for tests, just the directory.
       - run: mkdir -p apps/web/dist
+      - run: cargo clippy --locked -p library-ingest -p library-server -p library-app --all-targets -- -D warnings
       - run: cargo test --locked -p library-ingest -p library-server -p library-app -p librarian-eval
 
   web:

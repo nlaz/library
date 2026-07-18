@@ -47,6 +47,7 @@ fn fold_counts(
 // `p`: increment the last non-0xFF byte and truncate. `None` (all 0xFF)
 // means no such string exists — but every key that sorts above `p` then
 // necessarily starts with `p`, so an unbounded upper end is equivalent.
+#[expect(clippy::unwrap_used)] // invariant inside: guarded by the while-let
 fn prefix_successor(mut p: Vec<u8>) -> Option<Vec<u8>> {
     while let Some(&last) = p.last() {
         if last == 0xFF {

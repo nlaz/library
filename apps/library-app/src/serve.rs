@@ -7,6 +7,7 @@ use percent_encoding::percent_decode_str;
 /// Serve files under `root` for a custom URI scheme. The CORS header matters:
 /// the webview page's origin (dev server or tauri://) is cross-origin to
 /// these schemes, so fetch() needs it even though everything is local.
+#[expect(clippy::unwrap_used)] // invariant: static status + literal header names cannot fail to build
 pub(crate) fn serve_static(
     root: PathBuf,
     content_type: &'static str,

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)] // bench code may fail loudly
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 use std::hint::black_box;

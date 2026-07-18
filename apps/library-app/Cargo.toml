@@ -26,3 +26,6 @@ percent-encoding = "2"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+
+[lints]
+workspace = true

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)] // bench code may fail loudly
 //! Comparative HNSW benchmarks.
 //!
 //!   cargo bench                      # auto-downloads SIFT10K (cached in target/)

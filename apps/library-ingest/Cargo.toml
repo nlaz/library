@@ -28,3 +28,6 @@ objc2-pdf-kit = "0.3"
 objc2-vision = { version = "0.3", features = ["objc2-core-graphics"] }
 ort = { version = "=2.0.0-rc.9", default-features = false, features = ["ndarray"] }
 rayon = "1"
+
+[lints]
+workspace = true

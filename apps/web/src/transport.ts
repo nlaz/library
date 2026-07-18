@@ -10,6 +10,8 @@ export interface Transport {
   send(q: QueryMsg): void;
   onResponse(cb: (msg: WireResponse) => void): void;
   collections(): Promise<Collections>;
+  /** Frequency-ranked word completions for a search-box prefix. */
+  complete(prefix: string): Promise<string[]>;
 }
 
 export function isTauri(): boolean {

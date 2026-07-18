@@ -215,6 +215,8 @@ fn ctx(data: &Path, width: u32) -> IngestCtx {
 fn print_progress(p: Progress) {
     match p {
         Progress::Log(line) => println!("{line}"),
+        // the split already prints via the ocr-complete Log line
+        Progress::OcrSummary { .. } => {}
         Progress::Ocr { done, total } => {
             if done % 5 == 0 || done == total {
                 println!("  ocr {done}/{total}");
@@ -720,9 +722,9 @@ fn search(query: &str, data: &Path, k: usize, lex_only: bool) -> Result<()> {
 
     let t = Instant::now();
     let hits = st.rtx(|r| {
-        library_core::search(&r, query, qemb.as_ref(), k, None, true, |key| {
-            st.get(key).map(|rec| rec.words)
-        })
+        library_core::search(&r, query, qemb.as_ref(), k, None, true, false, false, |key| {
+            st.get(key)
+        }, None)
     });
     let dur = t.elapsed();
 

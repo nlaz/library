@@ -229,9 +229,63 @@ async fn search(state: State<'_, AppState>, query: Query) -> Result<Response, St
         .map_err(|e| e.to_string())
 }
 
+/// Frequency-ranked word completions for the search box's type-ahead
+/// dropdown — the desktop analogue of the server's `/api/complete` route.
+/// One prefix scan over the term dictionary; no embedding.
+#[tauri::command]
+async fn complete(
+    state: State<'_, AppState>,
+    prefix: String,
+    k: Option<usize>,
+) -> Result<Vec<String>, String> {
+    let eng = engine(&state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let q = prefix.trim();
+        if q.is_empty() {
+            return Vec::<String>::new();
+        }
+        let lib = eng.lib.read().unwrap();
+        lib.rtx(|(_, (_, terms))| terms.complete_ranked(q, k.unwrap_or(8)))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn ready(state: State<'_, AppState>) -> bool {
     state.engine.read().unwrap().is_some()
+}
+
+/// Hidden perf view (Cmd+.): the search ring (per-stage timings + per-hit
+/// ranker provenance) plus the constants/corpus-counts header — the desktop
+/// analogue of the server's `/api/perf/searches` route.
+#[tauri::command]
+async fn perf_searches(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let eng = engine(&state)?;
+    let data = state.settings.data.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let chunks = eng.lib.read().unwrap().rtx(|((_, vec), _)| vec.len());
+        let figures = eng.images.read().unwrap().rtx(|(vec, _)| vec.len());
+        let docs = std::fs::read_dir(data.join("pages"))
+            .map(|d| d.filter_map(|e| e.ok()).count())
+            .unwrap_or(0);
+        serde_json::json!({
+            "meta": library_core::perf::meta(chunks, figures, docs),
+            "searches": library_core::perf::search_log(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Per-doc ingest metrics; lazily backfills legibility for docs from before
+/// metrics existed (first call on a big library takes seconds).
+#[tauri::command]
+async fn perf_ingest(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let data = state.settings.data.clone();
+    tauri::async_runtime::spawn_blocking(move || library_core::perf::ingest_rows(&data))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +396,7 @@ fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value)
             let to = args["to"].as_u64().map(|n| n as u32);
             tools::read_pages_tool(data, doc, from, to).to_string()
         }
+        "library_overview" => tools::overview_tool(data).to_string(),
         "list_collections" => tools::collections_tool(data).to_string(),
         _ => serde_json::json!({ "error": format!("unknown tool {name:?}") }).to_string(),
     }
@@ -633,6 +688,8 @@ fn emit_progress(app: &AppHandle, doc: &str, p: Progress) {
     let (stage, done, total, message) = match p {
         Progress::Log(line) => ("log", 0, 0, line),
         Progress::Ocr { done, total } => ("ocr", done as usize, total as usize, String::new()),
+        // metrics-only event; the UI progress bar has nothing to show for it
+        Progress::OcrSummary { .. } => return,
         Progress::Clean { done, total } => ("clean", done, total, String::new()),
         Progress::Embed { done, total } => ("embed", done, total, String::new()),
         Progress::Figures { done, total } => ("figures", done, total, String::new()),
@@ -918,7 +975,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             search,
+            complete,
             ready,
+            perf_searches,
+            perf_ingest,
             collections,
             docs,
             set_title,

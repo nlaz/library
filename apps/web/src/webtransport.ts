@@ -32,6 +32,10 @@ export class WtTransport implements Transport {
     this.cb = cb;
   }
 
+  async complete(prefix: string): Promise<string[]> {
+    return (await fetch(`/api/complete?q=${encodeURIComponent(prefix)}`)).json();
+  }
+
   async collections(): Promise<Collections> {
     return (await fetch("/api/collections")).json();
   }

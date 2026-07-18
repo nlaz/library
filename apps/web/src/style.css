@@ -1022,6 +1022,34 @@ mark {
   color: var(--ink-faint);
 }
 
+#ac {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+}
+
+#ac[hidden] {
+  display: none;
+}
+
+#ac li {
+  padding: 5px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#ac li:hover,
+#ac li.on {
+  background: var(--ink);
+  color: var(--surface);
+}
+
 #q:focus {
   outline: 1px solid var(--ink);
   outline-offset: 1px;
@@ -1307,4 +1335,191 @@ mark {
 
 #chat-input:disabled {
   color: var(--ink-faint);
+}
+
+/* ---------------------------------------------------------------------------
+   perf view (Cmd+.): hidden full-screen diagnostics layer. Dense mono tables,
+   grayscale chrome, --hl only for bars/flags/active sort. Sits above the
+   search pop band (12), below the toast (20). */
+
+#perf {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  background: var(--bg);
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink);
+  padding: var(--sp-4);
+}
+
+#perf-head {
+  position: sticky;
+  top: calc(-1 * var(--sp-4));
+  z-index: 1;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-4);
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+#perf-head kbd {
+  font: inherit;
+  border: 1px solid var(--line);
+  padding: 0 3px;
+  background: var(--well);
+}
+
+.perf-section {
+  margin-bottom: var(--sp-5);
+}
+
+.perf-section h2 {
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  margin: 0 0 var(--sp-2);
+}
+
+#perf table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-meta);
+}
+
+#perf th,
+#perf td {
+  text-align: left;
+  padding: 3px var(--sp-2);
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+#perf th {
+  font-weight: 500;
+  color: var(--ink-dim);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  font-size: var(--fs-micro);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+#perf th.sort {
+  cursor: pointer;
+  user-select: none;
+}
+
+#perf th.sort.on {
+  background: var(--hl-wash);
+  color: var(--ink);
+}
+
+#perf td.n {
+  font-variant-numeric: tabular-nums;
+}
+
+#perf td.q {
+  max-width: 26ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#perf td.stages {
+  color: var(--ink-dim);
+  white-space: normal;
+}
+
+#perf td.err {
+  color: var(--ink-dim);
+  max-width: 30ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#perf tr[data-ts] {
+  cursor: pointer;
+}
+
+#perf tr[data-ts]:hover td {
+  background: var(--surface);
+}
+
+#perf tr.sel td {
+  background: var(--surface);
+}
+
+#perf tr.detail td {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  padding: var(--sp-3);
+  white-space: normal;
+}
+
+#perf .flag {
+  background: var(--hl-wash);
+  outline: 1px solid var(--hl-line);
+  padding: 0 3px;
+  font-size: var(--fs-micro);
+  letter-spacing: var(--track-label);
+}
+
+#perf .waterfall {
+  margin-bottom: var(--sp-3);
+  max-width: 640px;
+}
+
+#perf .bar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: 2px;
+}
+
+#perf .bar-label {
+  flex: 0 0 12ch;
+  color: var(--ink-dim);
+  font-size: var(--fs-micro);
+  text-align: right;
+}
+
+#perf .bar-track {
+  flex: 1;
+  background: var(--well);
+  height: 10px;
+  position: relative;
+}
+
+#perf .bar {
+  display: block;
+  height: 100%;
+  background: var(--hl);
+  outline: 1px solid var(--hl-line);
+}
+
+#perf .bar-us {
+  flex: 0 0 9ch;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-micro);
+}
+
+#perf .prov-title {
+  margin: var(--sp-3) 0 var(--sp-1);
+  color: var(--ink-dim);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+}
+
+#perf .perf-totals {
+  color: var(--ink-dim);
+  font-size: var(--fs-meta);
+  margin-bottom: var(--sp-2);
+  word-break: break-word;
 }

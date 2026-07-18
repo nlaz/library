@@ -260,10 +260,14 @@ pub fn search_tool<R: fold::stream::Readable>(
 
     let qemb: Emb = ese::encode_single(query);
     let k = k.clamp(1, TOOL_K);
-    // fetch 2x: copy dedup below may drop hits, and the extras backfill
-    let mut hits = search(r, query, Some(&qemb), TOOL_K * 2, member.as_ref(), false, |key| {
-        lib.get(key).map(|rec| rec.words)
-    });
+    // fetch 2x: copy dedup below may drop hits, and the extras backfill.
+    // complete off (agent queries are whole words, not mid-typing); fuzzy on
+    // (only unknown tokens get corrected, so real words are untouched — this
+    // recovers typos and OCR garble); diversify off (the tool does its own
+    // dedup_doc_pages below).
+    let mut hits = search(r, query, Some(&qemb), TOOL_K * 2, member.as_ref(), false, true, false, |key| {
+        lib.get(key)
+    }, None);
     hits.retain(|h| h.rel >= MIN_REL);
     let keep = {
         let keys: Vec<(&str, u32)> =
@@ -434,9 +438,26 @@ pub fn read_pages_tool(data: &Path, doc: &str, from: Option<u32>, to: Option<u32
     let resolved = if stems.iter().any(|s| s == doc) {
         doc.to_owned()
     } else {
-        let needle = doc.to_lowercase();
-        let mut m: Vec<&String> =
-            stems.iter().filter(|s| s.to_lowercase().contains(&needle)).collect();
+        // ids AND titles resolve: the overview and search results speak in
+        // titles, and small models mangle long ids anyway — match on a
+        // normalized (alphanumeric, lowercase) form of the stem and of the
+        // stem's title, so "The Art of Plain Cookery" finds
+        // the-art-of-plain-cookery and titles.json entries alike.
+        let norm = |s: &str| {
+            s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+        };
+        let titles = read_titles(data);
+        let needle = norm(doc);
+        let mut m: Vec<&String> = if needle.is_empty() {
+            Vec::new()
+        } else {
+            stems
+                .iter()
+                .filter(|s| {
+                    norm(s).contains(&needle) || norm(&title_for(&titles, s)).contains(&needle)
+                })
+                .collect()
+        };
         m.sort_by_key(|s| s.len());
         match m.first() {
             Some(s) => (*s).clone(),
@@ -672,6 +693,50 @@ pub fn collections_tool(data: &Path) -> Value {
     Value::Object(out)
 }
 
+// ---------------------------------------------------------------------------
+// library_overview
+// ---------------------------------------------------------------------------
+
+/// Example titles listed per collection in the overview.
+const OVERVIEW_EXAMPLES: usize = 3;
+
+/// A gestalt of the library, slim enough that a 4k-context model can afford
+/// to orient with it before deciding where to look: collection names, sizes,
+/// and a few example titles. Deliberately NOT [`collections_tool`]'s full
+/// doc-id dump — that one serves UIs. Titles here resolve in `read_pages`
+/// (see the normalized match there), so the model can go straight from the
+/// overview to reading.
+pub fn overview_tool(data: &Path) -> Value {
+    let titles = read_titles(data);
+    let cols = read_collections(data);
+    let stems: Vec<String> = std::fs::read_dir(data.join("text"))
+        .map(|it| {
+            it.flatten()
+                .filter_map(|f| {
+                    let n = f.file_name();
+                    let n = n.to_string_lossy();
+                    n.strip_suffix(".md").map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let filed: FxHashSet<&String> = cols.values().flatten().collect();
+    let shelves: Vec<Value> = cols
+        .iter()
+        .map(|(name, docs)| {
+            let examples: Vec<String> =
+                docs.iter().take(OVERVIEW_EXAMPLES).map(|d| title_for(&titles, d)).collect();
+            json!({ "collection": name, "books": docs.len(), "examples": examples })
+        })
+        .collect();
+    let loose = stems.iter().filter(|d| !filed.contains(d)).count();
+    let mut out = json!({ "books": stems.len(), "collections": shelves });
+    if loose > 0 {
+        out["uncollected_books"] = json!(loose);
+    }
+    out
+}
+
 /// Used by hosts to expose the same key the resolve callback uses.
 pub fn chunk_key(doc: &str, page: u32, idx: u32) -> ChunkKey {
     ChunkKey { doc: doc.into(), page, idx }
@@ -830,6 +895,50 @@ mod tests {
         // no cap, only exact (doc, page) duplicates collapse
         let lone = vec![("journal-1891", 3), ("journal-1891", 4), ("journal-1891", 5), ("journal-1891", 4)];
         assert_eq!(dedup_doc_pages(&lone), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn read_pages_resolves_titles_not_just_ids() {
+        let dir = sample_fixture("resolve-title");
+        std::fs::write(
+            dir.join("titles.json"),
+            r#"{"doc-a": "A Winter Cookery Primer"}"#,
+        )
+        .unwrap();
+        // titles.json title, with different casing and punctuation
+        let by_title = read_pages_tool(&dir, "winter cookery primer", Some(1), Some(1));
+        assert_eq!(by_title["doc"], "doc-a", "got: {by_title}");
+        // derived-title path (no titles.json entry) still resolves
+        let by_derived = read_pages_tool(&dir, "Doc A", Some(1), Some(1));
+        assert_eq!(by_derived["doc"], "doc-a");
+        // empty needle is an error, not match-everything
+        let empty = read_pages_tool(&dir, "", Some(1), Some(1));
+        assert!(empty["error"].as_str().unwrap().contains("no document"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn overview_is_slim_and_counts_loose_docs() {
+        let dir = sample_fixture("overview");
+        std::fs::write(
+            dir.join("titles.json"),
+            r#"{"doc-a": "A Winter Cookery Primer"}"#,
+        )
+        .unwrap();
+        let out = overview_tool(&dir);
+        assert_eq!(out["books"], 3); // doc-a, doc-b, doc-garbled
+        let shelves = out["collections"].as_array().unwrap();
+        assert_eq!(shelves.len(), 4);
+        let fg = shelves
+            .iter()
+            .find(|s| s["collection"] == "field-guides")
+            .expect("field-guides shelf");
+        assert_eq!(fg["books"], 1);
+        // examples are titles, never raw doc ids
+        assert_eq!(fg["examples"][0], "A Winter Cookery Primer");
+        // every doc is filed in the fixture: no uncollected count
+        assert!(out["uncollected_books"].is_null());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

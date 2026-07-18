@@ -3,13 +3,14 @@
 use anny::metric::Cosine;
 use fold::pipeline::terminal::search::{Bm25, Bm25Reader, Hnsw, HnswReader};
 use fold::pipeline::terminal::{InvertedIndex, InvertedIndexReader};
-use fold::pipeline::{FlatMap, Keyed, Map, Push};
+use fold::pipeline::{FlatMap, Keyed, Map, Push, Scored};
 use fold::stream::{KeyedStream, PipelineInitCtx, Readable, WriteTx};
 use fxhash::FxHashMap;
 pub use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 pub mod legibility;
+pub mod perf;
 pub mod search_api;
 pub mod tools;
 pub mod wire;
@@ -147,6 +148,68 @@ impl<R: Readable> TermDictReader<'_, R> {
             .take(k)
             .map(|kv| String::from_utf8(kv.key().unwrap().to_vec()).unwrap())
             .collect()
+    }
+
+    /// Up to `k` live terms starting with `prefix`, ranked by corpus
+    /// frequency (descending), ties broken lexicographically for
+    /// determinism. Unlike [`complete`](Self::complete) — which takes the
+    /// first `k` lexicographically and is right for query-time term
+    /// expansion — this is for user-facing type-ahead, where the most common
+    /// completions are what a human wants to see first. Scans at most
+    /// `SCAN_CAP` matching terms so a 1-char prefix can't walk the whole
+    /// keyspace.
+    pub fn complete_ranked(&self, prefix: &str, k: usize) -> Vec<String> {
+        const SCAN_CAP: usize = 2000;
+        let mut cands: Vec<(i64, String)> = self
+            .tx
+            .prefix(&self.ks, prefix.as_bytes())
+            .take(SCAN_CAP)
+            .map(|kv| {
+                let (key, val) = kv.into_inner().unwrap();
+                let freq = i64::from_be_bytes(val.as_ref().try_into().unwrap());
+                (freq, String::from_utf8(key.to_vec()).unwrap())
+            })
+            .collect();
+        cands.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        cands.into_iter().take(k).map(|(_, t)| t).collect()
+    }
+
+    /// Whether `term` is a live vocabulary term (exact match). Used to decide
+    /// if a query token needs fuzzy correction.
+    pub fn contains(&self, term: &str) -> bool {
+        self.tx.get(&self.ks, term.as_bytes()).unwrap().is_some()
+    }
+
+    /// Up to `k` live terms within edit distance [`MAX_FUZZ_DIST`] of `token`,
+    /// nearest first (ties broken by higher corpus frequency). Scans only the
+    /// term-dict bucket sharing `token`'s first two characters — typos and OCR
+    /// errors overwhelmingly preserve leading characters — so it never walks
+    /// the whole vocabulary. This is the fuzzy-correction primitive: an unknown
+    /// query word is replaced by its nearest real words, which then feed the
+    /// exact lexical index (no document-scale fuzzy index needed). Limitation:
+    /// a corruption in the first two characters is not recovered.
+    pub fn correct(&self, token: &str, k: usize) -> Vec<String> {
+        const SCAN_CAP: usize = 4000;
+        let prefix: String = token.chars().take(2).collect();
+        let mut cands: Vec<(usize, i64, String)> = self
+            .tx
+            .prefix(&self.ks, prefix.as_bytes())
+            .take(SCAN_CAP)
+            .filter_map(|kv| {
+                let (key, val) = kv.into_inner().unwrap();
+                let term = String::from_utf8(key.to_vec()).ok()?;
+                if term == token {
+                    return None; // an exact match isn't a correction
+                }
+                let d = levenshtein(token, &term, MAX_FUZZ_DIST);
+                (d <= MAX_FUZZ_DIST).then(|| {
+                    let freq = i64::from_be_bytes(val.as_ref().try_into().unwrap());
+                    (d, freq, term)
+                })
+            })
+            .collect();
+        cands.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        cands.into_iter().take(k).map(|(_, _, t)| t).collect()
     }
 }
 
@@ -299,8 +362,27 @@ pub struct Hit {
     /// must look here.
     #[serde(default)]
     pub bm25: f32,
+    /// 0-based rank in the lexical (BM25) list; `None` = semantic-only —
+    /// exactly the hits that take the `rel = 1.0` default above and so
+    /// bypass the [`MIN_REL`] cutoff.
+    #[serde(default)]
+    pub lex_rank: Option<u32>,
+    /// 0-based rank in the semantic (HNSW) list; `None` = lexical-only.
+    #[serde(default)]
+    pub sem_rank: Option<u32>,
+    /// Cosine distance from the vector index (lower = closer).
+    #[serde(default)]
+    pub sem_dist: Option<f32>,
     pub key: ChunkKey,
     pub words: Vec<Word>,
+}
+
+/// Pre-fusion ranker list sizes, reported through the `stats` out-param of
+/// [`search`] — the fused hit list alone can't reconstruct them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RankerStats {
+    pub lex_n: usize,
+    pub sem_n: usize,
 }
 
 /// Hits scoring below this fraction of the query's top BM25 hit are noise;
@@ -328,7 +410,124 @@ pub const IMG_MIN_REL: f32 = 0.35;
 /// ranks between page requests). Also caps stable pagination depth at
 /// ~LEX_FETCH lexical + TOP_K semantic hits. BM25 cost is limit-independent
 /// (full postings scan, truncate at end), so the extra depth is nearly free.
-const LEX_FETCH: usize = 512;
+pub const LEX_FETCH: usize = 512;
+
+/// Max edit distance for fuzzy term correction ([`TermDictReader::correct`]).
+const MAX_FUZZ_DIST: usize = 2;
+/// Nearest real terms substituted per unknown query word.
+const FUZZ_CANDIDATES: usize = 3;
+
+/// Levenshtein edit distance, capped at `max`: returns `max + 1` as soon as it
+/// is certain the true distance exceeds `max` (callers only care about the
+/// `<= max` band), keeping each comparison cheap.
+fn levenshtein(a: &str, b: &str, max: usize) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (la, lb) = (a.len(), b.len());
+    if la.abs_diff(lb) > max {
+        return max + 1;
+    }
+    let mut prev: Vec<usize> = (0..=lb).collect();
+    let mut cur = vec![0usize; lb + 1];
+    for i in 1..=la {
+        cur[0] = i;
+        let mut row_min = cur[0];
+        for j in 1..=lb {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            row_min = row_min.min(cur[j]);
+        }
+        if row_min > max {
+            return max + 1;
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[lb]
+}
+
+/// Cosine similarity of two embeddings (0 if either is degenerate).
+fn cosine(a: &Emb, b: &Emb) -> f32 {
+    let (mut dot, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
+    for i in 0..EMB_DIM {
+        dot += a[i] * b[i];
+        na += a[i] * a[i];
+        nb += b[i] * b[i];
+    }
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na.sqrt() * nb.sqrt())
+    }
+}
+
+/// How many top fused hits the MMR diversity re-rank considers. Fixed
+/// (independent of `k`/`offset`) so greedy selection is deterministic and
+/// pagination stays prefix-stable; hits past the pool keep their fused order.
+const MMR_POOL: usize = 100;
+/// MMR relevance/diversity mix: `score = λ·relevance − (1−λ)·max_similarity`.
+/// 1.0 = pure relevance (today); lower demotes near-duplicates harder.
+const MMR_LAMBDA: f32 = 0.7;
+
+/// Update each unpicked pool item's running max similarity against one newly
+/// selected item — the trick that keeps [`mmr_rerank`] O(pool²) overall.
+fn bump_sim(max_sim: &mut [f32], picked: &[bool], embs: &[Option<Emb>], sel: usize) {
+    let Some(se) = &embs[sel] else { return };
+    for (i, mi) in max_sim.iter_mut().enumerate() {
+        if !picked[i] {
+            if let Some(e) = &embs[i] {
+                *mi = mi.max(cosine(e, se));
+            }
+        }
+    }
+}
+
+/// Maximal Marginal Relevance re-rank of the fused list: greedily reorders the
+/// top [`MMR_POOL`] hits to demote near-duplicates (same book/edition — common
+/// in scanned corpora), then appends the remainder in fused order. Similarity
+/// is cosine between chunk embeddings fetched via `resolve`. Deterministic over
+/// the (pinned) fused list, so paginated slices still tile.
+fn mmr_rerank(
+    fused: Vec<(f32, ChunkKey)>,
+    resolve: &impl Fn(&ChunkKey) -> Option<ChunkRec>,
+) -> Vec<(f32, ChunkKey)> {
+    let pool_n = fused.len().min(MMR_POOL);
+    if pool_n <= 1 {
+        return fused;
+    }
+    let embs: Vec<Option<Emb>> =
+        fused[..pool_n].iter().map(|(_, k)| resolve(k).map(|r| r.emb)).collect();
+    let top = fused[0].0;
+    let norm = |s: f32| if top > 0.0 { s / top } else { 1.0 };
+
+    let mut max_sim = vec![0.0f32; pool_n];
+    let mut picked = vec![false; pool_n];
+    let mut order = Vec::with_capacity(pool_n);
+    // seed with the most relevant (fused is already best-first)
+    picked[0] = true;
+    order.push(0usize);
+    bump_sim(&mut max_sim, &picked, &embs, 0);
+    for _ in 1..pool_n {
+        let mut best = usize::MAX;
+        let mut best_score = f32::NEG_INFINITY;
+        for i in 0..pool_n {
+            if picked[i] {
+                continue;
+            }
+            let score = MMR_LAMBDA * norm(fused[i].0) - (1.0 - MMR_LAMBDA) * max_sim[i];
+            if score > best_score {
+                best_score = score;
+                best = i;
+            }
+        }
+        picked[best] = true;
+        order.push(best);
+        bump_sim(&mut max_sim, &picked, &embs, best);
+    }
+
+    let mut out: Vec<(f32, ChunkKey)> = order.into_iter().map(|i| fused[i].clone()).collect();
+    out.extend_from_slice(&fused[pool_n..]);
+    out
+}
 
 /// Reciprocal rank fusion: score(k) = sum over lists of 1/(60 + rank).
 fn rrf(lists: &[Vec<ChunkKey>]) -> Vec<(f32, ChunkKey)> {
@@ -367,12 +566,16 @@ pub fn search<R: Readable>(
     k: usize,
     filter: Option<&FxHashSet<String>>,
     complete: bool,
-    resolve: impl Fn(&ChunkKey) -> Option<Vec<Word>>,
+    fuzzy: bool,
+    diversify: bool,
+    resolve: impl Fn(&ChunkKey) -> Option<ChunkRec>,
+    mut stats: Option<&mut RankerStats>,
 ) -> Vec<Hit> {
     let ((lex, vec), (_, terms)) = r;
 
     let t = std::time::Instant::now();
-    let mut toks = tokenize(query);
+    let orig = tokenize(query);
+    let mut toks = orig.clone();
     if complete && let Some(last) = toks.last().cloned() {
         for t in terms.complete(&last, 5) {
             if !toks.contains(&t) {
@@ -380,8 +583,24 @@ pub fn search<R: Readable>(
             }
         }
     }
+    // fuzzy correction (full queries only): replace each unknown query word
+    // with its nearest real vocabulary words, which then feed the exact
+    // lexical index. Exact words expand nothing, so clean queries are
+    // unchanged. Bounded to FUZZ_CANDIDATES per token.
+    if fuzzy {
+        for tok in &orig {
+            if terms.contains(tok) {
+                continue;
+            }
+            for t in terms.correct(tok, FUZZ_CANDIDATES) {
+                if !toks.contains(&t) {
+                    toks.push(t);
+                }
+            }
+        }
+    }
     if cfg!(debug_assertions) {
-        eprintln!("[perf] term_complete elapsed={}us", t.elapsed().as_micros());
+        eprintln!("[perf] term_expand elapsed={}us", t.elapsed().as_micros());
     }
     if toks.is_empty() {
         return Vec::new();
@@ -409,35 +628,61 @@ pub fn search<R: Readable>(
         })
         .collect();
     let lexical: Vec<ChunkKey> = scored.into_iter().map(|h| h.val).collect();
+    let lex_rank: FxHashMap<ChunkKey, u32> =
+        lexical.iter().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
     if cfg!(debug_assertions) {
         eprintln!("[perf] lex_search elapsed={}us hits={}", t.elapsed().as_micros(), lexical.len());
     }
     let t = std::time::Instant::now();
-    let semantic: Vec<ChunkKey> = match (qemb, filter) {
-        (Some(e), Some(f)) => vec
-            .search_filtered(e, |key: &ChunkKey| f.contains(&key.doc))
-            .into_iter()
-            .map(|h| h.val)
-            .collect(),
-        (Some(e), None) => vec.search(e).into_iter().map(|h| h.val).collect(),
+    let sem_scored: Vec<Scored<f32, ChunkKey>> = match (qemb, filter) {
+        (Some(e), Some(f)) => vec.search_filtered(e, |key: &ChunkKey| f.contains(&key.doc)),
+        (Some(e), None) => vec.search(e),
         (None, _) => Vec::new(),
     };
+    let sem_rank: FxHashMap<ChunkKey, (u32, f32)> = sem_scored
+        .iter()
+        .enumerate()
+        .map(|(i, h)| (h.val.clone(), (i as u32, h.score)))
+        .collect();
+    let semantic: Vec<ChunkKey> = sem_scored.into_iter().map(|h| h.val).collect();
     if cfg!(debug_assertions) {
         eprintln!("[perf] vec_search elapsed={}us hits={}", t.elapsed().as_micros(), semantic.len());
     }
+    if let Some(s) = stats.as_deref_mut() {
+        s.lex_n = lexical.len();
+        s.sem_n = semantic.len();
+    }
 
     let t = std::time::Instant::now();
-    let hits: Vec<Hit> = rrf(&[lexical, semantic])
+    let fused = rrf(&[lexical, semantic]);
+    // diversity: demote near-duplicates (same book/edition) among the top
+    // hits. Full queries only — the per-keystroke path can't afford the
+    // embedding reads, and doc-scoped browser-find must keep full coverage.
+    let ordered = if diversify { mmr_rerank(fused, &resolve) } else { fused };
+    let hits: Vec<Hit> = ordered
         .into_iter()
         .take(k)
         .filter_map(|(score, key)| {
-            let words = resolve(&key)?;
+            let rec = resolve(&key)?;
             let (r, bm25) = rel.get(&key).copied().unwrap_or((1.0, 0.0));
-            Some(Hit { score, rel: r, bm25, key, words })
+            let (sem_rank, sem_dist) = match sem_rank.get(&key) {
+                Some(&(rank, dist)) => (Some(rank), Some(dist)),
+                None => (None, None),
+            };
+            Some(Hit {
+                score,
+                rel: r,
+                bm25,
+                lex_rank: lex_rank.get(&key).copied(),
+                sem_rank,
+                sem_dist,
+                key,
+                words: rec.words,
+            })
         })
         .collect();
     if cfg!(debug_assertions) {
-        eprintln!("[perf] rrf_and_resolve elapsed={}us hits={}", t.elapsed().as_micros(), hits.len());
+        eprintln!("[perf] fuse_rerank_resolve elapsed={}us hits={}", t.elapsed().as_micros(), hits.len());
     }
     hits
 }
@@ -590,5 +835,61 @@ pub fn image_search<R: Readable>(
         );
     }
     hits
+}
+
+#[cfg(test)]
+mod fuzzy_mmr_tests {
+    use super::*;
+
+    fn key(doc: &str) -> ChunkKey {
+        ChunkKey { doc: doc.to_string(), page: 1, idx: 0 }
+    }
+
+    fn rec(doc: &str, hot: usize) -> ChunkRec {
+        let mut emb = [0.0f32; EMB_DIM];
+        emb[hot] = 1.0;
+        ChunkRec { key: key(doc), words: vec![], emb }
+    }
+
+    #[test]
+    fn levenshtein_is_bounded() {
+        assert_eq!(levenshtein("escapement", "escapement", 2), 0);
+        assert_eq!(levenshtein("escapment", "escapement", 2), 1); // one deletion
+        assert_eq!(levenshtein("escaprnent", "escapement", 2), 2); // OCR rn->m
+        assert_eq!(levenshtein("abc", "abd", 2), 1);
+        // beyond the cap: reports max+1, not the true distance (3)
+        assert_eq!(levenshtein("kitten", "sitting", 2), 3);
+    }
+
+    #[test]
+    fn mmr_demotes_a_near_duplicate() {
+        // a and b share an embedding direction (near-duplicate); c is novel.
+        // fused order by relevance is a, b, c — MMR should promote c over b.
+        let fused = vec![(0.9f32, key("a")), (0.85, key("b")), (0.5, key("c"))];
+        let resolve = |k: &ChunkKey| match k.doc.as_str() {
+            "a" => Some(rec("a", 0)),
+            "b" => Some(rec("b", 0)),
+            "c" => Some(rec("c", 1)),
+            _ => None,
+        };
+        let out: Vec<String> =
+            mmr_rerank(fused, &resolve).into_iter().map(|(_, k)| k.doc).collect();
+        assert_eq!(out, vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn mmr_preserves_order_without_duplicates() {
+        // all-distinct directions: MMR must not reshuffle a diverse list
+        let fused = vec![(0.9f32, key("a")), (0.8, key("b")), (0.7, key("c"))];
+        let resolve = |k: &ChunkKey| match k.doc.as_str() {
+            "a" => Some(rec("a", 0)),
+            "b" => Some(rec("b", 1)),
+            "c" => Some(rec("c", 2)),
+            _ => None,
+        };
+        let out: Vec<String> =
+            mmr_rerank(fused, &resolve).into_iter().map(|(_, k)| k.doc).collect();
+        assert_eq!(out, vec!["a", "b", "c"]);
+    }
 }
 

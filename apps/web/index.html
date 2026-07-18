@@ -58,6 +58,7 @@
     </div>
     <div id="search-pop" hidden>
       <input id="q" type="search" placeholder="Search the library…" autocomplete="off" />
+      <ul id="ac" hidden></ul>
       <div id="search-nav" hidden>
         <span id="search-count"></span>
         <button id="search-prev" title="Previous match (Shift+Enter)">↑</button>
@@ -78,6 +79,17 @@
         <input id="chat-input" type="text" placeholder="ask the library…" autocomplete="off" />
       </form>
     </aside>
+    <section id="perf" hidden aria-label="Performance">
+      <div id="perf-head"></div>
+      <section class="perf-section">
+        <h2>search</h2>
+        <div id="perf-search-body"></div>
+      </section>
+      <section class="perf-section">
+        <h2>ingest</h2>
+        <div id="perf-ingest-body"></div>
+      </section>
+    </section>
     <div id="toast" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

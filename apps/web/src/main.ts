@@ -12,6 +12,7 @@ import {
   setReaderHits,
   stepHit,
 } from "./reader";
+import { perfOpen, togglePerf } from "./perf";
 import { isTauri, makeTransport, type Transport } from "./transport";
 import type { Collections, DocInfo, IngestEvent, WireHit, WireResponse } from "./types";
 
@@ -32,6 +33,7 @@ const $pageImg = document.getElementById("page-img") as HTMLImageElement;
 const $pageHl = document.getElementById("page-hl")!;
 const $dropzone = document.getElementById("dropzone")!;
 const $searchPop = document.getElementById("search-pop")!;
+const $ac = document.getElementById("ac") as HTMLUListElement;
 const $searchNav = document.getElementById("search-nav")!;
 const $searchCount = document.getElementById("search-count")!;
 const $searchPrev = document.getElementById("search-prev")!;
@@ -695,6 +697,25 @@ function closeSearchPop() {
   $searchPop.hidden = true;
 }
 
+// window + capture phase: the perf view sits above every other layer, so its
+// keys must run before all the document-level handlers below (and before
+// inputs' stopPropagation). Cmd+. toggles; Escape closes exactly this layer.
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === ".") {
+      e.preventDefault();
+      e.stopPropagation();
+      togglePerf();
+    } else if (e.key === "Escape" && perfOpen()) {
+      e.preventDefault();
+      e.stopPropagation();
+      togglePerf();
+    }
+  },
+  true,
+);
+
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === "f") {
     e.preventDefault(); // the popover replaces native find in the web build
@@ -945,6 +966,86 @@ async function main() {
     }
     fullTimer = setTimeout(() => send("full"), FULL_DEBOUNCE_MS); // hybrid, on pause
   });
+
+  // --- type-ahead: frequency-ranked word completions in a dropdown ---------
+  // Additive and independent of the search grid + seq machinery. Stale
+  // responses are dropped by a monotonic token (there is no request to abort).
+  let acToken = 0;
+  let acItems: string[] = [];
+  let acActive = -1;
+  let acTimer: ReturnType<typeof setTimeout>;
+
+  const hideAc = () => {
+    acItems = [];
+    acActive = -1;
+    $ac.hidden = true;
+    $ac.replaceChildren();
+  };
+  const applyAc = (term: string) => {
+    $q.value = term;
+    hideAc();
+    flushedLen = term.length;
+    send("full");
+    $q.focus();
+  };
+  const renderAc = () => {
+    if (!acItems.length) return hideAc();
+    $ac.replaceChildren(
+      ...acItems.map((t, i) => {
+        const li = document.createElement("li");
+        li.textContent = t;
+        if (i === acActive) li.className = "on";
+        // mousedown (not click) so it fires before the input's blur hides us
+        li.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          applyAc(t);
+        });
+        return li;
+      }),
+    );
+    $ac.hidden = false;
+  };
+  const fetchAc = (q: string) => {
+    const tok = ++acToken;
+    transport
+      .complete(q)
+      .then((items) => {
+        if (tok !== acToken) return; // a newer keystroke superseded this
+        acItems = items.filter((t) => t !== q); // exact echo has nothing to add
+        acActive = -1;
+        renderAc();
+      })
+      .catch(() => {});
+  };
+
+  $q.addEventListener("input", () => {
+    const q = $q.value.trim();
+    clearTimeout(acTimer);
+    // no completions for reader-find or sub-2-char queries
+    if (q.length < 2 || readerDoc()) return hideAc();
+    acTimer = setTimeout(() => fetchAc(q), 80);
+  });
+  $q.addEventListener("keydown", (e) => {
+    if ($ac.hidden || !acItems.length) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      acActive = (acActive + 1) % acItems.length;
+      renderAc();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      acActive = (acActive - 1 + acItems.length) % acItems.length;
+      renderAc();
+    } else if (e.key === "Enter") {
+      if (acActive >= 0) {
+        e.preventDefault();
+        applyAc(acItems[acActive]);
+      }
+    } else if (e.key === "Escape") {
+      hideAc();
+    }
+  });
+  $q.addEventListener("blur", () => hideAc());
+
   $cols.addEventListener("click", (e) => {
     const btn = (e.target as HTMLElement).closest("button");
     if (!btn) return;

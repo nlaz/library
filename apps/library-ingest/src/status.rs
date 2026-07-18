@@ -56,11 +56,24 @@ pub struct DocStatus {
     pub updated: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Ingest performance (stage timings, counts, legibility), written at
+    /// the `text_ready`/`ready` transitions. Docs from before this existed
+    /// have `None`; the perf view's lazy backfill fills in legibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<library_core::perf::IngestMetrics>,
 }
 
 impl DocStatus {
     pub fn new(state: DocState) -> Self {
-        DocStatus { state, stage: None, done: 0, total: 0, updated: now(), error: None }
+        DocStatus {
+            state,
+            stage: None,
+            done: 0,
+            total: 0,
+            updated: now(),
+            error: None,
+            metrics: None,
+        }
     }
 
     pub fn failed(error: String) -> Self {

@@ -1,0 +1,7 @@
+{
+  "id": "p10-route-read-tonight",
+  "prompt": "what should I read tonight?",
+  "expect": [
+    { "kind": "tools_include", "value": "sample_page" }
+  ]
+}

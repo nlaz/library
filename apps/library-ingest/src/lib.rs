@@ -78,6 +78,8 @@ pub enum Progress {
     /// A human-readable pipeline event (summaries, per-page warnings).
     Log(String),
     Ocr { done: u32, total: u32 },
+    /// End-of-OCR page-source split, for the persisted ingest metrics.
+    OcrSummary { text_layer: u32, vision: u32, cached: u32 },
     /// Model-backed OCR cleanup, counted in pages.
     Clean { done: usize, total: usize },
     Embed { done: usize, total: usize },

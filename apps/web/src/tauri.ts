@@ -42,6 +42,10 @@ export class TauriTransport implements Transport {
     this.cb = cb;
   }
 
+  complete(prefix: string): Promise<string[]> {
+    return invoke<string[]>("complete", { prefix });
+  }
+
   collections(): Promise<Collections> {
     return invoke<Collections>("collections");
   }

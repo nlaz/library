@@ -388,4 +388,104 @@ mod tests {
         let ts: Vec<&str> = fused.iter().map(|w| w.t.as_str()).collect();
         assert_eq!(ts, vec!["development", "Apple-compatible", "development"]);
     }
+
+    #[test]
+    fn fuse_hyphens_vocab_hit_fuses() {
+        // "automatic" is in the vocab, so the hyphen is dropped and the two
+        // OCR tokens fuse into one clean word.
+        let ws = words(&["auto-", "matic"]);
+        let vocab: FxHashSet<String> = ["automatic".to_string()].into_iter().collect();
+        let fused = fuse_hyphens(&ws, &vocab);
+        let ts: Vec<&str> = fused.iter().map(|w| w.t.as_str()).collect();
+        assert_eq!(ts, vec!["automatic"]);
+    }
+
+    #[test]
+    fn fuse_hyphens_vocab_miss_merges_but_keeps_hyphen() {
+        // Surprising current behavior, pinned here: when the fused spelling
+        // isn't in the vocab, `fuse_hyphens` does NOT leave the two OCR
+        // tokens as separate words. It still merges them into a single
+        // `Word`, just keeping the hyphen literally ("cats-dogs") instead of
+        // producing the clean fusion ("catsdogs"). So an unknown fusion
+        // collapses the word count exactly like a known one does — it just
+        // spells the merged word differently.
+        let ws = words(&["cats-", "dogs"]);
+        let vocab: FxHashSet<String> = ["cats".to_string(), "dogs".to_string()]
+            .into_iter()
+            .collect();
+        let fused = fuse_hyphens(&ws, &vocab);
+        let ts: Vec<&str> = fused.iter().map(|w| w.t.as_str()).collect();
+        assert_eq!(ts, vec!["cats-dogs"]);
+    }
+
+    #[test]
+    fn fuse_hyphens_trailing_hyphen_at_end_of_input() {
+        // A hyphenated word with nothing after it has no candidate to fuse
+        // with, so it passes through unchanged.
+        let ws = words(&["hello", "world-"]);
+        let vocab: FxHashSet<String> = FxHashSet::default();
+        let fused = fuse_hyphens(&ws, &vocab);
+        let ts: Vec<&str> = fused.iter().map(|w| w.t.as_str()).collect();
+        assert_eq!(ts, vec!["hello", "world-"]);
+    }
+
+    #[test]
+    fn distance_exact_on_small_pairs() {
+        assert_eq!(distance("kitten", "sitting"), 3);
+        assert_eq!(distance("abc", "abc"), 0);
+        assert_eq!(distance("", "abc"), 3);
+        assert_eq!(distance("abc", ""), 3);
+        assert_eq!(distance("flaw", "lawn"), 2);
+    }
+
+    #[test]
+    fn distance_is_symmetric() {
+        let pairs = [
+            ("kitten", "sitting"),
+            ("preadsheets", "spreadsheets"),
+            ("", "x"),
+            ("same", "same"),
+            ("abcdef", "fedcba"),
+        ];
+        for (a, b) in pairs {
+            assert_eq!(distance(a, b), distance(b, a), "distance({a:?}, {b:?})");
+        }
+    }
+
+    #[test]
+    fn distance_has_no_internal_bound_or_early_exit() {
+        // Despite the "bounded ... with early exit" framing one might expect
+        // from a fast approximate-match helper, `distance` as written takes
+        // no bound parameter and computes the full Levenshtein matrix every
+        // time — there's no sentinel/cap value it can return. Any bounding
+        // happens at the call site in `apply`, which thresholds the result
+        // against `2.max(o.len() / 4)`. This pins the current (unbounded)
+        // behavior: two completely dissimilar equal-length strings cost one
+        // substitution per character, exactly `len`, not a capped value.
+        assert_eq!(distance("abcdefghij", "zyxwvutsrq"), 10);
+    }
+
+    #[test]
+    fn squash_removes_all_spaces_and_hyphens() {
+        // `squash` isn't a whitespace-run collapse — it deletes every literal
+        // ' ' and '-' character outright (runs, single occurrences, leading,
+        // and trailing all disappear entirely rather than collapsing to one
+        // space).
+        assert_eq!(squash("a  b"), "ab");
+        assert_eq!(squash("a-b"), "ab");
+        assert_eq!(squash("multi-word-hyphen"), "multiwordhyphen");
+        assert_eq!(squash("  leading and trailing  "), "leadingandtrailing");
+    }
+
+    #[test]
+    fn squash_leaves_other_whitespace_untouched() {
+        // Only ' ' and '-' are filtered; tabs/newlines are not whitespace-
+        // normalized and pass straight through unchanged.
+        assert_eq!(squash("a\tb\nc"), "a\tb\nc");
+    }
+
+    #[test]
+    fn squash_empty_string_is_empty() {
+        assert_eq!(squash(""), "");
+    }
 }

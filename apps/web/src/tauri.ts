@@ -66,7 +66,7 @@ export function ingestPaths(
 /** Ask before relocating files into the library folder. */
 export function confirmMove(names: string[], destDir: string): Promise<boolean> {
   const what =
-    names.length === 1 ? `“${names[0]}”` : `${names.length} PDFs`;
+    names.length === 1 ? `“${names[0]}”` : `${names.length} files`;
   return confirmDialog(
     `This will move ${what} into your library folder (${destDir}). Move ${names.length === 1 ? "it" : "them"}?`,
     { title: "Add to library", kind: "info" },
@@ -89,7 +89,7 @@ export function setCollections(doc: string, collections: string[]): Promise<void
   return invoke("set_collections", { doc, collections });
 }
 
-/** Remove a doc from the library (its PDF in data/pdfs is kept). */
+/** Remove a doc from the library (its source file in data/pdfs is kept). */
 export function deleteDoc(doc: string): Promise<void> {
   return invoke("delete_doc", { doc });
 }
@@ -101,7 +101,7 @@ export function retryDoc(doc: string): Promise<void> {
 
 export function confirmDelete(title: string): Promise<boolean> {
   return confirmDialog(
-    `Remove “${title}” from the library? Its pages and search entries are deleted; the PDF is kept.`,
+    `Remove “${title}” from the library? Its pages and search entries are deleted; the original file is kept.`,
     { title: "Delete document", kind: "warning" },
   );
 }

@@ -9,16 +9,18 @@ import { notify } from "./toast";
 
 let libraryDir = ""; // <data>/pdfs, for the move-confirm dialog
 
-async function queuePdfs(paths: string[]) {
+async function queueFiles(paths: string[]) {
   if (!desktop) return;
-  const pdfs = paths.filter((p) => p.toLowerCase().endsWith(".pdf"));
-  if (!pdfs.length) return;
-  // the library owns its documents: adding a PDF MOVES it into the
+  // UX pre-filter only — the Rust ingest gate is authoritative
+  const exts = [".pdf", ".png", ".jpg", ".jpeg"];
+  const files = paths.filter((p) => exts.some((e) => p.toLowerCase().endsWith(e)));
+  if (!files.length) return;
+  // the library owns its documents: adding a file MOVES it into the
   // library folder, and that never happens without the user saying so
-  const names = pdfs.map((p) => p.split("/").pop() ?? p);
+  const names = files.map((p) => p.split("/").pop() ?? p);
   if (!(await desktop.confirmMove(names, libraryDir))) return;
   try {
-    const queued = await desktop.ingestPaths(pdfs, getCol() || null, "move");
+    const queued = await desktop.ingestPaths(files, getCol() || null, "move");
     // queued docs show up on the shelves; only silence needs explaining
     if (!queued.length) notify("already in the queue");
   } catch (e) {
@@ -36,7 +38,7 @@ export function wireDesktop() {
   desktop.onDragDrop(
     () => ($dropzone.hidden = false),
     () => ($dropzone.hidden = true),
-    (paths) => queuePdfs(paths),
+    (paths) => queueFiles(paths),
   );
   desktop.onIngestProgress((e) => {
     if (e.stage === "log") return;

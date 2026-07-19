@@ -79,7 +79,7 @@ export async function renderHome() {
   if (!visible.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "the library is empty — drop a PDF anywhere";
+    empty.textContent = "the library is empty — drop a PDF or image anywhere";
     $home.replaceChildren(empty);
   }
 }

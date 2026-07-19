@@ -1,7 +1,11 @@
 #[inline(always)]
 pub fn accumulate(vector: &mut [f32; crate::DIMENSIONS], param: &crate::lookup::Param) {
     for (v, &p) in vector.iter_mut().zip(param.iter()) {
-        *v += crate::lookup::QUANT_MIN + (p as f32) * crate::lookup::QUANT_SCALE;
+        // Under quant-8/quant-16 the Param element type is u8/u16 and needs
+        // widening; unquantized params are already f32 (no cast to lint).
+        #[cfg(any(feature = "quant-8", feature = "quant-16"))]
+        let p = p as f32;
+        *v += crate::lookup::QUANT_MIN + p * crate::lookup::QUANT_SCALE;
     }
 }
 

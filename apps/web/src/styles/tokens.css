@@ -1,0 +1,111 @@
+/* ==========================================================================
+   The Stacks — visual language for The Library
+   Magic OS materials (grayscale, dither, bezels) × Are.na grid discipline.
+   ========================================================================== */
+
+/* --- §1 faces ------------------------------------------------------------ */
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/instrument-sans-vf.woff2") format("woff2-variations");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-500.woff2") format("woff2");
+}
+
+/* --- §2 tokens ------------------------------------------------------------
+   :root is the light theme (warm paper-gray, fluorescent-lit stacks);
+   prefers-color-scheme: dark is the stacks after hours, followed
+   automatically — there's no manual toggle. Chrome is grayscale; the
+   single accent is a highlighter pen and nothing else. */
+
+:root {
+  color-scheme: light;
+
+  /* surfaces */
+  --bg: #e6e3db;
+  --surface: #efece4;
+  --well: #dbd6ca;
+  --paper: #ffffff;
+
+  /* lines & bezels */
+  --line: #c9c4b7;
+  --line-strong: #8f8a7b;
+  --edge-hi: #fbfaf6;
+  --edge-lo: #a29d8f;
+
+  /* ink */
+  --ink: #1f1e19;
+  --ink-dim: #63604f; /* ≥4.5:1 on --bg for the 11px mono metadata */
+  --ink-faint: #98937f;
+
+  /* the one accent — highlighter only */
+  --hl: #facc15;
+  --hl-wash: rgba(250, 204, 21, 0.32);
+  --hl-line: #d9a800;
+
+  /* type */
+  --font-ui: "Instrument Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --fs-micro: 10px;
+  --fs-meta: 11px;
+  --fs-mono: 12px;
+  --fs-ui: 13px;
+  --fs-body: 14px;
+  --fs-title: 15px;
+  --track-label: 0.12em;
+
+  /* space & shape */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --r: 0px;
+
+  /* dither tiles: black-on-transparent Bayer thresholds; black works over
+     both themes, exactly like Magic OS scrims */
+  --dither-12: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='1' height='1'/%3E%3Crect x='2' y='2' width='1' height='1'/%3E%3C/svg%3E");
+  --dither-25: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='2' height='2'%3E%3Crect width='1' height='1'/%3E%3C/svg%3E");
+  --dither-50: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='2' height='2'%3E%3Crect width='1' height='1'/%3E%3Crect x='1' y='1' width='1' height='1'/%3E%3C/svg%3E");
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --bg: #0d0d0d;
+    --surface: #151515;
+    --well: #080808;
+    --paper: #ffffff;
+
+    --line: #262626;
+    --line-strong: #464646;
+    --edge-hi: #2f2f2f;
+    --edge-lo: #000000;
+
+    --ink: #e5e5e5;
+    --ink-dim: #8c8c8c;
+    --ink-faint: #5a5a5a;
+
+    --hl-line: #facc15;
+    --hl-wash: rgba(250, 204, 21, 0.28);
+  }
+}

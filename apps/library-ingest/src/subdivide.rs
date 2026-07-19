@@ -82,11 +82,11 @@ fn split_once(luma: &GrayImage, bbox: Bbox) -> Vec<Bbox> {
 
     let mut cols = vec![0f32; w];
     let mut rows = vec![0f32; h];
-    for y in 0..h {
-        for x in 0..w {
+    for (y, row) in rows.iter_mut().enumerate() {
+        for (x, col) in cols.iter_mut().enumerate() {
             let d = (255 - luma.get_pixel(x0 + x as u32, y0 + y as u32).0[0]) as f32;
-            cols[x] += d;
-            rows[y] += d;
+            *col += d;
+            *row += d;
         }
     }
     for c in cols.iter_mut() {
@@ -155,10 +155,11 @@ fn valley_cuts(profile: &[f32]) -> Vec<usize> {
     for (i, &v) in smooth.iter().enumerate() {
         if v < thr {
             start.get_or_insert(i);
-        } else if let Some(s) = start.take() {
-            if i - s >= min_run && s > 0 {
-                cuts.push((s + i) / 2);
-            }
+        } else if let Some(s) = start.take()
+            && i - s >= min_run
+            && s > 0
+        {
+            cuts.push((s + i) / 2);
         }
     }
     // an unclosed run reaches the trailing edge: margin, not a cut
@@ -189,7 +190,10 @@ mod tests {
         let mut img = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
         for b in blocks {
             let (x0, y0) = ((b[0] * w as f32) as u32, (b[1] * h as f32) as u32);
-            let (x1, y1) = (((b[0] + b[2]) * w as f32) as u32, ((b[1] + b[3]) * h as f32) as u32);
+            let (x1, y1) = (
+                ((b[0] + b[2]) * w as f32) as u32,
+                ((b[1] + b[3]) * h as f32) as u32,
+            );
             for y in y0..y1.min(h) {
                 for x in x0..x1.min(w) {
                     img.put_pixel(x, y, image::Luma([0u8]));
@@ -208,10 +212,16 @@ mod tests {
         let parts = subdivide(&luma, FULL, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(parts.len(), 2, "one vertical cut -> two parts: {parts:?}");
         // cut lands inside the gutter
-        assert!(parts[0][0] == 0.0 && (0.45..=0.55).contains(&parts[0][2]), "{parts:?}");
+        assert!(
+            parts[0][0] == 0.0 && (0.45..=0.55).contains(&parts[0][2]),
+            "{parts:?}"
+        );
         assert!((0.45..=0.55).contains(&parts[1][0]), "{parts:?}");
         // parts span the bbox on the uncut axis
-        assert!(parts.iter().all(|p| p[1] == 0.0 && p[3] == 1.0), "{parts:?}");
+        assert!(
+            parts.iter().all(|p| p[1] == 0.0 && p[3] == 1.0),
+            "{parts:?}"
+        );
     }
 
     #[test]
@@ -220,7 +230,11 @@ mod tests {
         let luma = page(&[[0.0, 0.0, 1.0, 1.0]]);
         let parts = subdivide(&luma, FULL, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(parts.len(), 4, "{parts:?}");
-        assert!(parts.iter().all(|p| (p[2] - 0.6).abs() < 1e-4 && (p[3] - 0.6).abs() < 1e-4));
+        assert!(
+            parts
+                .iter()
+                .all(|p| (p[2] - 0.6).abs() < 1e-4 && (p[3] - 0.6).abs() < 1e-4)
+        );
     }
 
     #[test]

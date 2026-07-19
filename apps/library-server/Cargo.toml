@@ -1,7 +1,8 @@
 [package]
 name = "library-server"
 version = "0.0.1"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
@@ -18,3 +19,6 @@ wtransport = { version = "0.6", features = ["self-signed"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["fs", "cors"] }
 tokio-stream = "0.1"
+
+[lints]
+workspace = true

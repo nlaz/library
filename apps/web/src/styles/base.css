@@ -1,0 +1,103 @@
+
+/* --- §3 reset & base ------------------------------------------------------ */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: var(--fs-body) / 1.5 var(--font-ui);
+  display: flex;
+  flex-direction: column;
+}
+
+::selection {
+  background: var(--hl-wash);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border-radius: var(--r);
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--well);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 2px solid var(--well);
+}
+
+main {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.empty {
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  padding: 24px 4px;
+}
+
+/* --- §4 bezel primitives ---------------------------------------------------
+   Interactive = bezel, structural = hairline. Raised buttons press in on
+   :active — that translate(1px,1px) is the tactile click. */
+
+#reader-back,
+#reader-meta,
+#viewer-read,
+#viewer-close,
+#search-prev,
+#search-next,
+.bmenu {
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+#reader-back:active,
+#reader-meta:active,
+#viewer-read:active,
+#viewer-close:active,
+#search-prev:active,
+#search-next:active,
+.bmenu:active {
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  transform: translate(1px, 1px);
+}
+
+#q,
+.book-menu input[type="text"],
+#reader-drawer input[type="text"],
+.brename {
+  border: 1px solid;
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  background: var(--well);
+  color: var(--ink);
+  border-radius: var(--r);
+}

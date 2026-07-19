@@ -36,20 +36,38 @@ fn main() -> Result<()> {
 fn regress() -> Result<()> {
     let mut failed = 0;
     let mut check = |name: &str, ok: bool, detail: String| {
-        println!("{} {name}{}", if ok { "PASS" } else { "FAIL" }, if ok { String::new() } else { format!(" — {detail}") });
+        println!(
+            "{} {name}{}",
+            if ok { "PASS" } else { "FAIL" },
+            if ok {
+                String::new()
+            } else {
+                format!(" — {detail}")
+            }
+        );
         if !ok {
             failed += 1;
         }
     };
 
     let search = |q: &str| -> Result<Value> {
-        Ok(ureq::get(&format!("{BASE}/api/search?q={}", urlenc(q))).call()?.into_json()?)
+        Ok(ureq::get(&format!("{BASE}/api/search?q={}", urlenc(q)))
+            .call()?
+            .into_json()?)
     };
 
     // known-item: strong confidence, page text rides along
     let r = search("geodesic dome")?;
-    check("known-item is strong", r["confidence"] == "strong", r["confidence"].to_string());
-    check("strong carries top_hit_page", r["top_hit_page"]["text"].is_string(), "missing".into());
+    check(
+        "known-item is strong",
+        r["confidence"] == "strong",
+        r["confidence"].to_string(),
+    );
+    check(
+        "strong carries top_hit_page",
+        r["top_hit_page"]["text"].is_string(),
+        "missing".into(),
+    );
 
     // prefix expansion must stay off for agent queries (the historical
     // junk mode: trailing-token expansion turned "micro" into "microscope")
@@ -59,20 +77,40 @@ fn regress() -> Result<()> {
         "no prefix junk (micro != microscope)",
         r["confidence"] == "strong"
             && r["hits"].as_array().is_some_and(|h| {
-                !h.iter().any(|x| x["snippet"].as_str().is_some_and(|s| microscope.is_match(s)))
+                !h.iter().any(|x| {
+                    x["snippet"]
+                        .as_str()
+                        .is_some_and(|s| microscope.is_match(s))
+                })
             }),
         format!("confidence {} hits {}", r["confidence"], r["hits"]),
     );
 
     // off-intent partial matches must not read as covered
     let r = search("quantum entanglement")?;
-    check("partial match is not strong", r["confidence"] != "strong", r["confidence"].to_string());
-    check("weak carries a warning note", r["note"].is_string(), "missing".into());
+    check(
+        "partial match is not strong",
+        r["confidence"] != "strong",
+        r["confidence"].to_string(),
+    );
+    check(
+        "weak carries a warning note",
+        r["note"].is_string(),
+        "missing".into(),
+    );
 
     // true miss: none, no page text
     let r = search("cryptocurrency blockchain")?;
-    check("miss is none", r["confidence"] == "none", r["confidence"].to_string());
-    check("none carries no page text", r["top_hit_page"].is_null(), "present".into());
+    check(
+        "miss is none",
+        r["confidence"] == "none",
+        r["confidence"].to_string(),
+    );
+    check(
+        "none carries no page text",
+        r["top_hit_page"].is_null(),
+        "present".into(),
+    );
 
     // blank scan pages are loud errors, never empty content
     let r: Value = ureq::get(&format!("{BASE}/api/text/journal-1891?from=4&to=4"))
@@ -107,7 +145,9 @@ fn regress() -> Result<()> {
     check(
         "every hit has a non-id title",
         hits.iter().all(|h| {
-            h["title"].as_str().is_some_and(|t| !t.is_empty() && !t.contains("00vol"))
+            h["title"]
+                .as_str()
+                .is_some_and(|t| !t.is_empty() && !t.contains("00vol"))
         }),
         r["hits"].to_string(),
     );
@@ -118,9 +158,13 @@ fn regress() -> Result<()> {
     );
 
     // collection scoping: exact, fuzzy, unknown-is-loud — and images too
-    let cols: Value = ureq::get(&format!("{BASE}/api/collections")).call()?.into_json()?;
+    let cols: Value = ureq::get(&format!("{BASE}/api/collections"))
+        .call()?
+        .into_json()?;
     let in_col = |col: &str, doc: &str| {
-        cols[col].as_array().is_some_and(|d| d.iter().any(|v| v == doc))
+        cols[col]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|v| v == doc))
     };
     let scoped: Value = ureq::get(&format!("{BASE}/api/search?q=risotto&col=recipes"))
         .call()?
@@ -128,7 +172,9 @@ fn regress() -> Result<()> {
     check(
         "col=recipes only returns recipes",
         scoped["hits"].as_array().is_some_and(|h| {
-            !h.is_empty() && h.iter().all(|x| in_col("recipes", x["doc"].as_str().unwrap_or("?")))
+            !h.is_empty()
+                && h.iter()
+                    .all(|x| in_col("recipes", x["doc"].as_str().unwrap_or("?")))
         }),
         scoped["hits"].to_string(),
     );
@@ -138,7 +184,9 @@ fn regress() -> Result<()> {
     check(
         "fuzzy col resolves (Field Guides -> field-guides)",
         fuzzy["hits"].as_array().is_some_and(|h| {
-            !h.is_empty() && h.iter().all(|x| in_col("field-guides", x["doc"].as_str().unwrap_or("?")))
+            !h.is_empty()
+                && h.iter()
+                    .all(|x| in_col("field-guides", x["doc"].as_str().unwrap_or("?")))
         }),
         fuzzy["hits"].to_string(),
     );
@@ -150,13 +198,16 @@ fn regress() -> Result<()> {
         bogus["error"].is_string() && bogus["collections"].is_array(),
         bogus.to_string(),
     );
-    let img: Value = ureq::get(&format!("{BASE}/api/search?q=dome&kind=images&col=field-guides"))
-        .call()?
-        .into_json()?;
+    let img: Value = ureq::get(&format!(
+        "{BASE}/api/search?q=dome&kind=images&col=field-guides"
+    ))
+    .call()?
+    .into_json()?;
     check(
         "image search honors col",
         img["hits"].as_array().is_some_and(|h| {
-            h.iter().all(|x| in_col("field-guides", x["doc"].as_str().unwrap_or("?")))
+            h.iter()
+                .all(|x| in_col("field-guides", x["doc"].as_str().unwrap_or("?")))
         }),
         img["hits"].to_string(),
     );
@@ -168,7 +219,11 @@ fn regress() -> Result<()> {
     let s2: Value = ureq::get(&format!("{BASE}/api/sample?col=field-guides&seed=42"))
         .call()?
         .into_json()?;
-    check("sample is seed-deterministic", s == s2, format!("{s} vs {s2}"));
+    check(
+        "sample is seed-deterministic",
+        s == s2,
+        format!("{s} vs {s2}"),
+    );
     check(
         "sample doc is in the collection",
         s["doc"].as_str().is_some_and(|d| in_col("field-guides", d)),
@@ -181,8 +236,14 @@ fn regress() -> Result<()> {
             && s["page"].as_u64() <= s["total_pages"].as_u64(),
         s.to_string(),
     );
-    let sb: Value = ureq::get(&format!("{BASE}/api/sample?col=bogus")).call()?.into_json()?;
-    check("sample unknown col errors", sb["error"].is_string(), sb.to_string());
+    let sb: Value = ureq::get(&format!("{BASE}/api/sample?col=bogus"))
+        .call()?
+        .into_json()?;
+    check(
+        "sample unknown col errors",
+        sb["error"].is_string(),
+        sb.to_string(),
+    );
 
     // quality gate: on the known-garbled shelf, sampled text is served as
     // legible excerpts — never silently garbled (the exact failure from
@@ -209,10 +270,11 @@ fn regress() -> Result<()> {
         s["doc"].as_str().unwrap_or("?"),
         s["page"].as_u64().unwrap_or(0)
     );
-    let moved: Value =
-        ureq::get(&format!("{BASE}/api/sample?col=field-guides&seed=42&avoid={served}"))
-            .call()?
-            .into_json()?;
+    let moved: Value = ureq::get(&format!(
+        "{BASE}/api/sample?col=field-guides&seed=42&avoid={served}"
+    ))
+    .call()?
+    .into_json()?;
     check(
         "avoid excludes the served page",
         moved["error"].is_null()
@@ -226,9 +288,12 @@ fn regress() -> Result<()> {
 
     // copy dedup: the multiple catalog copies must not crowd the hit list —
     // never the same (base, page) twice, at most 2 hits per copy family
-    let r: Value = ureq::get(&format!("{BASE}/api/search?q={}&col=field-guides", urlenc("access to tools")))
-        .call()?
-        .into_json()?;
+    let r: Value = ureq::get(&format!(
+        "{BASE}/api/search?q={}&col=field-guides",
+        urlenc("access to tools")
+    ))
+    .call()?
+    .into_json()?;
     let base = |d: &str| -> String {
         match d.rfind('-') {
             Some(i) if d[i + 1..].chars().all(|c| c.is_ascii_digit()) && !d[i + 1..].is_empty() => {
@@ -242,7 +307,12 @@ fn regress() -> Result<()> {
         .cloned()
         .unwrap_or_default()
         .iter()
-        .map(|h| (base(h["doc"].as_str().unwrap_or("?")), h["page"].as_u64().unwrap_or(0)))
+        .map(|h| {
+            (
+                base(h["doc"].as_str().unwrap_or("?")),
+                h["page"].as_u64().unwrap_or(0),
+            )
+        })
         .collect();
     let mut counts = std::collections::BTreeMap::new();
     for (b, _) in &hit_keys {
@@ -253,20 +323,22 @@ fn regress() -> Result<()> {
     pairs.dedup();
     check(
         "search dedups copy variants",
-        !hit_keys.is_empty()
-            && pairs.len() == hit_keys.len()
-            && counts.values().all(|&n| n <= 2),
+        !hit_keys.is_empty() && pairs.len() == hit_keys.len() && counts.values().all(|&n| n <= 2),
         r["hits"].to_string(),
     );
 
     // whitespace: no raw newlines in any model-facing page text (the 3B
     // model parrots them back as literal \n escapes)
     let dome = search("geodesic dome")?;
-    let journal: Value =
-        ureq::get(&format!("{BASE}/api/text/journal-1891?from=3&to=3")).call()?.into_json()?;
+    let journal: Value = ureq::get(&format!("{BASE}/api/text/journal-1891?from=3&to=3"))
+        .call()?
+        .into_json()?;
     check(
         "model-facing text carries no raw newlines",
-        !dome["top_hit_page"]["text"].as_str().unwrap_or("").contains('\n')
+        !dome["top_hit_page"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains('\n')
             && !s["text"].as_str().unwrap_or("").contains('\n')
             && !journal["text"].as_str().unwrap_or("").contains('\n'),
         "newline found in top_hit_page/sample/read_pages text".into(),
@@ -295,8 +367,12 @@ fn chat_turn(conv: &str, messages: &Value) -> Result<(usize, usize, String)> {
     let (mut tools, mut done, mut errors) = (0, None::<Value>, 0);
     for line in reader.lines() {
         let line = line?;
-        let Some(data) = line.strip_prefix("data:") else { continue };
-        let Ok(ev) = serde_json::from_str::<Value>(data.trim()) else { continue };
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(ev) = serde_json::from_str::<Value>(data.trim()) else {
+            continue;
+        };
         match ev["e"].as_str() {
             Some("tool") => tools += 1,
             Some("error") => errors += 1,
@@ -304,7 +380,11 @@ fn chat_turn(conv: &str, messages: &Value) -> Result<(usize, usize, String)> {
             _ => {}
         }
     }
-    let content = done.as_ref().and_then(|d| d["content"].as_str()).unwrap_or("").to_owned();
+    let content = done
+        .as_ref()
+        .and_then(|d| d["content"].as_str())
+        .unwrap_or("")
+        .to_owned();
     Ok((tools, errors, content))
 }
 
@@ -436,7 +516,11 @@ fn retrieval(out: Option<&str>) -> Result<()> {
             .collect();
         println!(
             "| {q} | {note} | {} |",
-            if cells.is_empty() { "(none)".into() } else { cells.join(" · ") }
+            if cells.is_empty() {
+                "(none)".into()
+            } else {
+                cells.join(" · ")
+            }
         );
         dump.push(json!({ "query": q, "kind": kind, "note": note, "response": resp }));
     }
@@ -534,7 +618,11 @@ fn probe(filter: Option<&str>) -> Result<()> {
             "| {id} | {} | {} | {} | {head} |",
             if ok { "yes" } else { "NO" },
             result["ms"],
-            if tools.is_empty() { "-".into() } else { tools.join(",") },
+            if tools.is_empty() {
+                "-".into()
+            } else {
+                tools.join(",")
+            },
         );
         for (what, pass) in &expects {
             if !pass {
@@ -567,10 +655,15 @@ fn check_expects(fx: &Value, result: &Value) -> Vec<(String, bool)> {
         return Vec::new();
     };
     let content = result["content"].as_str().unwrap_or("");
-    let calls: Vec<&Value> =
-        result["tool_calls"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    let calls: Vec<&Value> = result["tool_calls"]
+        .as_array()
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
     let norm = |s: &str| {
-        s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
     };
     expects
         .iter()
@@ -578,12 +671,12 @@ fn check_expects(fx: &Value, result: &Value) -> Vec<(String, bool)> {
             let kind = ex["kind"].as_str().unwrap_or("");
             let val = &ex["value"];
             let pass = match kind {
-                "tools_include" => {
-                    calls.iter().any(|c| c["name"] == *val)
-                }
+                "tools_include" => calls.iter().any(|c| c["name"] == *val),
                 "tools_order" => {
-                    let want: Vec<&str> =
-                        val.as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
+                    let want: Vec<&str> = val
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                        .unwrap_or_default();
                     let pos = |name: &str| calls.iter().position(|c| c["name"] == name);
                     want.windows(2).all(|w| match (pos(w[0]), pos(w[1])) {
                         (Some(a), Some(b)) => a < b,
@@ -603,15 +696,15 @@ fn check_expects(fx: &Value, result: &Value) -> Vec<(String, bool)> {
                     })
                 }
                 "content_regex" | "content_not_regex" => {
-                    let re = regex::Regex::new(val.as_str().unwrap_or("$^"))
-                        .expect("bad expect regex");
+                    let re =
+                        regex::Regex::new(val.as_str().unwrap_or("$^")).expect("bad expect regex");
                     re.is_match(content) == (kind == "content_regex")
                 }
                 // multi-turn fixtures: the check must hold on EVERY turn,
                 // not just the last (probe emits a `contents` array)
                 "all_content_not_regex" => {
-                    let re = regex::Regex::new(val.as_str().unwrap_or("$^"))
-                        .expect("bad expect regex");
+                    let re =
+                        regex::Regex::new(val.as_str().unwrap_or("$^")).expect("bad expect regex");
                     result["contents"]
                         .as_array()
                         .map(|a| a.iter().all(|c| !re.is_match(c.as_str().unwrap_or(""))))
@@ -648,7 +741,10 @@ fn resolve_context(fx: &mut Value) -> Result<()> {
             resp["text"].as_str().unwrap_or("(missing)")
         ));
     }
-    let prompt = fx["prompt"].as_str().unwrap_or("").replace("{CONTEXT}", &ctx);
+    let prompt = fx["prompt"]
+        .as_str()
+        .unwrap_or("")
+        .replace("{CONTEXT}", &ctx);
     fx["prompt"] = Value::String(prompt);
     fx.as_object_mut().unwrap().remove("context");
     Ok(())

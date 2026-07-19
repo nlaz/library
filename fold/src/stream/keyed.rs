@@ -16,7 +16,7 @@ thread_local! {
 /// Serialize `value` into `buf`, reusing its capacity.
 fn enc<T: Serialize + ?Sized>(buf: &mut Vec<u8>, value: &T) {
     buf.clear();
-    postcard::to_io(value, &mut *buf).unwrap();
+    postcard::to_io(value, &mut *buf).expect("postcard encode of keyed-stream record failed");
 }
 
 /// A [`Stream`] fronted by a primary-key table: each key holds at most one
@@ -67,7 +67,7 @@ where
     /// Open (or create) the store at `path` and initialize the pipeline;
     /// see [`Stream::new`].
     pub fn new(path: impl AsRef<Path>, pipeline: P) -> Self {
-        Self::try_new(path, pipeline).unwrap()
+        Self::try_new(path, pipeline).expect("failed to open store (use try_new to handle errors)")
     }
 
     /// Fallible [`new`](KeyedStream::new); see [`Stream::try_new`].
@@ -116,8 +116,11 @@ where
                 .store()
                 .read_tx()
                 .get(&self.table, &*buf)
-                .unwrap()
-                .map(|v| postcard::from_bytes(&v).unwrap())
+                .expect("keyed-root table read failed")
+                .map(|v| {
+                    postcard::from_bytes(&v)
+                        .expect("corrupt keyed-root record: postcard decode failed")
+                })
         })
     }
 
@@ -130,7 +133,7 @@ where
                 .store()
                 .read_tx()
                 .contains_key(&self.table, &*buf)
-                .unwrap()
+                .expect("keyed-root table read failed")
         })
     }
 
@@ -157,10 +160,9 @@ where
 {
     /// Look up whatever key is currently encoded in `key_buf`.
     fn get_raw(&mut self) -> Option<D> {
-        self.tx
-            .tx
-            .get(&self.table, &*self.key_buf)
-            .map(|v| postcard::from_bytes(&v).unwrap())
+        self.tx.tx.get(&self.table, &*self.key_buf).map(|v| {
+            postcard::from_bytes(&v).expect("corrupt keyed-root record: postcard decode failed")
+        })
     }
 
     /// Insert or replace the record under `key`, returning the record it
@@ -177,7 +179,8 @@ where
                 return Some(data.clone()); // unchanged: no graph churn
             }
             Some(v) => {
-                let old: D = postcard::from_bytes(&v).unwrap();
+                let old: D = postcard::from_bytes(&v)
+                    .expect("corrupt keyed-root record: postcard decode failed");
                 self.tx.push(&Keyed::new(key.clone(), old.clone()), -1);
                 Some(old)
             }

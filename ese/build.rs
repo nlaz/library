@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)] // build-time code fails loudly by design
 use std::{
     collections::HashSet,
     env,

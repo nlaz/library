@@ -1,0 +1,6 @@
+# Pins the toolchain for rustup users and CI (dtolnay/rust-toolchain reads
+# this via rustup). Harmless for non-rustup toolchains. Edition 2024 needs
+# >= 1.85; bump freely with a `workspace:` commit when CI is green on it.
+[toolchain]
+channel = "1.96.1"
+components = ["rustfmt", "clippy"]

@@ -53,10 +53,77 @@ fn test_fuzz() {
     // Also fuzz with valid unicode strings built from char ranges
     for cp in (0u32..0x10000).step_by(37) {
         if let Some(ch) = char::from_u32(cp) {
-            let s: String = std::iter::repeat(ch).take(5).collect();
+            let s: String = std::iter::repeat_n(ch, 5).collect();
             let _ = crate::encode_single(&s);
         }
     }
+}
+
+#[test]
+fn wordpiece_garbage_token_maps_to_unk() {
+    // A pre-token longer than MAX_WORD_LEN is treated as UNK unconditionally
+    // by wordpiece_accumulate, regardless of what's actually in the baked
+    // vocab -- this is the deterministic way to force the UNK path without
+    // depending on which garbage strings happen to be absent from the vocab.
+    let garbage: String = "x".repeat(crate::lookup::MAX_WORD_LEN + 1);
+
+    let mut vector = [0.0f32; crate::DIMENSIONS];
+    let mut token_count = 0u32;
+    let mut wp_buf = String::new();
+    crate::wordpiece::wordpiece_accumulate(&garbage, &mut vector, &mut token_count, &mut wp_buf);
+
+    assert_eq!(
+        token_count, 1,
+        "over-long token should count as exactly one (UNK) piece"
+    );
+
+    let mut expected = [0.0f32; crate::DIMENSIONS];
+    crate::wordpiece::accumulate(&mut expected, &crate::lookup::UNK);
+    assert_eq!(
+        vector, expected,
+        "over-long token should accumulate the UNK embedding"
+    );
+}
+
+#[test]
+fn wordpiece_known_word_tokenizes_to_expected_piece_count() {
+    // "the" is a whole-word entry in any BERT-style wordpiece vocab (this
+    // model's tokenizer.json is a standard uncased wordpiece vocab), so it
+    // must resolve as a single piece rather than falling back to subwords/UNK.
+    let the_embedding = crate::lookup::lookup("the").expect("\"the\" missing from baked vocab");
+
+    let mut vector = [0.0f32; crate::DIMENSIONS];
+    let mut token_count = 0u32;
+    let mut wp_buf = String::new();
+    crate::wordpiece::wordpiece_accumulate("the", &mut vector, &mut token_count, &mut wp_buf);
+
+    assert_eq!(
+        token_count, 1,
+        "\"the\" should tokenize to a single wordpiece"
+    );
+
+    let mut expected = [0.0f32; crate::DIMENSIONS];
+    crate::wordpiece::accumulate(&mut expected, the_embedding);
+    assert_eq!(vector, expected);
+}
+
+#[test]
+fn lookup_known_term_resolves() {
+    assert!(
+        crate::lookup::lookup("the").is_some(),
+        "\"the\" should resolve"
+    );
+    assert!(
+        crate::lookup::lookup("hello").is_some(),
+        "\"hello\" should resolve"
+    );
+
+    // Collision-bucket handling (which bucket/seed a key hashes into, probing
+    // on a forced collision, etc.) isn't practically testable here: `lookup`
+    // only exposes a black-box `&str -> Option<&Param>` API, and the bucket
+    // assignment/seeds/slots are generated at build time from the live vocab
+    // (ese/build.rs) with no test hook to introspect or force a collision.
+    // Skipping rather than reaching into build-generated internals.
 }
 
 #[cfg(feature = "tests")]

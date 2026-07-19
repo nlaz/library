@@ -22,7 +22,11 @@ fn be_gentle() {
     // not in the libc crate: <sys/resource.h> IOPOL_TYPE_DISK=0,
     // IOPOL_SCOPE_PROCESS=0, IOPOL_THROTTLE=3
     unsafe extern "C" {
-        fn setiopolicy_np(iotype: libc::c_int, scope: libc::c_int, policy: libc::c_int) -> libc::c_int;
+        fn setiopolicy_np(
+            iotype: libc::c_int,
+            scope: libc::c_int,
+            policy: libc::c_int,
+        ) -> libc::c_int;
     }
     unsafe {
         libc::setpriority(libc::PRIO_PROCESS, 0, 15);
@@ -125,9 +129,10 @@ enum Cli {
         hot: bool,
     },
     /// Run the model-backed OCR cleanup for an already-ingested doc:
-    /// tools/clean-pages proposes edits (cached in data/edits/<doc>), gated
-    /// + applied to data/clean/<doc>. `ingest` runs this automatically.
-    /// Re-run `ingest` (or `text`) afterwards to pick up the cleaned pages.
+    /// tools/clean-pages proposes edits (cached in data/edits/<doc>),
+    /// gated + applied to data/clean/<doc>. `ingest` runs this
+    /// automatically. Re-run `ingest` (or `text`) afterwards to pick up
+    /// the cleaned pages.
     Clean {
         doc: String,
         #[arg(long, default_value = "data")]
@@ -208,7 +213,12 @@ enum Cli {
 }
 
 fn ctx(data: &Path, width: u32) -> IngestCtx {
-    IngestCtx { data: data.to_path_buf(), width, clean: false, text_layer: true }
+    IngestCtx {
+        data: data.to_path_buf(),
+        width,
+        clean: false,
+        text_layer: true,
+    }
 }
 
 /// Render pipeline progress the way the old monolithic CLI did.
@@ -244,13 +254,38 @@ fn print_progress(p: Progress) {
 
 fn main() -> Result<()> {
     match Cli::parse() {
-        Cli::Ingest { pdf, data, limit, width, name, collection, hot, clean, text_only, no_text_layer } => {
+        Cli::Ingest {
+            pdf,
+            data,
+            limit,
+            width,
+            name,
+            collection,
+            hot,
+            clean,
+            text_only,
+            no_text_layer,
+        } => {
             if !hot {
                 be_gentle();
             }
-            ingest(&pdf, &data, limit, width, name, collection, clean, text_only, no_text_layer)
+            ingest(
+                &pdf,
+                &data,
+                limit,
+                width,
+                name,
+                collection,
+                clean,
+                text_only,
+                no_text_layer,
+            )
         }
-        Cli::Collect { collection, doc, data } => {
+        Cli::Collect {
+            collection,
+            doc,
+            data,
+        } => {
             collect(&data, &collection, &doc)?;
             println!("collection '{collection}' += '{doc}'");
             Ok(())
@@ -262,7 +297,12 @@ fn main() -> Result<()> {
             reindex(&doc, &data)
         }
         Cli::Audit { data, col, worst } => audit(&data, col.as_deref(), worst),
-        Cli::ReOcr { doc, data, width, hot } => {
+        Cli::ReOcr {
+            doc,
+            data,
+            width,
+            hot,
+        } => {
             if !hot {
                 be_gentle();
             }
@@ -274,14 +314,20 @@ fn main() -> Result<()> {
             }
             ingest_images(&doc, &data)
         }
-        Cli::Clean { doc, data, apply_only } => {
+        Cli::Clean {
+            doc,
+            data,
+            apply_only,
+        } => {
             let (changed, _) = if apply_only {
                 library_ingest::clean::apply_edits(&data, &doc, &mut print_progress)?
             } else {
                 library_ingest::clean::clean_doc(&data, &doc, &mut print_progress)?
             };
             if changed > 0 {
-                println!("re-run `ingest` on '{doc}' (or `text {doc}`) to pick up the cleaned pages");
+                println!(
+                    "re-run `ingest` on '{doc}' (or `text {doc}`) to pick up the cleaned pages"
+                );
             }
             Ok(())
         }
@@ -293,7 +339,10 @@ fn main() -> Result<()> {
                         .context("no data/ocr directory")?
                         .filter_map(|e| {
                             let e = e.ok()?;
-                            e.file_type().ok()?.is_dir().then(|| e.file_name().to_string_lossy().into_owned())
+                            e.file_type()
+                                .ok()?
+                                .is_dir()
+                                .then(|| e.file_name().to_string_lossy().into_owned())
                         })
                         .collect();
                     docs.sort();
@@ -330,17 +379,17 @@ fn main() -> Result<()> {
             // doc-id match keeps resolving a doc that no longer exists
             for dir in ["pages", "ocr", "clean", "edits"] {
                 let p = data.join(dir).join(&doc);
-                if let Err(e) = std::fs::remove_dir_all(&p) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        anyhow::bail!("removing {}: {e}", p.display());
-                    }
+                if let Err(e) = std::fs::remove_dir_all(&p)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    anyhow::bail!("removing {}: {e}", p.display());
                 }
             }
             let md = data.join("text").join(format!("{doc}.md"));
-            if let Err(e) = std::fs::remove_file(&md) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    anyhow::bail!("removing {}: {e}", md.display());
-                }
+            if let Err(e) = std::fs::remove_file(&md)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                anyhow::bail!("removing {}: {e}", md.display());
             }
             worker::clear_staged(&data, &doc);
             status::write(&data, &doc, &DocStatus::new(DocState::Deleted))?;
@@ -354,7 +403,10 @@ fn main() -> Result<()> {
             if titles.remove(&doc).is_some() {
                 std::fs::write(&titles_path, serde_json::to_vec_pretty(&titles)?)?;
             }
-            println!("deleted {doc} in {:?} (source PDF kept in data/pdfs)", t.elapsed());
+            println!(
+                "deleted {doc} in {:?} (source PDF kept in data/pdfs)",
+                t.elapsed()
+            );
             Ok(())
         }
         Cli::Checkpoint { data } => {
@@ -382,11 +434,24 @@ fn main() -> Result<()> {
             let path = library_ingest::agent::install(&bin, &data)?;
             println!("agent loaded: {}", path.display());
             println!("logs: {}/logs/ingest.log", data.display());
-            println!("disable with: launchctl bootout gui/$UID/{}", library_ingest::agent::LABEL);
+            println!(
+                "disable with: launchctl bootout gui/$UID/{}",
+                library_ingest::agent::LABEL
+            );
             Ok(())
         }
-        Cli::LayoutDebug { doc, pages, data, out } => layout_debug(&doc, &pages, &data, &out),
-        Cli::Search { query, data, k, lex_only } => search(&query, &data, k, lex_only),
+        Cli::LayoutDebug {
+            doc,
+            pages,
+            data,
+            out,
+        } => layout_debug(&doc, &pages, &data, &out),
+        Cli::Search {
+            query,
+            data,
+            k,
+            lex_only,
+        } => search(&query, &data, k, lex_only),
     }
 }
 
@@ -411,7 +476,9 @@ fn worker(data: &Path) -> Result<()> {
     }
     pend = worker::pending(data);
 
-    let mut committer = ProcessCommitter { data: data.to_path_buf() };
+    let mut committer = ProcessCommitter {
+        data: data.to_path_buf(),
+    };
     for doc in pend {
         println!("→ {doc}");
         match worker::process_doc(&ctx(data, 1600), &doc, &mut committer, &mut print_progress) {
@@ -428,6 +495,9 @@ fn worker(data: &Path) -> Result<()> {
     Ok(())
 }
 
+// CLI plumbing: one arg per `Ingest` flag; a params struct would just mirror
+// the clap variant field-for-field (audited under the lint uplift).
+#[expect(clippy::too_many_arguments)]
 fn ingest(
     pdf: &Path,
     data: &Path,
@@ -494,8 +564,12 @@ fn audit_doc(data: &Path, doc: &str) -> Result<DocAudit> {
     let mut scores: Vec<(u32, f32)> = Vec::new();
     let mut noisy_pages = 0usize;
     for p in &pages {
-        let text: String =
-            p.words.iter().map(|w| w.t.as_str()).collect::<Vec<_>>().join(" ");
+        let text: String = p
+            .words
+            .iter()
+            .map(|w| w.t.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         if text.len() < library_core::tools::BLANK_CHARS {
             continue;
         }
@@ -505,14 +579,28 @@ fn audit_doc(data: &Path, doc: &str) -> Result<DocAudit> {
         }
     }
     if scores.is_empty() {
-        return Ok(DocAudit { mean: 0.0, median: 0.0, noisy: 0.0, scored: 0, total, worst: vec![] });
+        return Ok(DocAudit {
+            mean: 0.0,
+            median: 0.0,
+            noisy: 0.0,
+            scored: 0,
+            total,
+            worst: vec![],
+        });
     }
     let mean = scores.iter().map(|(_, s)| s).sum::<f32>() / scores.len() as f32;
     let mut by_score = scores.clone();
     by_score.sort_by(|a, b| a.1.total_cmp(&b.1));
     let median = by_score[by_score.len() / 2].1;
     let noisy = noisy_pages as f32 / scores.len() as f32;
-    Ok(DocAudit { mean, median, noisy, scored: scores.len(), total, worst: by_score })
+    Ok(DocAudit {
+        mean,
+        median,
+        noisy,
+        scored: scores.len(),
+        total,
+        worst: by_score,
+    })
 }
 
 fn audit(data: &Path, col: Option<&str>, worst: usize) -> Result<()> {
@@ -524,7 +612,10 @@ fn audit(data: &Path, col: Option<&str>, worst: usize) -> Result<()> {
         .context("no data/ocr directory")?
         .filter_map(|e| {
             let e = e.ok()?;
-            e.file_type().ok()?.is_dir().then(|| e.file_name().to_string_lossy().into_owned())
+            e.file_type()
+                .ok()?
+                .is_dir()
+                .then(|| e.file_name().to_string_lossy().into_owned())
         })
         .collect();
     if let Some(m) = &member {
@@ -540,11 +631,22 @@ fn audit(data: &Path, col: Option<&str>, worst: usize) -> Result<()> {
         }
     }
     // worst first = most unquotable pages first (see DocAudit::noisy)
-    rows.sort_by(|a, b| b.1.noisy.total_cmp(&a.1.noisy).then(a.1.mean.total_cmp(&b.1.mean)));
-    println!("{:>6}  {:>5}  {:>6}  {:>6}/{:<6}  worst pages", "noisy%", "mean", "median", "scored", "pages");
+    rows.sort_by(|a, b| {
+        b.1.noisy
+            .total_cmp(&a.1.noisy)
+            .then(a.1.mean.total_cmp(&b.1.mean))
+    });
+    println!(
+        "{:>6}  {:>5}  {:>6}  {:>6}/{:<6}  worst pages",
+        "noisy%", "mean", "median", "scored", "pages"
+    );
     for (doc, a) in &rows {
-        let worst_pages: Vec<String> =
-            a.worst.iter().take(worst).map(|(p, s)| format!("p.{p}={s:.2}")).collect();
+        let worst_pages: Vec<String> = a
+            .worst
+            .iter()
+            .take(worst)
+            .map(|(p, s)| format!("p.{p}={s:.2}"))
+            .collect();
         println!(
             "{:>6.1}  {:>5.2}  {:>6.2}  {:>6}/{:<6}  {doc}  {}",
             a.noisy * 100.0,
@@ -636,25 +738,43 @@ fn ingest_images(doc: &str, data: &Path) -> Result<()> {
 /// Run the layout model on chosen pages, print detections, and write
 /// annotated JPEGs so thresholds/classes can be tuned by eye.
 fn layout_debug(doc: &str, pages: &str, data: &Path, out: &Path) -> Result<()> {
-    let model = layout::LayoutModel::load(data)?
-        .context(format!("no layout model at {}", layout::LayoutModel::model_path(data).display()))?;
+    let model = layout::LayoutModel::load(data)?.context(format!(
+        "no layout model at {}",
+        layout::LayoutModel::model_path(data).display()
+    ))?;
     std::fs::create_dir_all(out)?;
 
     for spec in pages.split(',') {
-        let page: u32 = spec.trim().parse().context(format!("bad page number '{spec}'"))?;
-        let jpg = data.join("pages").join(doc).join(format!("page-{page:04}.jpg"));
+        let page: u32 = spec
+            .trim()
+            .parse()
+            .context(format!("bad page number '{spec}'"))?;
+        let jpg = data
+            .join("pages")
+            .join(doc)
+            .join(format!("page-{page:04}.jpg"));
         let img = image::open(&jpg).context(format!("cannot open {}", jpg.display()))?;
 
         let t = Instant::now();
         let dets = model.detect(&img)?;
-        println!("\n{doc} p.{page} — {} detections in {:?}", dets.len(), t.elapsed());
+        println!(
+            "\n{doc} p.{page} — {} detections in {:?}",
+            dets.len(),
+            t.elapsed()
+        );
 
         // subdivision preview for each figure (needs &img before into_rgb8)
-        let luma = img.thumbnail(library_ingest::PAGE_LUMA_PX, library_ingest::PAGE_LUMA_PX).into_luma8();
+        let luma = img
+            .thumbnail(library_ingest::PAGE_LUMA_PX, library_ingest::PAGE_LUMA_PX)
+            .into_luma8();
         let mut parts: Vec<library_core::Bbox> = Vec::new();
         for d in &dets {
             if d.class.is_figure() && d.bbox[2] * d.bbox[3] >= layout::AREA_MIN {
-                parts.extend(subdivide::subdivide(&luma, (img.width(), img.height()), d.bbox));
+                parts.extend(subdivide::subdivide(
+                    &luma,
+                    (img.width(), img.height()),
+                    d.bbox,
+                ));
             }
         }
 
@@ -665,7 +785,10 @@ fn layout_debug(doc: &str, pages: &str, data: &Path, out: &Path) -> Result<()> {
                 "  {:<14} {:.2}  [{:.3} {:.3} {:.3} {:.3}]{}",
                 d.class.name(),
                 d.score,
-                d.bbox[0], d.bbox[1], d.bbox[2], d.bbox[3],
+                d.bbox[0],
+                d.bbox[1],
+                d.bbox[2],
+                d.bbox[3],
                 if figure { "  <- figure" } else { "" },
             );
             let color = match d.class {
@@ -678,7 +801,10 @@ fn layout_debug(doc: &str, pages: &str, data: &Path, out: &Path) -> Result<()> {
             draw_rect(&mut canvas, d.bbox, color, if figure { 4 } else { 2 });
         }
         for p in &parts {
-            println!("  part            --  [{:.3} {:.3} {:.3} {:.3}]", p[0], p[1], p[2], p[3]);
+            println!(
+                "  part            --  [{:.3} {:.3} {:.3} {:.3}]",
+                p[0], p[1], p[2], p[3]
+            );
             draw_rect(&mut canvas, *p, [40, 200, 220], 2);
         }
         let path = out.join(format!("{doc}-p{page:04}.jpg"));
@@ -722,9 +848,18 @@ fn search(query: &str, data: &Path, k: usize, lex_only: bool) -> Result<()> {
 
     let t = Instant::now();
     let hits = st.rtx(|r| {
-        library_core::search(&r, query, qemb.as_ref(), k, None, true, false, false, |key| {
-            st.get(key)
-        }, None)
+        library_core::search(
+            &r,
+            query,
+            qemb.as_ref(),
+            k,
+            None,
+            true,
+            false,
+            false,
+            |key| st.get(key),
+            None,
+        )
     });
     let dur = t.elapsed();
 
@@ -748,7 +883,8 @@ fn search(query: &str, data: &Path, k: usize, lex_only: bool) -> Result<()> {
 fn snippet(words: &[Word], qtoks: &[String]) -> String {
     let is_match = |w: &Word| {
         let t = tokenize(&w.t);
-        t.iter().any(|t| qtoks.iter().any(|q| t.starts_with(q.as_str())))
+        t.iter()
+            .any(|t| qtoks.iter().any(|q| t.starts_with(q.as_str())))
     };
     let center = words.iter().position(is_match).unwrap_or(0);
     let lo = center.saturating_sub(10);

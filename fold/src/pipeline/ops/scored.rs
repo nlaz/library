@@ -40,6 +40,7 @@ macro_rules! impl_score_uint {
             #[inline]
             fn decode(bytes: &[u8]) -> (Self, &[u8]) {
                 let (head, rest) = bytes.split_at(size_of::<$t>());
+                // invariant: split_at yielded exactly size_of::<$t>() bytes
                 (<$t>::from_be_bytes(head.try_into().unwrap()), rest)
             }
         }
@@ -59,6 +60,7 @@ macro_rules! impl_score_int {
             #[inline]
             fn decode(bytes: &[u8]) -> (Self, &[u8]) {
                 let (head, rest) = bytes.split_at(size_of::<$t>());
+                // invariant: split_at yielded exactly size_of::<$t>() bytes
                 (<$t>::from_be_bytes(head.try_into().unwrap()) ^ <$t>::MIN, rest)
             }
         }
@@ -84,6 +86,7 @@ macro_rules! impl_score_float {
             #[inline]
             fn decode(bytes: &[u8]) -> (Self, &[u8]) {
                 let (head, rest) = bytes.split_at(size_of::<$t>());
+                // invariant: split_at yielded exactly size_of::<$t>() bytes
                 let bits = <$b>::from_be_bytes(head.try_into().unwrap());
                 let bits = if bits >> (<$b>::BITS - 1) == 1 {
                     bits ^ (1 << (<$b>::BITS - 1))
@@ -287,8 +290,12 @@ impl<S, V, G> TopK<S, V, G> {
             if budget == 0 {
                 break;
             }
-            let (key, val) = kv.into_inner().unwrap();
-            let n = i64::from_be_bytes(*val.as_array::<8>().unwrap()).min(budget);
+            let (key, val) = kv.into_inner().expect("topk scan failed");
+            let n = i64::from_be_bytes(
+                *val.as_array::<8>()
+                    .expect("corrupt topk count: not 8 bytes"),
+            )
+            .min(budget);
             budget -= n;
             out.insert(key.to_vec(), n);
         }
@@ -311,7 +318,7 @@ where
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &Scored<S, V>, delta: isize) {
         tx.buf.clear();
         data.score.encode(&mut tx.buf);
-        postcard::to_io(&data.val, &mut tx.buf).unwrap();
+        postcard::to_io(&data.val, &mut tx.buf).expect("postcard encode of topk value failed");
         *self.pending.entry(tx.buf.clone()).or_insert(0) += delta as i64;
     }
 
@@ -320,7 +327,7 @@ where
             self.next.commit(tx);
             return;
         }
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
 
         let old = self.view(tx, &ks);
 
@@ -331,7 +338,13 @@ where
             }
             let cur = tx
                 .get(&ks, &key)
-                .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+                .map(|v| {
+                    i64::from_be_bytes(
+                        v.as_ref()
+                            .try_into()
+                            .expect("corrupt topk count: not 8 bytes"),
+                    )
+                })
                 .unwrap_or(0);
             let new = cur + delta;
             debug_assert!(new >= 0, "TopK multiplicity went negative");
@@ -346,7 +359,11 @@ where
         let new = self.view(tx, &ks);
         let decode = |key: &[u8]| {
             let (score, rest) = S::decode(key);
-            Scored::new(score, postcard::from_bytes::<V>(rest).unwrap())
+            Scored::new(
+                score,
+                postcard::from_bytes::<V>(rest)
+                    .expect("corrupt topk value: postcard decode failed"),
+            )
         };
         for (key, &new_n) in &new {
             let d = new_n - old.get(key).copied().unwrap_or(0);

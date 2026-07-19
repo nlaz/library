@@ -1,0 +1,4 @@
+# Tests may unwrap/expect freely — the unwrap policy (AGENTS.md) applies
+# to code that runs in a user's process, not to assertions.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

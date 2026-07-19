@@ -154,7 +154,9 @@ pub fn blend(text: Vec<WireHit>, images: Vec<WireHit>) -> Vec<WireHit> {
     let mut images = images.into_iter().peekable();
     let mut img_idx = 0;
     loop {
-        let img_due = images.peek().is_some_and(|h| img_slot(img_idx, h) <= out.len());
+        let img_due = images
+            .peek()
+            .is_some_and(|h| img_slot(img_idx, h) <= out.len());
         let next = if img_due {
             img_idx += 1;
             images.next()
@@ -177,12 +179,15 @@ pub fn wire_hit(hit: &Hit, qtoks: &[String]) -> WireHit {
             .any(|t| qtoks.iter().any(|q| t.starts_with(q.as_str())))
     };
 
-    let first = hit.words.iter().position(|w| matched(w)).unwrap_or(0);
+    let first = hit.words.iter().position(&matched).unwrap_or(0);
     let lo = first.saturating_sub(12);
     let hi = (first + 18).min(hit.words.len());
     let snippet = hit.words[lo..hi]
         .iter()
-        .map(|w| SnippetWord { t: w.t.clone(), m: matched(w) })
+        .map(|w| SnippetWord {
+            t: w.t.clone(),
+            m: matched(w),
+        })
         .collect();
     let boxes = hit
         .words
@@ -252,9 +257,15 @@ mod tests {
         assert_eq!(merged.len(), 26);
         // every image trailing all 20 text hits is exactly the bug being fixed
         let last_image_pos = merged.iter().rposition(|h| h.kind == "image").unwrap();
-        assert!(last_image_pos < merged.len() - 1, "an image should not be pinned last");
+        assert!(
+            last_image_pos < merged.len() - 1,
+            "an image should not be pinned last"
+        );
         let first_image_pos = merged.iter().position(|h| h.kind == "image").unwrap();
-        assert!(first_image_pos < 5, "the image preference should surface one early");
+        assert!(
+            first_image_pos < 5,
+            "the image preference should surface one early"
+        );
         // still interleaved, not images-then-text or text-then-images
         assert!(merged[..10].iter().any(|h| h.kind == "text"));
         assert!(merged[..10].iter().any(|h| h.kind == "image"));
@@ -274,7 +285,11 @@ mod tests {
             (0..6).map(|n| hit("image", n)).collect(),
         );
         for (i, (a, b)) in short.iter().zip(&long).enumerate() {
-            assert_eq!((a.kind, a.page), (b.kind, b.page), "prefix diverged at rank {i}");
+            assert_eq!(
+                (a.kind, a.page),
+                (b.kind, b.page),
+                "prefix diverged at rank {i}"
+            );
         }
     }
 
@@ -294,9 +309,16 @@ mod tests {
         assert_eq!(slots.len(), 30);
         // every image lands within jitter range of its cadence position,
         // in list order (kept by the strictly-increasing slot function)
-        for (i, (slot, h)) in slots.iter().zip(merged.iter().filter(|h| h.kind == "image")).enumerate() {
+        for (i, (slot, h)) in slots
+            .iter()
+            .zip(merged.iter().filter(|h| h.kind == "image"))
+            .enumerate()
+        {
             assert_eq!(*slot, img_slot(i, h), "image {i}");
-            assert!(*slot >= i * IMG_CADENCE && *slot < (i + 1) * IMG_CADENCE, "image {i} at {slot}");
+            assert!(
+                *slot >= i * IMG_CADENCE && *slot < (i + 1) * IMG_CADENCE,
+                "image {i} at {slot}"
+            );
         }
         // the jitter actually varies — a fixed every-Nth pattern is the bug
         let gaps: std::collections::HashSet<usize> =

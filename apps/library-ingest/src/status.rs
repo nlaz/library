@@ -77,7 +77,10 @@ impl DocStatus {
     }
 
     pub fn failed(error: String) -> Self {
-        DocStatus { error: Some(error), ..DocStatus::new(DocState::Failed) }
+        DocStatus {
+            error: Some(error),
+            ..DocStatus::new(DocState::Failed)
+        }
     }
 }
 

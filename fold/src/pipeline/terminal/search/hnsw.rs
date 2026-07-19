@@ -11,7 +11,8 @@ use crate::{
 };
 
 fn decode_vector<T: DeserializeOwned + Copy, const DIM: usize>(bytes: &[u8]) -> [T; DIM] {
-    let v: Vec<T> = postcard::from_bytes(bytes).unwrap();
+    let v: Vec<T> =
+        postcard::from_bytes(bytes).expect("corrupt hnsw vector: postcard decode failed");
     std::array::from_fn(|i| v[i])
 }
 
@@ -94,7 +95,8 @@ where
         self.ids.clear();
         self.keys.clear();
         for (kenc, venc) in entries {
-            let key: K = postcard::from_bytes(&kenc).unwrap();
+            let key: K =
+                postcard::from_bytes(&kenc).expect("corrupt hnsw key: postcard decode failed");
             self.upsert(kenc, key, decode_vector::<T, DIM>(&venc));
         }
         self.stale = false;
@@ -266,10 +268,18 @@ where
         if index.len() != pairs.len() {
             return false;
         }
-        let mut state = self.state.write().unwrap();
+        let mut state = self
+            .state
+            .write()
+            .expect("hnsw index lock poisoned by an earlier panic; reopen the store");
         state.ids = pairs
             .iter()
-            .map(|(id, k)| (postcard::to_stdvec(k).unwrap(), *id))
+            .map(|(id, k)| {
+                (
+                    postcard::to_stdvec(k).expect("postcard encode of hnsw key failed"),
+                    *id,
+                )
+            })
             .collect();
         state.keys = pairs.into_iter().collect();
         state.index = index;
@@ -304,8 +314,14 @@ where
 
         self.generation = rtx
             .get(&graph_ks, GEN_KEY)
-            .unwrap()
-            .map(|v| u64::from_le_bytes(v.as_ref().try_into().unwrap()))
+            .expect("hnsw generation read failed")
+            .map(|v| {
+                u64::from_le_bytes(
+                    v.as_ref()
+                        .try_into()
+                        .expect("corrupt hnsw generation: not 8 bytes"),
+                )
+            })
             .unwrap_or(0);
 
         if self.try_load_blob(&rtx, &graph_ks) {
@@ -313,14 +329,17 @@ where
         } else {
             // no blob / stale blob: recover the graph from the vectors
             // persisted by earlier runs
-            self.state.write().unwrap().rebuild(
-                self.metric,
-                self.seed,
-                rtx.iter(&ks).map(|kv| {
-                    let (k, v) = kv.into_inner().unwrap();
-                    (k.to_vec(), v.to_vec())
-                }),
-            );
+            self.state
+                .write()
+                .expect("hnsw index lock poisoned by an earlier panic; reopen the store")
+                .rebuild(
+                    self.metric,
+                    self.seed,
+                    rtx.iter(&ks).map(|kv| {
+                        let (k, v) = kv.into_inner().expect("hnsw vector scan failed");
+                        (k.to_vec(), v.to_vec())
+                    }),
+                );
             // sentinel: no blob matches the live graph, so the next
             // checkpoint always writes one
             self.saved_generation = u64::MAX;
@@ -331,7 +350,7 @@ where
 
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &Keyed<K, [T; DIM]>, delta: isize) {
         tx.buf.clear();
-        postcard::to_io(&data.key, &mut tx.buf).unwrap();
+        postcard::to_io(&data.key, &mut tx.buf).expect("postcard encode of hnsw key failed");
         let e = self
             .pending
             .entry(tx.buf.clone())
@@ -344,13 +363,16 @@ where
         if self.pending.is_empty() {
             return;
         }
-        let ks = self.ks.clone().unwrap();
-        let mut state = self.state.write().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
+        let mut state = self
+            .state
+            .write()
+            .expect("hnsw index lock poisoned by an earlier panic; reopen the store");
         if state.stale {
             // the previous transaction aborted: this one sees clean
             // committed state, so resync the graph before applying
             let entries = tx.iter(&ks).map(|kv| {
-                let (k, v) = kv.into_inner().unwrap();
+                let (k, v) = kv.into_inner().expect("hnsw vector scan failed");
                 (k.to_vec(), v.to_vec())
             });
             let (metric, seed) = (self.metric, self.seed);
@@ -361,7 +383,8 @@ where
             match delta {
                 1.. => {
                     self.vec_buf.clear();
-                    postcard::to_io(&vec[..], &mut self.vec_buf).unwrap();
+                    postcard::to_io(&vec[..], &mut self.vec_buf)
+                        .expect("postcard encode of hnsw vector failed");
 
                     tx.insert(&ks, &kenc, &self.vec_buf);
                     state.upsert(kenc, key, vec);
@@ -380,7 +403,7 @@ where
             // the durable counter follows the graph; commit can run several
             // times per transaction, monotonicity is all that matters
             self.generation += 1;
-            let gks = self.graph_ks.clone().unwrap();
+            let gks = self.graph_ks.clone().expect("sink used before init()");
             tx.insert(&gks, GEN_KEY, self.generation.to_le_bytes());
         }
     }
@@ -388,7 +411,10 @@ where
     fn abort(&mut self) {
         self.pending.clear();
         // graph mutations from any mid-tx flush cannot be undone in place
-        self.state.write().unwrap().stale = true;
+        self.state
+            .write()
+            .expect("hnsw index lock poisoned by an earlier panic; reopen the store")
+            .stale = true;
         // the tx's GEN_KEY writes roll back while the in-memory counter
         // stays bumped, and the post-abort rebuild matches no stored blob:
         // force the next checkpoint to rewrite
@@ -402,13 +428,16 @@ where
         if self.generation == self.saved_generation {
             return;
         }
-        let ks = self.ks.clone().unwrap();
-        let gks = self.graph_ks.clone().unwrap();
-        let mut state = self.state.write().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
+        let gks = self.graph_ks.clone().expect("sink used before init()");
+        let mut state = self
+            .state
+            .write()
+            .expect("hnsw index lock poisoned by an earlier panic; reopen the store");
         if state.stale {
             // never checkpoint a stale graph: resync from committed rows
             let entries = tx.iter(&ks).map(|kv| {
-                let (k, v) = kv.into_inner().unwrap();
+                let (k, v) = kv.into_inner().expect("hnsw vector scan failed");
                 (k.to_vec(), v.to_vec())
             });
             let (metric, seed) = (self.metric, self.seed);
@@ -416,12 +445,17 @@ where
         }
         let blob = state.index.to_bytes();
         let pairs: Vec<(u32, &K)> = state.keys.iter().map(|(id, k)| (*id, k)).collect();
-        let keys_blob = postcard::to_stdvec(&pairs).unwrap();
+        let keys_blob =
+            postcard::to_stdvec(&pairs).expect("postcard encode of hnsw key table failed");
         drop(state);
 
         let old_chunks: u32 = tx
             .get(&gks, HDR_KEY)
-            .map(|v| postcard::from_bytes::<(u64, u32)>(&v).unwrap().1)
+            .map(|v| {
+                postcard::from_bytes::<(u64, u32)>(&v)
+                    .expect("corrupt hnsw graph header: postcard decode failed")
+                    .1
+            })
             .unwrap_or(0);
         let n_chunks = blob.len().div_ceil(CHUNK_BYTES) as u32;
         for (i, chunk) in blob.chunks(CHUNK_BYTES).enumerate() {
@@ -437,7 +471,8 @@ where
         tx.insert(
             &gks,
             HDR_KEY,
-            postcard::to_stdvec(&(self.generation, n_chunks)).unwrap(),
+            postcard::to_stdvec(&(self.generation, n_chunks))
+                .expect("postcard encode of hnsw graph header failed"),
         );
         self.saved_generation = self.generation;
     }
@@ -445,7 +480,7 @@ where
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         HnswReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
             metric: self.metric,
             seed: self.seed,
             state: Arc::clone(&self.state),
@@ -499,16 +534,22 @@ where
     ) -> Ret {
         // fast path: concurrent readers share the lock
         {
-            let state = self.state.read().unwrap();
+            let state = self
+                .state
+                .read()
+                .expect("hnsw index lock poisoned by an earlier panic; reopen the store");
             if !state.stale {
                 return f(&state);
             }
         }
-        let mut state = self.state.write().unwrap();
+        let mut state = self
+            .state
+            .write()
+            .expect("hnsw index lock poisoned by an earlier panic; reopen the store");
         if state.stale {
             // re-check: another reader may have rebuilt while we waited
             let entries = self.tx.iter(&self.ks).map(|kv| {
-                let (k, v) = kv.into_inner().unwrap();
+                let (k, v) = kv.into_inner().expect("hnsw vector scan failed");
                 (k.to_vec(), v.to_vec())
             });
             state.rebuild(self.metric, self.seed, entries);
@@ -568,8 +609,11 @@ where
     where
         K: Serialize,
     {
-        let k = postcard::to_stdvec(key).unwrap();
-        self.tx.get(&self.ks, k).unwrap().is_some()
+        let k = postcard::to_stdvec(key).expect("postcard encode of hnsw key failed");
+        self.tx
+            .get(&self.ks, k)
+            .expect("hnsw vector read failed")
+            .is_some()
     }
 
     /// The number of live embeddings.

@@ -1,7 +1,8 @@
 [package]
 name = "ese"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 description = "Embedded Static Embeddings"
 readme = "readme.md"
 license-file = "license"
@@ -44,3 +45,6 @@ minreq = { version = "2", features = ["https-native"] }
 [[bench]]
 name = "gooaq"
 harness = false
+
+[lints]
+workspace = true

@@ -114,8 +114,14 @@ impl<R: Readable> CountReader<'_, R> {
     pub fn get(&self) -> i64 {
         self.tx
             .get(&self.ks, b"\0")
-            .unwrap()
-            .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+            .expect("count read failed")
+            .map(|v| {
+                i64::from_be_bytes(
+                    v.as_ref()
+                        .try_into()
+                        .expect("corrupt count value: not 8 bytes"),
+                )
+            })
             .unwrap_or(0)
     }
 }
@@ -137,10 +143,16 @@ impl<D: Clone> Push<D> for Count {
         if self.pending == 0 {
             return;
         }
-        let ks = self.ks.as_ref().unwrap();
+        let ks = self.ks.as_ref().expect("sink used before init()");
         let cur = tx
             .get(ks, b"\0")
-            .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+            .map(|v| {
+                i64::from_be_bytes(
+                    v.as_ref()
+                        .try_into()
+                        .expect("corrupt count value: not 8 bytes"),
+                )
+            })
             .unwrap_or(0);
         tx.insert(ks, b"\0", (cur + self.pending).to_be_bytes());
         self.pending = 0;
@@ -153,7 +165,7 @@ impl<D: Clone> Push<D> for Count {
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         CountReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
         }
     }
 }
@@ -198,9 +210,10 @@ impl<'tx, R: Readable, D: DeserializeOwned> BagReader<'tx, R, D> {
     /// `postcard` encoding. Multiplicities are always positive.
     pub fn iter(&self) -> impl Iterator<Item = (D, i64)> + '_ {
         self.tx.iter(&self.ks).map(|kv| {
-            let (key, val) = kv.into_inner().unwrap();
-            let d: D = postcard::from_bytes(&key).unwrap();
-            let n = i64::from_be_bytes(*val.as_array::<8>().unwrap());
+            let (key, val) = kv.into_inner().expect("bag scan failed");
+            let d: D = postcard::from_bytes(&key).expect("corrupt bag key: postcard decode failed");
+            let n =
+                i64::from_be_bytes(*val.as_array::<8>().expect("corrupt bag count: not 8 bytes"));
             (d, n)
         })
     }
@@ -215,8 +228,10 @@ impl<'tx, R: Readable, D: DeserializeOwned> BagReader<'tx, R, D> {
         }
         KEY_BUF.with_borrow_mut(|buf| {
             buf.clear();
-            postcard::to_io(d, &mut *buf).unwrap();
-            self.tx.contains_key(&self.ks, &buf[..]).unwrap()
+            postcard::to_io(d, &mut *buf).expect("postcard encode of bag element failed");
+            self.tx
+                .contains_key(&self.ks, &buf[..])
+                .expect("bag contains read failed")
         })
     }
 }
@@ -230,20 +245,26 @@ impl<D: Clone + Serialize + DeserializeOwned> Push<D> for Bag<D> {
 
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &D, delta: isize) {
         tx.buf.clear();
-        postcard::to_io(data, &mut tx.buf).unwrap();
+        postcard::to_io(data, &mut tx.buf).expect("postcard encode of bag element failed");
         // hot keys within one tx collapse here instead of hitting fjall N times
         *self.pending.entry(tx.buf.clone()).or_insert(0) += delta as i64;
     }
 
     fn commit(&mut self, tx: &mut WriteTx<'_>) {
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
         for (key, delta) in self.pending.drain() {
             if delta == 0 {
                 continue;
             }
             let cur = tx
                 .get(&ks, &key)
-                .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+                .map(|v| {
+                    i64::from_be_bytes(
+                        v.as_ref()
+                            .try_into()
+                            .expect("corrupt bag count: not 8 bytes"),
+                    )
+                })
                 .unwrap_or(0);
             let new = cur + delta;
             if new > 0 {
@@ -261,7 +282,7 @@ impl<D: Clone + Serialize + DeserializeOwned> Push<D> for Bag<D> {
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         BagReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
             _p: PhantomData,
         }
     }
@@ -316,12 +337,16 @@ impl<'tx, R: Readable, K: DeserializeOwned, V: Serialize> InvertedIndexReader<'t
         }
         KEY_BUF.with_borrow_mut(|buf| {
             buf.clear();
-            postcard::to_io(q, &mut *buf).unwrap();
+            postcard::to_io(q, &mut *buf).expect("postcard encode of inverted-index term failed");
             buf.extend_from_slice(&InvertedIndex::<K, V>::sep());
             let plen = buf.len();
             self.tx
                 .prefix(&self.ks, &buf[..])
-                .map(|kv| postcard::from_bytes(&kv.key().unwrap()[plen..]).unwrap())
+                .map(|kv| {
+                    let key = kv.key().expect("inverted-index scan failed");
+                    postcard::from_bytes(&key[plen..])
+                        .expect("corrupt inverted-index posting: postcard decode failed")
+                })
                 .collect()
         })
     }
@@ -341,12 +366,12 @@ where
     // layout: `postcard(V) sep postcard(K)`
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &Keyed<K, V>, delta: isize) {
         let Keyed { key, val } = data;
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
 
         tx.buf.clear();
-        postcard::to_io(val, &mut tx.buf).unwrap();
+        postcard::to_io(val, &mut tx.buf).expect("postcard encode of inverted-index term failed");
         tx.buf.extend_from_slice(&Self::sep());
-        postcard::to_io(key, &mut tx.buf).unwrap();
+        postcard::to_io(key, &mut tx.buf).expect("postcard encode of inverted-index key failed");
 
         let k = std::mem::take(&mut tx.buf);
         if delta.is_positive() {
@@ -360,7 +385,7 @@ where
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         InvertedIndexReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
             _p: PhantomData,
         }
     }
@@ -407,11 +432,15 @@ impl<'tx, R: Readable, K: Serialize, V: DeserializeOwned> MultimapReader<'tx, R,
         }
         KEY_BUF.with_borrow_mut(|buf| {
             buf.clear();
-            postcard::to_io(key, &mut *buf).unwrap();
+            postcard::to_io(key, &mut *buf).expect("postcard encode of multimap key failed");
             let plen = buf.len();
             self.tx
                 .prefix(&self.ks, &buf[..])
-                .map(|kv| postcard::from_bytes(&kv.key().unwrap()[plen..]).unwrap())
+                .map(|kv| {
+                    let key = kv.key().expect("multimap scan failed");
+                    postcard::from_bytes(&key[plen..])
+                        .expect("corrupt multimap value: postcard decode failed")
+                })
                 .collect()
         })
     }
@@ -433,11 +462,11 @@ where
     // extending its encoding
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &Keyed<K, V>, delta: isize) {
         let Keyed { key, val } = data;
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
 
         tx.buf.clear();
-        postcard::to_io(key, &mut tx.buf).unwrap();
-        postcard::to_io(val, &mut tx.buf).unwrap();
+        postcard::to_io(key, &mut tx.buf).expect("postcard encode of multimap key failed");
+        postcard::to_io(val, &mut tx.buf).expect("postcard encode of multimap value failed");
 
         let k = std::mem::take(&mut tx.buf);
         if delta.is_positive() {
@@ -451,7 +480,7 @@ where
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         MultimapReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
             _p: PhantomData,
         }
     }

@@ -76,7 +76,11 @@ pub fn claim(data: &Path, doc: &str) -> Option<Claim> {
     let path = claim_path(data, doc);
     std::fs::create_dir_all(status::dir(data)).ok()?;
     for _ in 0..2 {
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
             Ok(mut f) => {
                 use std::io::Write;
                 let _ = write!(f, "{}", std::process::id());
@@ -344,7 +348,11 @@ impl MetricsClock {
     fn update(&mut self, p: &Progress) {
         match *p {
             Progress::Log(_) => {}
-            Progress::OcrSummary { text_layer, vision, cached } => {
+            Progress::OcrSummary {
+                text_layer,
+                vision,
+                cached,
+            } => {
                 self.m.ocr = Some((text_layer, vision, cached));
             }
             Progress::Ocr { total, .. } => {
@@ -396,8 +404,12 @@ pub fn process_doc(
 
     let t0 = std::time::Instant::now();
     let mut clock = MetricsClock::new(prior_status.and_then(|s| s.metrics));
-    let mut mirror =
-        StatusMirror { data, doc, last: std::time::Instant::now(), stage: "" };
+    let mut mirror = StatusMirror {
+        data,
+        doc,
+        last: std::time::Instant::now(),
+        stage: "",
+    };
 
     let indexing = || DocStatus {
         stage: Some("indexing".to_string()),
@@ -545,7 +557,12 @@ mod tests {
     }
 
     fn ctx(data: &Path) -> IngestCtx {
-        IngestCtx { data: data.to_path_buf(), width: 1600, clean: false, text_layer: true }
+        IngestCtx {
+            data: data.to_path_buf(),
+            width: 1600,
+            clean: false,
+            text_layer: true,
+        }
     }
 
     fn touch_pdf(data: &Path, doc: &str) {
@@ -623,7 +640,17 @@ mod tests {
     #[test]
     fn pending_truth_table() {
         let data = tmp("pending");
-        for doc in ["absent", "queued", "staged", "textready", "prep-stale", "prep-live", "ready", "failed", "deleted"] {
+        for doc in [
+            "absent",
+            "queued",
+            "staged",
+            "textready",
+            "prep-stale",
+            "prep-live",
+            "ready",
+            "failed",
+            "deleted",
+        ] {
             touch_pdf(&data, doc);
         }
         set(&data, "queued", DocState::Queued);
@@ -637,7 +664,10 @@ mod tests {
         set(&data, "prep-live", DocState::Preparing);
         let _live = claim(&data, "prep-live").unwrap();
 
-        assert_eq!(pending(&data), vec!["absent", "prep-stale", "queued", "staged", "textready"]);
+        assert_eq!(
+            pending(&data),
+            vec!["absent", "prep-stale", "queued", "staged", "textready"]
+        );
         std::fs::remove_dir_all(&data).unwrap();
     }
 
@@ -648,8 +678,15 @@ mod tests {
         set(&data, "a", DocState::Staged);
         seed_staged(&data, "a", true, true);
 
-        let mut mock = Mock { text: vec![Ok(())], figures: vec![Ok(())], ..Default::default() };
-        assert!(matches!(process_doc(&ctx(&data), "a", &mut mock, &mut nop), Outcome::Ready));
+        let mut mock = Mock {
+            text: vec![Ok(())],
+            figures: vec![Ok(())],
+            ..Default::default()
+        };
+        assert!(matches!(
+            process_doc(&ctx(&data), "a", &mut mock, &mut nop),
+            Outcome::Ready
+        ));
         assert_eq!((mock.text_calls, mock.figures_calls), (1, 1));
         assert_eq!(status::read(&data, "a").unwrap().state, DocState::Ready);
         assert!(!staged_dir(&data, "a").exists(), "staged dir cleared");
@@ -663,8 +700,14 @@ mod tests {
         set(&data, "a", DocState::Queued);
         seed_staged(&data, "a", true, false);
 
-        let mut mock = Mock { text: vec![Err(())], ..Default::default() };
-        assert!(matches!(process_doc(&ctx(&data), "a", &mut mock, &mut nop), Outcome::Staged));
+        let mut mock = Mock {
+            text: vec![Err(())],
+            ..Default::default()
+        };
+        assert!(matches!(
+            process_doc(&ctx(&data), "a", &mut mock, &mut nop),
+            Outcome::Staged
+        ));
         assert_eq!(status::read(&data, "a").unwrap().state, DocState::Staged);
         assert!(staged_dir(&data, "a").join("text.postcard").exists());
         assert_eq!(mock.figures_calls, 0, "must stop before figures");
@@ -678,8 +721,15 @@ mod tests {
         set(&data, "a", DocState::Staged);
         seed_staged(&data, "a", true, true);
 
-        let mut mock = Mock { text: vec![Ok(())], figures: vec![Err(())], ..Default::default() };
-        assert!(matches!(process_doc(&ctx(&data), "a", &mut mock, &mut nop), Outcome::Staged));
+        let mut mock = Mock {
+            text: vec![Ok(())],
+            figures: vec![Err(())],
+            ..Default::default()
+        };
+        assert!(matches!(
+            process_doc(&ctx(&data), "a", &mut mock, &mut nop),
+            Outcome::Staged
+        ));
         // text committed: resume must skip to the staged figures
         let st = status::read(&data, "a").unwrap();
         assert_eq!(st.state, DocState::TextReady);
@@ -687,8 +737,14 @@ mod tests {
         assert!(!staged_dir(&data, "a").join("text.postcard").exists());
 
         // resume: only the figures commit runs
-        let mut mock = Mock { figures: vec![Ok(())], ..Default::default() };
-        assert!(matches!(process_doc(&ctx(&data), "a", &mut mock, &mut nop), Outcome::Ready));
+        let mut mock = Mock {
+            figures: vec![Ok(())],
+            ..Default::default()
+        };
+        assert!(matches!(
+            process_doc(&ctx(&data), "a", &mut mock, &mut nop),
+            Outcome::Ready
+        ));
         assert_eq!((mock.text_calls, mock.figures_calls), (0, 1));
         assert_eq!(status::read(&data, "a").unwrap().state, DocState::Ready);
         std::fs::remove_dir_all(&data).unwrap();
@@ -700,7 +756,10 @@ mod tests {
         touch_pdf(&data, "a");
         let _held = claim(&data, "a").unwrap();
         let mut mock = Mock::default();
-        assert!(matches!(process_doc(&ctx(&data), "a", &mut mock, &mut nop), Outcome::Skipped));
+        assert!(matches!(
+            process_doc(&ctx(&data), "a", &mut mock, &mut nop),
+            Outcome::Skipped
+        ));
         assert_eq!((mock.text_calls, mock.figures_calls), (0, 0));
         std::fs::remove_dir_all(&data).unwrap();
     }

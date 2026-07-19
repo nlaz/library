@@ -62,7 +62,10 @@ macro_rules! demo {
             }
 
             println!("  hybrid:");
-            let fused = hybrid(&bm25.search(query, 10), &vecs.search(&ese::encode_single(query)));
+            let fused = hybrid(
+                &bm25.search(query, 10),
+                &vecs.search(&ese::encode_single(query)),
+            );
             for (id, score) in fused {
                 println!("    {score:>6.3}  [{id}] {}", get(id));
             }
@@ -107,7 +110,11 @@ fn main() {
 
     demo!(st, "keyword search (bm25)", "kubernetes deploy");
     demo!(st, "semantic search (hnsw over ese)", "user was unhappy");
-    demo!(st, "hybrid (reciprocal rank fusion)", "database performance");
+    demo!(
+        st,
+        "hybrid (reciprocal rank fusion)",
+        "database performance"
+    );
 
     // correcting a memory: upsert retracts the old text from every index
     // and indexes the new one, atomically
@@ -127,7 +134,9 @@ fn main() {
 
     // a tiny interactive loop: the bones of an agent memory tool
     if std::io::stdin().is_terminal() {
-        println!("interactive: <query> searches, `add <text>` remembers, `rm <id>` forgets, ctrl-d quits");
+        println!(
+            "interactive: <query> searches, `add <text>` remembers, `rm <id>` forgets, ctrl-d quits"
+        );
         let stdin = std::io::stdin();
         loop {
             print!("> ");
@@ -141,9 +150,8 @@ fn main() {
             }
 
             if let Some(text) = line.strip_prefix("add ") {
-                let id = st.rtx(|(_, _, docs)| {
-                    docs.iter().map(|(id, _)| id).max().map_or(0, |m| m + 1)
-                });
+                let id =
+                    st.rtx(|(_, _, docs)| docs.iter().map(|(id, _)| id).max().map_or(0, |m| m + 1));
                 st.wtx(|tx| tx.upsert(&id, &text.to_string()));
                 println!("remembered as [{id}]");
             } else if let Some(id) = line.strip_prefix("rm ") {

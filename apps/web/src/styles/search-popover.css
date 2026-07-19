@@ -1,0 +1,115 @@
+
+/* --- §13 search popover -----------------------------------------------------
+   Cmd+F. Anchored right so it never sits over the results grid or the page
+   column; same hard dithered shadow as the book-card menu. */
+
+#search-pop {
+  position: fixed;
+  top: 52px;
+  right: 16px;
+  z-index: 9; /* above the reader (8), below the viewer modal (10) */
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+}
+
+#search-pop[hidden] {
+  display: none;
+}
+
+#search-pop::before,
+#search-pop::after {
+  content: "";
+  position: absolute;
+  background: var(--dither-50) 0 0 / 2px 2px;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+#search-pop::before {
+  top: 4px;
+  bottom: -5px;
+  right: -5px;
+  width: 4px;
+}
+
+#search-pop::after {
+  left: 4px;
+  right: -5px;
+  bottom: -5px;
+  height: 4px;
+}
+
+#q {
+  width: 300px;
+  font: inherit;
+  padding: 7px 14px;
+  outline: none;
+}
+
+#q::placeholder {
+  color: var(--ink-faint);
+}
+
+#ac {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+}
+
+#ac[hidden] {
+  display: none;
+}
+
+#ac li {
+  padding: 5px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#ac li:hover,
+#ac li.on {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+#q:focus {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+
+#search-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+#search-nav[hidden] {
+  display: none;
+}
+
+#search-count {
+  flex: 1;
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  padding-left: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#search-prev,
+#search-next {
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+}

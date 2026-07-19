@@ -158,10 +158,10 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
     }
 }
 
-/// Accept dropped/picked PDFs: bring each into the library (`mode:
-/// "move"` relocates the file; anything else copies), mark it queued, and
-/// wake the worker. Returns the doc ids actually queued (dedup'd against
-/// docs already in flight).
+/// Accept dropped/picked PDFs and images: bring each into the library
+/// (`mode: "move"` relocates the file; anything else copies), mark it
+/// queued, and wake the worker. Returns the doc ids actually queued
+/// (dedup'd against docs already in flight).
 #[tauri::command]
 pub(crate) fn ingest_paths(
     state: State<'_, AppState>,
@@ -172,21 +172,17 @@ pub(crate) fn ingest_paths(
     let ctx = ingest_ctx(&state.settings);
     let data = &state.settings.data;
     let mover = if mode.as_deref() == Some("move") {
-        library_ingest::move_pdf
+        library_ingest::move_doc
     } else {
-        library_ingest::add_pdf
+        library_ingest::add_doc
     };
     let mut queued = Vec::new();
     for p in paths {
         let path = PathBuf::from(&p);
-        if path
-            .extension()
-            .map(|e| !e.eq_ignore_ascii_case("pdf"))
-            .unwrap_or(true)
-        {
+        if library_ingest::SourceKind::of(&path).is_none() {
             continue;
         }
-        let (doc, _pdf) = mover(&ctx, &path, None).map_err(|e| e.to_string())?;
+        let (doc, _src) = mover(&ctx, &path, None).map_err(|e| e.to_string())?;
         // in-flight docs keep their state; terminal states re-queue
         // (deleted tombstones revive — re-adding is an explicit user act)
         match status::read(data, &doc).map(|s| s.state) {

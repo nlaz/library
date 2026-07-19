@@ -70,7 +70,7 @@ pub(crate) fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
             let id = e.file_name().to_string_lossy().into_owned();
             let st = statuses.get(&id);
             if st.map(|s| s.state) == Some(DocState::Deleted) {
-                continue; // tombstone: only the PDF remains
+                continue; // tombstone: only the source file remains
             }
             let pages = wire::count_pages(&e.path());
             seen.insert(id.clone());
@@ -144,9 +144,9 @@ pub(crate) fn set_collections(
 }
 
 /// Remove a doc: retract it from both indexes, delete its page renders and
-/// OCR cache, and prune it from collections/titles. The copied PDF in
+/// OCR cache, and prune it from collections/titles. The copied source in
 /// data/pdfs is kept; a `deleted` tombstone status stops the background
-/// worker from re-ingesting it (re-adding the same PDF revives it).
+/// worker from re-ingesting it (re-adding the same file revives it).
 #[tauri::command]
 pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Result<(), String> {
     let data = state.settings.data.clone();

@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use library_core::{Word, tokenize};
 use library_ingest::{
-    IngestCtx, Progress, add_pdf, collect, layout, prepare_figures, prepare_text, subdivide,
+    IngestCtx, Progress, add_doc, collect, layout, prepare_figures, prepare_text, subdivide,
 };
 
 /// Drop the whole process (Vision OCR, ort's worker threads) to background
@@ -37,9 +37,10 @@ fn be_gentle() {
 
 #[derive(Parser)]
 enum Cli {
-    /// OCR a PDF, chunk + embed it, and load it into the fold store.
+    /// OCR a PDF or image (png/jpg), chunk + embed it, and load it into the
+    /// fold store.
     Ingest {
-        pdf: PathBuf,
+        file: PathBuf,
         #[arg(long, default_value = "data")]
         data: PathBuf,
         /// Only process the first N pages (for quick runs).
@@ -69,7 +70,7 @@ enum Cli {
         #[arg(long)]
         text_only: bool,
         /// OCR every page even when the PDF embeds a text layer (for PDFs
-        /// whose producer embedded garbage OCR).
+        /// whose producer embedded garbage OCR). No effect on images.
         #[arg(long)]
         no_text_layer: bool,
     },
@@ -81,8 +82,8 @@ enum Cli {
         data: PathBuf,
     },
     /// Rebuild a doc's full index (text + figures + markdown) from its
-    /// cached OCR/page files alone — no source PDF needed. For docs whose
-    /// caches survive a store-schema change but whose PDF is gone.
+    /// cached OCR/page files alone — no source file needed. For docs whose
+    /// caches survive a store-schema change but whose source is gone.
     Reindex {
         doc: String,
         #[arg(long, default_value = "data")]
@@ -103,7 +104,7 @@ enum Cli {
         #[arg(long, default_value_t = 3)]
         worst: usize,
     },
-    /// Force re-OCR of a doc from its source PDF with Apple Vision,
+    /// Force re-OCR of a doc from its source file with Apple Vision,
     /// ignoring any embedded text layer, then rebuild its index. For docs
     /// whose producer embedded garbage OCR (e.g. Internet Archive scans,
     /// whose text layer is decades-old multi-column OCR). Clears the doc's
@@ -160,8 +161,8 @@ enum Cli {
     },
     /// Remove a doc from the library: retract its index entries, delete its
     /// pages/ocr/text derivatives, clear collection membership + title, and
-    /// mark it Deleted so the worker never re-ingests it. The source PDF in
-    /// data/pdfs is left in place. Refuses while the doc is mid-ingest.
+    /// mark it Deleted so the worker never re-ingests it. The source file
+    /// in data/pdfs is left in place. Refuses while the doc is mid-ingest.
     /// (Same semantics as the desktop app's delete, runnable offline.)
     Delete {
         doc: String,
@@ -181,10 +182,10 @@ enum Cli {
         #[arg(long, default_value = "layout-debug")]
         out: PathBuf,
     },
-    /// Process every pending PDF in data/pdfs (safe to run from launchd:
-    /// exits immediately if the app holds the stores). A PDF is pending
-    /// when its status file (data/status/<doc>.json) is absent or
-    /// non-terminal — drop a PDF into data/pdfs and run this.
+    /// Process every pending document in data/pdfs (safe to run from
+    /// launchd: exits immediately if the app holds the stores). A document
+    /// is pending when its status file (data/status/<doc>.json) is absent
+    /// or non-terminal — drop a PDF or image into data/pdfs and run this.
     Worker {
         #[arg(long, default_value = "data")]
         data: PathBuf,
@@ -255,7 +256,7 @@ fn print_progress(p: Progress) {
 fn main() -> Result<()> {
     match Cli::parse() {
         Cli::Ingest {
-            pdf,
+            file,
             data,
             limit,
             width,
@@ -270,7 +271,7 @@ fn main() -> Result<()> {
                 be_gentle();
             }
             ingest(
-                &pdf,
+                &file,
                 &data,
                 limit,
                 width,
@@ -404,7 +405,7 @@ fn main() -> Result<()> {
                 std::fs::write(&titles_path, serde_json::to_vec_pretty(&titles)?)?;
             }
             println!(
-                "deleted {doc} in {:?} (source PDF kept in data/pdfs)",
+                "deleted {doc} in {:?} (source file kept in data/pdfs)",
                 t.elapsed()
             );
             Ok(())
@@ -488,7 +489,7 @@ fn worker(data: &Path) -> Result<()> {
                 return Ok(());
             }
             Outcome::Skipped => println!("skipped (another process has it): {doc}"),
-            // keep going: one bad PDF must not wedge the queue
+            // keep going: one bad doc must not wedge the queue
             Outcome::Failed => eprintln!("failed: {doc} (see data/status/{doc}.json)"),
         }
     }
@@ -499,7 +500,7 @@ fn worker(data: &Path) -> Result<()> {
 // the clap variant field-for-field (audited under the lint uplift).
 #[expect(clippy::too_many_arguments)]
 fn ingest(
-    pdf: &Path,
+    file: &Path,
     data: &Path,
     limit: Option<usize>,
     width: u32,
@@ -512,10 +513,10 @@ fn ingest(
     let mut ctx = ctx(data, width);
     ctx.clean = clean;
     ctx.text_layer = !no_text_layer;
-    let (doc, pdf) = add_pdf(&ctx, pdf, name)?;
+    let (doc, src) = add_doc(&ctx, file, name)?;
 
     let t = Instant::now();
-    let (recs, pages) = prepare_text(&ctx, &pdf, &doc, limit, &mut print_progress)?;
+    let (recs, pages) = prepare_text(&ctx, &src, &doc, limit, &mut print_progress)?;
     println!("prepared: {} chunks in {:?}", recs.len(), t.elapsed());
 
     let t = Instant::now();
@@ -660,15 +661,13 @@ fn audit(data: &Path, col: Option<&str>, worst: usize) -> Result<()> {
     Ok(())
 }
 
-/// Vision-forced re-OCR from the source PDF, then a full per-doc reindex.
+/// Vision-forced re-OCR from the source file, then a full per-doc reindex.
 fn reocr(doc: &str, data: &Path, width: u32) -> Result<()> {
-    let pdf = data.join("pdfs").join(format!("{doc}.pdf"));
-    if !pdf.exists() {
+    let Some(src) = library_ingest::source_path(data, doc) else {
         anyhow::bail!(
-            "no source PDF at {} — re-OCR needs the original; `reindex` only rebuilds from caches",
-            pdf.display()
+            "no source file for '{doc}' in data/pdfs — re-OCR needs the original; `reindex` only rebuilds from caches"
         );
-    }
+    };
     // clear every derivative of the old OCR: raw pages, and the clean/edits
     // overlays — prepare_text re-applies data/edits/<doc> whenever that dir
     // exists, and read_pages prefers data/clean/<doc>, so stale overlays
@@ -682,7 +681,7 @@ fn reocr(doc: &str, data: &Path, width: u32) -> Result<()> {
         }
     }
     ingest(
-        &pdf,
+        &src,
         data,
         None,
         width,

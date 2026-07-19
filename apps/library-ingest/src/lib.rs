@@ -5,9 +5,11 @@
 //! stores with live searches only needs exclusive store access for the brief
 //! atomic swap:
 //!
-//!   add_pdf        copy the source PDF into data/pdfs (the library owns it)
+//!   add_doc        copy the source file (pdf/png/jpeg) into data/pdfs
+//!                  (the library owns it)
 //!   prepare_text   render + words (embedded text layer, else Apple Vision
-//!                  OCR) -> chunk -> embed                          (no store)
+//!                  OCR; images render once and always OCR)
+//!                                                                 (no store)
 //!   commit_text    upsert new chunks, remove vanished keys         (&mut Library)
 //!   prepare_figures  layout detect -> subdivide -> CLIP embed       (no store)
 //!   commit_figures   same swap for the figure index                (&mut Images)
@@ -43,6 +45,9 @@ const EMBED_BATCH: usize = 128;
 
 /// Minimum figure height, as a fraction of the page (~4x a text line).
 const FIG_MIN_H: f32 = 0.07;
+/// A region covering this much of the page counts as "the whole page" for
+/// the image-doc full-page guarantee.
+const FULL_PAGE_AREA: f32 = 0.9;
 /// Fraction of dark pixels a candidate region must contain.
 const FIG_MIN_INK: f64 = 0.01;
 const CLIP_BATCH: usize = 8;
@@ -152,6 +157,46 @@ pub fn read_ocr(ocr_dir: &Path) -> Result<Vec<PageOcr>> {
     Ok(pages)
 }
 
+/// What kind of source file a library document came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Pdf,
+    Image,
+}
+
+/// The one extension allowlist — every ingest gate (worker scan, app drop
+/// handler, CLI) classifies through [`SourceKind::of`], so adding a format
+/// means touching this table only. Order matters: [`source_path`] resolves
+/// in this order, pdf first.
+pub const SOURCE_EXTS: [(&str, SourceKind); 4] = [
+    ("pdf", SourceKind::Pdf),
+    ("png", SourceKind::Image),
+    ("jpg", SourceKind::Image),
+    ("jpeg", SourceKind::Image),
+];
+
+impl SourceKind {
+    /// Classify by extension (case-insensitive); `None` = not ingestible.
+    pub fn of(path: &Path) -> Option<SourceKind> {
+        let ext = path.extension()?.to_str()?;
+        SOURCE_EXTS
+            .iter()
+            .find(|(e, _)| ext.eq_ignore_ascii_case(e))
+            .map(|(_, k)| *k)
+    }
+}
+
+/// Resolve a doc id back to its source file in `data/pdfs`, trying each
+/// known extension. (`data/pdfs` keeps its name — it is the originals
+/// folder, now format-mixed, and the launchd WatchPaths points at it.)
+pub fn source_path(data: &Path, doc: &str) -> Option<PathBuf> {
+    let dir = data.join("pdfs");
+    SOURCE_EXTS
+        .iter()
+        .map(|(ext, _)| dir.join(format!("{doc}.{ext}")))
+        .find(|p| p.exists())
+}
+
 pub fn doc_id(pdf: &Path) -> String {
     let stem = pdf.file_stem().unwrap_or_default().to_string_lossy();
     let mut id: String = stem
@@ -208,22 +253,50 @@ pub fn set_collections(data: &Path, doc: &str, cols: &[String]) -> Result<()> {
     store_collections(data, &all)
 }
 
-/// Copy the source PDF into `data/pdfs/<doc>.pdf` and return `(doc, copy)`.
-/// The library owns its documents: the drop source may be unplugged, moved,
-/// or deleted before a queued job runs.
-pub fn add_pdf(ctx: &IngestCtx, pdf: &Path, name: Option<String>) -> Result<(String, PathBuf)> {
-    if !pdf.exists() {
-        bail!("no such file: {}", pdf.display());
+/// Shared add/move prelude: validate the source, derive the doc id and the
+/// in-library dest (source extension, lowercased), and refuse a cross-format
+/// collision — accepting `photo.png` after `photo.pdf` would give two files
+/// one doc id, and whichever [`source_path`] finds first would shadow the
+/// other.
+fn source_dest(ctx: &IngestCtx, src: &Path, name: Option<String>) -> Result<(String, PathBuf)> {
+    if !src.exists() {
+        bail!("no such file: {}", src.display());
     }
-    let doc = name.unwrap_or_else(|| doc_id(pdf));
+    let ext = match (
+        SourceKind::of(src),
+        src.extension().and_then(|e| e.to_str()),
+    ) {
+        (Some(_), Some(ext)) => ext.to_ascii_lowercase(),
+        _ => bail!(
+            "unsupported file type: {} (want pdf, png, jpg, or jpeg)",
+            src.display()
+        ),
+    };
+    let doc = name.unwrap_or_else(|| doc_id(src));
     if doc.is_empty() {
-        bail!("cannot derive a doc id from {}", pdf.display());
+        bail!("cannot derive a doc id from {}", src.display());
     }
     let dir = ctx.data.join("pdfs");
     std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(format!("{doc}.pdf"));
-    if pdf.canonicalize().ok() != dest.canonicalize().ok() {
-        std::fs::copy(pdf, &dest).context("copying PDF into the library")?;
+    let dest = dir.join(format!("{doc}.{ext}"));
+    if let Some(existing) = source_path(&ctx.data, &doc)
+        && existing != dest
+    {
+        bail!(
+            "a different '{doc}' is already in the library (as .{}) — rename the file and try again",
+            existing.extension().unwrap_or_default().to_string_lossy()
+        );
+    }
+    Ok((doc, dest))
+}
+
+/// Copy the source file into `data/pdfs/<doc>.<ext>` and return `(doc, copy)`.
+/// The library owns its documents: the drop source may be unplugged, moved,
+/// or deleted before a queued job runs.
+pub fn add_doc(ctx: &IngestCtx, src: &Path, name: Option<String>) -> Result<(String, PathBuf)> {
+    let (doc, dest) = source_dest(ctx, src, name)?;
+    if src.canonicalize().ok() != dest.canonicalize().ok() {
+        std::fs::copy(src, &dest).context("copying the file into the library")?;
     }
     Ok((doc, dest))
 }
@@ -236,50 +309,44 @@ fn same_bytes(a: &Path, b: &Path) -> Result<bool> {
     Ok(std::fs::read(a)? == std::fs::read(b)?)
 }
 
-/// Move the source PDF into `data/pdfs/<doc>.pdf` and return `(doc, dest)`.
+/// Move the source file into `data/pdfs/<doc>.<ext>` and return `(doc, dest)`.
 /// Same-volume moves are a rename; across volumes it copies to a hidden
 /// temp name, verifies, renames into place, and only then deletes the
 /// source. If the doc already exists: identical bytes leave both files
 /// alone (already in the library — the source is NOT deleted); different
 /// bytes are an error rather than a silent overwrite.
-pub fn move_pdf(ctx: &IngestCtx, pdf: &Path, name: Option<String>) -> Result<(String, PathBuf)> {
-    if !pdf.exists() {
-        bail!("no such file: {}", pdf.display());
-    }
-    let doc = name.unwrap_or_else(|| doc_id(pdf));
-    if doc.is_empty() {
-        bail!("cannot derive a doc id from {}", pdf.display());
-    }
-    let dir = ctx.data.join("pdfs");
-    std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(format!("{doc}.pdf"));
+pub fn move_doc(ctx: &IngestCtx, src: &Path, name: Option<String>) -> Result<(String, PathBuf)> {
+    let (doc, dest) = source_dest(ctx, src, name)?;
 
-    if pdf.canonicalize().ok() == dest.canonicalize().ok() {
+    if src.canonicalize().ok() == dest.canonicalize().ok() {
         return Ok((doc, dest)); // already home
     }
     if dest.exists() {
-        if same_bytes(pdf, &dest)? {
+        if same_bytes(src, &dest)? {
             return Ok((doc, dest));
         }
         bail!("a different '{doc}' is already in the library — rename the file and try again");
     }
 
-    match std::fs::rename(pdf, &dest) {
+    match std::fs::rename(src, &dest) {
         Ok(()) => {}
         // EXDEV: source is on another volume (drive, DMG). Copy safely,
         // then remove the source only after the copy is in place.
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-            let tmp = dir.join(format!(".{doc}.pdf.tmp"));
-            let n = std::fs::copy(pdf, &tmp).context("copying PDF into the library")?;
-            if n != std::fs::metadata(pdf)?.len() {
+            let tmp = dest.with_file_name(format!(
+                ".{}.tmp",
+                dest.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            let n = std::fs::copy(src, &tmp).context("copying the file into the library")?;
+            if n != std::fs::metadata(src)?.len() {
                 let _ = std::fs::remove_file(&tmp);
-                bail!("short copy moving {} into the library", pdf.display());
+                bail!("short copy moving {} into the library", src.display());
             }
             std::fs::File::open(&tmp)?.sync_all()?;
             std::fs::rename(&tmp, &dest)?;
-            std::fs::remove_file(pdf).context("removing the moved source PDF")?;
+            std::fs::remove_file(src).context("removing the moved source file")?;
         }
-        Err(e) => return Err(e).context("moving PDF into the library"),
+        Err(e) => return Err(e).context("moving the file into the library"),
     }
     Ok((doc, dest))
 }
@@ -290,7 +357,7 @@ pub fn move_pdf(ctx: &IngestCtx, pdf: &Path, name: Option<String>) -> Result<(St
 /// like the markdown edition don't re-read the whole doc.
 pub fn prepare_text(
     ctx: &IngestCtx,
-    pdf: &Path,
+    src: &Path,
     doc: &str,
     limit: Option<usize>,
     progress: ProgressFn,
@@ -301,15 +368,20 @@ pub fn prepare_text(
     std::fs::create_dir_all(&ocr_dir)?;
 
     // 1. render + words (cached: pages that already have JSON are skipped)
-    ocr::ocr_pdf(
-        pdf,
-        &pages_dir,
-        &ocr_dir,
-        ctx.width,
-        limit,
-        ctx.text_layer,
-        progress,
-    )?;
+    match SourceKind::of(src) {
+        Some(SourceKind::Pdf) => ocr::ocr_pdf(
+            src,
+            &pages_dir,
+            &ocr_dir,
+            ctx.width,
+            limit,
+            ctx.text_layer,
+            progress,
+        )?,
+        // an image is a one-page doc; no text layer, always Vision
+        Some(SourceKind::Image) => ocr::ocr_image(src, &pages_dir, &ocr_dir, ctx.width, progress)?,
+        None => bail!("unsupported source file: {}", src.display()),
+    }
 
     prepare_text_cached(ctx, doc, limit, progress)
 }
@@ -504,6 +576,7 @@ fn page_figures(
     pages_dir: &Path,
     model: Option<&layout::LayoutModel>,
     page: &PageOcr,
+    ensure_full: bool,
 ) -> PageFigures {
     let mut out = PageFigures {
         keys: Vec::new(),
@@ -539,7 +612,7 @@ fn page_figures(
         }
         None => {
             let regions = detect_regions(&page.words);
-            if regions.is_empty() {
+            if regions.is_empty() && !ensure_full {
                 return out;
             }
             let Ok(img) = image::open(&jpg) else {
@@ -548,6 +621,13 @@ fn page_figures(
             (img, regions)
         }
     };
+    // image-sourced docs must always be CLIP-findable: detection is tuned
+    // for document pages (YOLO/DocLayNet, word-gap bands) and can come up
+    // empty or partial on a photo, so guarantee a whole-page region
+    let mut regions = regions;
+    if ensure_full && !regions.iter().any(|r| r[2] * r[3] >= FULL_PAGE_AREA) {
+        regions.push([0.0, 0.0, 1.0, 1.0]);
+    }
     // ink checks and subdivision profiles read this shared downscale;
     // full-res pixels are only touched for accepted crops
     let luma = img.thumbnail(PAGE_LUMA_PX, PAGE_LUMA_PX).into_luma8();
@@ -564,7 +644,10 @@ fn page_figures(
     regions.sort_by(|a, b| a[1].total_cmp(&b[1]).then(a[0].total_cmp(&b[0])));
     let mut idx = 0u32;
     for bbox in regions {
-        if region_inked(&luma, bbox) {
+        // the guaranteed whole-page region skips the ink gate: an
+        // overexposed white-background photo must still index
+        let full_page = ensure_full && bbox[2] * bbox[3] >= FULL_PAGE_AREA;
+        if full_page || region_inked(&luma, bbox) {
             out.keys.push((
                 ImageKey {
                     doc: doc.to_string(),
@@ -589,6 +672,14 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
     let pages = read_ocr(&ctx.data.join("ocr").join(doc))?;
     let pages_dir = ctx.data.join("pages").join(doc);
     let model = layout::LayoutModel::load(&ctx.data)?;
+    // PDFs (including cache-only reindexes whose source is gone) keep
+    // their exact pre-image behavior — the guarantee is image-docs only
+    let ensure_full = matches!(
+        source_path(&ctx.data, doc)
+            .as_deref()
+            .and_then(SourceKind::of),
+        Some(SourceKind::Image)
+    );
 
     // 1. detect + crop, page-parallel (ort sessions run concurrently).
     // Chunked because the progress callback isn't Send: workers hand
@@ -604,7 +695,7 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
         });
         let results: Vec<PageFigures> = group
             .par_iter()
-            .map(|page| page_figures(doc, &pages_dir, model.as_ref(), page))
+            .map(|page| page_figures(doc, &pages_dir, model.as_ref(), page, ensure_full))
             .collect();
         for mut r in results {
             if let Some(line) = r.log.take() {
@@ -674,36 +765,139 @@ pub fn commit_figures(st: &mut Images, doc: &str, recs: &[ImageRec]) -> (usize, 
 mod tests {
     use super::*;
 
-    #[test]
-    fn move_pdf_relocates_dedups_and_rejects_conflicts() {
-        let dir = std::env::temp_dir().join(format!("fold-move-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        let ctx = IngestCtx {
+    fn test_ctx(dir: &Path) -> IngestCtx {
+        IngestCtx {
             data: dir.join("data"),
             width: 1600,
             clean: false,
             text_layer: true,
-        };
+        }
+    }
+
+    #[test]
+    fn source_kind_classifies_by_extension() {
+        assert_eq!(SourceKind::of(Path::new("a.pdf")), Some(SourceKind::Pdf));
+        assert_eq!(SourceKind::of(Path::new("a.PDF")), Some(SourceKind::Pdf));
+        assert_eq!(SourceKind::of(Path::new("a.png")), Some(SourceKind::Image));
+        assert_eq!(SourceKind::of(Path::new("a.JPG")), Some(SourceKind::Image));
+        assert_eq!(SourceKind::of(Path::new("a.jpeg")), Some(SourceKind::Image));
+        assert_eq!(SourceKind::of(Path::new("a.txt")), None);
+        assert_eq!(SourceKind::of(Path::new("no-extension")), None);
+    }
+
+    #[test]
+    fn source_path_resolves_known_extensions() {
+        let dir = std::env::temp_dir().join(format!("fold-srcpath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("pdfs")).unwrap();
+        std::fs::write(dir.join("pdfs/photo.png"), b"png").unwrap();
+        std::fs::write(dir.join("pdfs/book.pdf"), b"pdf").unwrap();
+
+        assert_eq!(source_path(&dir, "photo"), Some(dir.join("pdfs/photo.png")));
+        assert_eq!(source_path(&dir, "book"), Some(dir.join("pdfs/book.pdf")));
+        assert_eq!(source_path(&dir, "absent"), None);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn add_doc_keeps_image_extension_and_rejects_cross_format() {
+        let dir = std::env::temp_dir().join(format!("fold-adddoc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let ctx = test_ctx(&dir);
+
+        let src = dir.join("src/My Photo.PNG");
+        std::fs::write(&src, b"png-bytes").unwrap();
+        let (doc, dest) = add_doc(&ctx, &src, None).unwrap();
+        assert_eq!(doc, "my-photo");
+        assert_eq!(dest, ctx.data.join("pdfs/my-photo.png"));
+        assert!(src.exists(), "add copies, never moves");
+
+        // same doc id under a different format: refuse both add and move
+        let pdf = dir.join("src/My Photo.pdf");
+        std::fs::write(&pdf, b"%PDF").unwrap();
+        assert!(add_doc(&ctx, &pdf, None).is_err());
+        assert!(move_doc(&ctx, &pdf, None).is_err());
+        assert!(pdf.exists(), "rejected source must be left in place");
+
+        // not an ingestible type at all
+        let txt = dir.join("src/notes.txt");
+        std::fs::write(&txt, b"hi").unwrap();
+        assert!(add_doc(&ctx, &txt, None).is_err());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn move_doc_relocates_dedups_and_rejects_conflicts() {
+        let dir = std::env::temp_dir().join(format!("fold-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let ctx = test_ctx(&dir);
 
         // move: source disappears, dest exists
         let src = dir.join("src/My Book.pdf");
         std::fs::write(&src, b"%PDF-alpha").unwrap();
-        let (doc, dest) = move_pdf(&ctx, &src, None).unwrap();
+        let (doc, dest) = move_doc(&ctx, &src, None).unwrap();
         assert_eq!(doc, "my-book");
         assert!(!src.exists());
         assert_eq!(std::fs::read(&dest).unwrap(), b"%PDF-alpha");
 
         // identical bytes already in the library: no-op, source kept
         std::fs::write(&src, b"%PDF-alpha").unwrap();
-        let (doc2, _) = move_pdf(&ctx, &src, None).unwrap();
+        let (doc2, _) = move_doc(&ctx, &src, None).unwrap();
         assert_eq!(doc2, "my-book");
         assert!(src.exists(), "duplicate source must not be deleted");
 
         // different bytes under the same doc id: refuse, don't overwrite
         std::fs::write(&src, b"%PDF-beta").unwrap();
-        assert!(move_pdf(&ctx, &src, None).is_err());
+        assert!(move_doc(&ctx, &src, None).is_err());
         assert_eq!(std::fs::read(&dest).unwrap(), b"%PDF-alpha");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The full-page guarantee: an image-sourced doc always yields at least
+    /// one CLIP-indexable region, even when detection finds nothing and the
+    /// ink gate would reject a blank-looking photo.
+    #[test]
+    fn page_figures_full_page_guarantee() {
+        let dir = std::env::temp_dir().join(format!("fold-figfull-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = PageOcr {
+            page: 1,
+            words: Vec::new(),
+        };
+
+        // white page: no ink anywhere, so PDF behavior finds nothing
+        image::RgbImage::from_pixel(200, 200, image::Rgb([255, 255, 255]))
+            .save(dir.join("page-0001.jpg"))
+            .unwrap();
+        let out = page_figures("d", &dir, None, &page, false);
+        assert!(out.keys.is_empty(), "pdf docs keep the ink gate");
+
+        let out = page_figures("d", &dir, None, &page, true);
+        assert_eq!(out.keys.len(), 1, "image docs index the whole page");
+        let (key, bbox) = &out.keys[0];
+        assert_eq!((key.page, key.idx), (1, 0));
+        assert_eq!(*bbox, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(out.crops.len(), 1);
+
+        // dark page: heuristic band (~0.81 area) passes the ink gate but is
+        // below FULL_PAGE_AREA, so the true full page is still added — once
+        image::RgbImage::from_pixel(200, 200, image::Rgb([10, 10, 10]))
+            .save(dir.join("page-0001.jpg"))
+            .unwrap();
+        let out = page_figures("d", &dir, None, &page, true);
+        let full: Vec<_> = out
+            .keys
+            .iter()
+            .filter(|(_, b)| b[2] * b[3] >= FULL_PAGE_AREA)
+            .collect();
+        assert_eq!(full.len(), 1, "exactly one whole-page region");
+        assert_eq!(full[0].1, [0.0, 0.0, 1.0, 1.0]);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

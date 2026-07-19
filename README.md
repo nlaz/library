@@ -62,8 +62,9 @@ cargo build --release
 (cd apps/librarian && swift build -c release)
 ```
 
-Point `--data` at a data directory and drop PDFs into `data/pdfs/`, then run
-the desktop app (`cargo tauri dev` in `apps/library-app`) or the server:
+Point `--data` at a data directory and drop PDFs or images (png/jpg) into
+`data/pdfs/`, then run the desktop app (`cargo tauri dev` in
+`apps/library-app`) or the server:
 
 ```bash
 cargo run -p library-server -- --data /path/to/data --web apps/web/dist
@@ -76,7 +77,7 @@ checked-in certs or keys.
 ## Background ingestion
 
 The Library keeps ingesting while the app is closed. The queue is the
-filesystem: any PDF in `data/pdfs/` whose `data/status/<doc>.json` isn't
+filesystem: any document in `data/pdfs/` whose `data/status/<doc>.json` isn't
 terminal is pending, so dropping a file into that folder is enough. A
 launchd agent runs `library-ingest worker` at login, every 15 minutes, and
 whenever `data/pdfs` changes:

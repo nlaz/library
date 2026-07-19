@@ -177,8 +177,8 @@ impl Committer for ProcessCommitter {
 // the queue
 // ---------------------------------------------------------------------------
 
-/// The work list: every `data/pdfs/<doc>.pdf` whose status is absent or
-/// non-terminal. `preparing` counts only when its claim is dead — a live
+/// The work list: every source file in `data/pdfs/` whose status is absent
+/// or non-terminal. `preparing` counts only when its claim is dead — a live
 /// claim means some process is already on it.
 pub fn pending(data: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(data.join("pdfs")) else {
@@ -187,9 +187,7 @@ pub fn pending(data: &Path) -> Vec<String> {
     let mut docs: Vec<String> = entries
         .filter_map(|e| {
             let p = e.ok()?.path();
-            if !p.extension()?.eq_ignore_ascii_case("pdf") {
-                return None;
-            }
+            crate::SourceKind::of(&p)?;
             let doc = p.file_stem()?.to_string_lossy().into_owned();
             let wanted = match status::read(data, &doc) {
                 None => true,
@@ -203,6 +201,10 @@ pub fn pending(data: &Path) -> Vec<String> {
         })
         .collect();
     docs.sort();
+    // a cross-format collision on disk (photo.pdf + photo.png) must not
+    // double-process the doc; add/move refuse to create one, but the folder
+    // is user-visible and files can land there by hand
+    docs.dedup();
     docs
 }
 
@@ -425,8 +427,17 @@ pub fn process_doc(
                 Some(recs) => (recs, None),
                 None => {
                     let _ = status::write(data, doc, &DocStatus::new(DocState::Preparing));
-                    let pdf = data.join("pdfs").join(format!("{doc}.pdf"));
-                    let res = crate::prepare_text(ctx, &pdf, doc, None, &mut |p| {
+                    let Some(src) = crate::source_path(data, doc) else {
+                        let _ = status::write(
+                            data,
+                            doc,
+                            &DocStatus::failed(format!(
+                                "source file for '{doc}' missing from data/pdfs"
+                            )),
+                        );
+                        return Outcome::Failed;
+                    };
+                    let res = crate::prepare_text(ctx, &src, doc, None, &mut |p| {
                         mirror.update(&p);
                         clock.update(&p);
                         progress(p);
@@ -569,6 +580,10 @@ mod tests {
         std::fs::write(data.join("pdfs").join(format!("{doc}.pdf")), b"%PDF-").unwrap();
     }
 
+    fn touch_src(data: &Path, name: &str) {
+        std::fs::write(data.join("pdfs").join(name), b"bytes").unwrap();
+    }
+
     fn set(data: &Path, doc: &str, state: DocState) {
         status::write(data, doc, &DocStatus::new(state)).unwrap();
     }
@@ -668,6 +683,20 @@ mod tests {
             pending(&data),
             vec!["absent", "prep-stale", "queued", "staged", "textready"]
         );
+        std::fs::remove_dir_all(&data).unwrap();
+    }
+
+    #[test]
+    fn pending_accepts_images_and_dedups_collisions() {
+        let data = tmp("pending-img");
+        touch_src(&data, "photo.png");
+        touch_src(&data, "scan.JPG");
+        touch_src(&data, "note.txt"); // not ingestible
+        // a cross-format collision that landed on disk by hand: one entry
+        touch_src(&data, "both.pdf");
+        touch_src(&data, "both.png");
+
+        assert_eq!(pending(&data), vec!["both", "photo", "scan"]);
         std::fs::remove_dir_all(&data).unwrap();
     }
 

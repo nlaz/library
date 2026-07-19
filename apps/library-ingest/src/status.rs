@@ -2,9 +2,9 @@
 //!
 //! One file per doc, written atomically (tmp + rename), so the app, the
 //! background worker, and any CLI run share one crash-safe view of what
-//! still needs ingesting. The filesystem is the source of truth: a PDF in
-//! `data/pdfs/` whose status is not terminal is pending work — there is no
-//! other queue.
+//! still needs ingesting. The filesystem is the source of truth: a source
+//! file in `data/pdfs/` whose status is not terminal is pending work —
+//! there is no other queue.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ pub enum DocState {
     Ready,
     /// Ingest errored (`error` says why). Terminal until re-queued.
     Failed,
-    /// Tombstone: the PDF stays in `data/pdfs/` but the doc is out of the
+    /// Tombstone: the source file stays in `data/pdfs/` but the doc is out of the
     /// library. Terminal until the same doc is re-added.
     Deleted,
 }

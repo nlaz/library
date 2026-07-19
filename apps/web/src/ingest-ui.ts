@@ -12,7 +12,7 @@ let libraryDir = ""; // <data>/pdfs, for the move-confirm dialog
 async function queueFiles(paths: string[]) {
   if (!desktop) return;
   // UX pre-filter only — the Rust ingest gate is authoritative
-  const exts = [".pdf", ".png", ".jpg", ".jpeg"];
+  const exts = [".pdf", ".png", ".jpg", ".jpeg", ".heic"];
   const files = paths.filter((p) => exts.some((e) => p.toLowerCase().endsWith(e)));
   if (!files.length) return;
   // the library owns its documents: adding a file MOVES it into the

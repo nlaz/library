@@ -566,10 +566,10 @@ fn probe(filter: Option<&str>) -> Result<()> {
     println!("|---|---|---|---|---|");
     for path in files {
         let id = path.file_stem().unwrap().to_string_lossy().to_string();
-        if let Some(f) = filter {
-            if !id.contains(f) {
-                continue;
-            }
+        if let Some(f) = filter
+            && !id.contains(f)
+        {
+            continue;
         }
         let mut fx: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
         resolve_context(&mut fx)?;
@@ -588,8 +588,7 @@ fn probe(filter: Option<&str>) -> Result<()> {
         let result: Value = stdout
             .lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|v| v["e"] == "result")
-            .next_back()
+            .rfind(|v| v["e"] == "result")
             .unwrap_or(json!({"ok": false, "error": "no result line", "raw": stdout.trim()}));
 
         let ran = result["ok"].as_bool().unwrap_or(false);

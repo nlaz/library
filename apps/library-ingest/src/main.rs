@@ -37,8 +37,8 @@ fn be_gentle() {
 
 #[derive(Parser)]
 enum Cli {
-    /// OCR a PDF or image (png/jpg), chunk + embed it, and load it into the
-    /// fold store.
+    /// OCR a PDF or image (png/jpg/heic), chunk + embed it, and load it
+    /// into the fold store.
     Ingest {
         file: PathBuf,
         #[arg(long, default_value = "data")]

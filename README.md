@@ -62,7 +62,7 @@ cargo build --release
 (cd apps/librarian && swift build -c release)
 ```
 
-Point `--data` at a data directory and drop PDFs or images (png/jpg) into
+Point `--data` at a data directory and drop PDFs or images (png/jpg/heic) into
 `data/pdfs/`, then run the desktop app (`cargo tauri dev` in
 `apps/library-app`) or the server:
 

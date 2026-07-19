@@ -5,7 +5,7 @@
 //! stores with live searches only needs exclusive store access for the brief
 //! atomic swap:
 //!
-//!   add_doc        copy the source file (pdf/png/jpeg) into data/pdfs
+//!   add_doc        copy the source file (pdf/png/jpeg/heic) into data/pdfs
 //!                  (the library owns it)
 //!   prepare_text   render + words (embedded text layer, else Apple Vision
 //!                  OCR; images render once and always OCR)
@@ -168,11 +168,14 @@ pub enum SourceKind {
 /// handler, CLI) classifies through [`SourceKind::of`], so adding a format
 /// means touching this table only. Order matters: [`source_path`] resolves
 /// in this order, pdf first.
-pub const SOURCE_EXTS: [(&str, SourceKind); 4] = [
+pub const SOURCE_EXTS: [(&str, SourceKind); 5] = [
     ("pdf", SourceKind::Pdf),
     ("png", SourceKind::Image),
     ("jpg", SourceKind::Image),
     ("jpeg", SourceKind::Image),
+    // iPhone photos; ImageIO decodes HEIC natively and the page render is
+    // JPEG either way, so nothing downstream changes
+    ("heic", SourceKind::Image),
 ];
 
 impl SourceKind {
@@ -268,7 +271,7 @@ fn source_dest(ctx: &IngestCtx, src: &Path, name: Option<String>) -> Result<(Str
     ) {
         (Some(_), Some(ext)) => ext.to_ascii_lowercase(),
         _ => bail!(
-            "unsupported file type: {} (want pdf, png, jpg, or jpeg)",
+            "unsupported file type: {} (want pdf, png, jpg, jpeg, or heic)",
             src.display()
         ),
     };
@@ -781,6 +784,7 @@ mod tests {
         assert_eq!(SourceKind::of(Path::new("a.png")), Some(SourceKind::Image));
         assert_eq!(SourceKind::of(Path::new("a.JPG")), Some(SourceKind::Image));
         assert_eq!(SourceKind::of(Path::new("a.jpeg")), Some(SourceKind::Image));
+        assert_eq!(SourceKind::of(Path::new("a.HEIC")), Some(SourceKind::Image));
         assert_eq!(SourceKind::of(Path::new("a.txt")), None);
         assert_eq!(SourceKind::of(Path::new("no-extension")), None);
     }

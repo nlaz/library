@@ -1,7 +1,9 @@
 // ---------------------------------------------------------------------------
 // page viewer overlay (opened from a result card) + the search popover /
 // in-book find bar: Cmd+F opens it (right side, clear of the results),
-// Escape closes it — and only it. Query text and results survive a close.
+// Escape closes it — and only it. In the library views query text and
+// results survive a close; in the reader, dismissing the find bar clears
+// the filter too, browser-find style.
 // ---------------------------------------------------------------------------
 
 import { pageUrl } from "./assets";
@@ -22,6 +24,7 @@ import {
 import { docTitle } from "./format";
 import { hlBoxes } from "./highlights";
 import { onHitStep, readerOpen, stepHit } from "./reader";
+import { sendQuery } from "./search";
 import type { WireHit } from "./types";
 
 let viewerHit: WireHit | null = null;
@@ -89,6 +92,13 @@ document.addEventListener(
       e.preventDefault();
       e.stopImmediatePropagation();
       closeSearchPop();
+      // in the reader the query is a find filter — dismissing the bar
+      // clears the highlights/ticks through the normal empty-query path
+      // (which also seq-guards any answer still in flight)
+      if (readerOpen() && $q.value) {
+        $q.value = "";
+        sendQuery("instant");
+      }
     }
   },
   true,

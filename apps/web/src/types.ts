@@ -1,6 +1,19 @@
 export type SnippetWord = { t: string; m: boolean };
+
+/** Note-box context on a `kind: "card"` hit. */
+export type CardMeta = {
+  id: string;
+  address: string;
+  title: string;
+  thread: number;
+  breadcrumb: string;
+};
+
+/** Jump target on a `kind: "annotation"` hit — the real doc/page. */
+export type AnnotMeta = { id: string; doc: string; page: number };
+
 export type WireHit = {
-  kind: "text" | "image";
+  kind: "text" | "image" | "card" | "annotation";
   score: number;
   doc: string;
   page: number;
@@ -9,6 +22,8 @@ export type WireHit = {
   snippet: SnippetWord[];
   boxes: [number, number, number, number][];
   crop: [number, number, number, number];
+  card?: CardMeta;
+  annot?: AnnotMeta;
 };
 export type WireResponse = { seq: number; phase: string; us: number; hits: WireHit[] };
 
@@ -56,6 +71,62 @@ export type DocInfo = {
 };
 
 export type OcrWord = { t: string; x: number; y: number; w: number; h: number };
+
+// --- marginalia: annotations + note-box cards -------------------------------
+
+/** Normalized [x, y, w, h], top-left origin, 0..1 — OCR word space. */
+export type Box = [number, number, number, number];
+
+/** Mirror of the Rust AnnotRec wire shape (serde-flattened kind tag). */
+export type AnnotRec = {
+  id: string;
+  doc: string;
+  page: number;
+  note: string;
+  created: number;
+} & (
+  | { kind: "text"; w0: number; w1: number; text: string; boxes: Box[] }
+  | { kind: "region"; bbox: Box }
+);
+
+export type LinkKind = "continues" | "relates";
+export type CardLink = { to: string; kind: LinkKind };
+
+/** A quoted passage: word range + snapshot, deep-linking into the reader. */
+export type QuoteAnchor = { doc: string; page: number; w0: number; w1: number; text: string };
+
+export type CardRec = {
+  id: string;
+  thread: number;
+  addr: number[];
+  title: string;
+  body: string;
+  evidence: QuoteAnchor[];
+  links: CardLink[];
+  created: number;
+  modified: number;
+  filed: boolean;
+  split_hinted: boolean;
+};
+
+export type NewCard = {
+  title: string;
+  body: string;
+  evidence: QuoteAnchor[];
+  links: CardLink[];
+  parent: string | null;
+  thread: number | null;
+};
+
+export type NeighborCard = { id: string; address: string; title: string; score: number };
+
+export type ThreadProposal = {
+  parent: string;
+  parent_address: string;
+  parent_title: string;
+  thread: number;
+  address: string;
+};
 
 // --- hidden perf view (Cmd+.) ---------------------------------------------
 

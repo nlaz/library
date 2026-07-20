@@ -313,8 +313,7 @@ where
         while let Some((_cd, c)) = fr.next() {
             let c = c as usize;
             let nbrs = self.nbr(c, layer);
-            for k in 0..nbrs.len() {
-                let n = nbrs[k];
+            for &n in nbrs {
                 if n == NONE {
                     continue;
                 }
@@ -575,8 +574,7 @@ where
         let mut chosen: Vec<u32> = Vec::with_capacity(cap);
         self.select_heuristic(&sel, cap, n as u32, &mut chosen);
 
-        for i in 0..len {
-            let z = cur[i];
+        for &z in cur.iter().take(len) {
             if z != newid && !chosen.contains(&z) {
                 self.remove_link(z as usize, n as u32, layer);
             }
@@ -620,8 +618,8 @@ where
                     sl += 1;
                 }
             }
-            for i in 0..sl {
-                self.remove_link(s[i] as usize, id, layer);
+            for &nb in s.iter().take(sl) {
+                self.remove_link(nb as usize, id, layer);
             }
             for i in 0..sl {
                 let n = s[i] as usize;
@@ -637,9 +635,9 @@ where
                         push(x, &mut pool);
                     }
                 }
-                for j in 0..sl {
+                for (j, &v) in s.iter().enumerate().take(sl) {
                     if j != i {
-                        push(s[j], &mut pool);
+                        push(v, &mut pool);
                     }
                 }
                 let mut sel: Vec<Item<Distance::Out>> = pool
@@ -748,8 +746,7 @@ where
             while let Some((_cd, c)) = fr.next() {
                 let c = c as usize;
                 let nbrs = self.nbr(c, 0);
-                for k in 0..nbrs.len() {
-                    let n = nbrs[k];
+                for &n in nbrs {
                     if n == NONE {
                         continue;
                     }
@@ -876,7 +873,11 @@ where
             if level as usize >= MAX_LEVEL {
                 return Err(LoadError::Corrupt);
             }
-            meta.push(NodeMeta { level, upper, alive });
+            meta.push(NodeMeta {
+                level,
+                upper,
+                alive,
+            });
         }
         let upper: Vec<u32> = c.raw_vec(upper_len)?;
         let free_nodes: Vec<u32> = c.raw_vec(free_nodes_len)?;
@@ -974,17 +975,21 @@ impl<'a> Cursor<'a> {
         self.pos += n;
         Ok(s)
     }
+    #[expect(clippy::unwrap_used)] // invariant below
     fn u32(&mut self) -> Result<u32, LoadError> {
+        // invariant: take(4)? returned a slice of exactly 4 bytes, so the
+        // conversion to [u8; 4] cannot fail.
         Ok(u32::from_ne_bytes(self.take(4)?.try_into().unwrap()))
     }
+    #[expect(clippy::unwrap_used)] // invariant below
     fn u64(&mut self) -> Result<u64, LoadError> {
+        // invariant: take(8)? returned a slice of exactly 8 bytes, so the
+        // conversion to [u8; 8] cannot fail.
         Ok(u64::from_ne_bytes(self.take(8)?.try_into().unwrap()))
     }
     // Read `n` T values by raw byte copy into a fresh, properly aligned Vec.
     fn raw_vec<T: Copy>(&mut self, n: usize) -> Result<Vec<T>, LoadError> {
-        let nbytes = n
-            .checked_mul(size_of::<T>())
-            .ok_or(LoadError::Corrupt)?;
+        let nbytes = n.checked_mul(size_of::<T>()).ok_or(LoadError::Corrupt)?;
         let src = self.take(nbytes)?;
         let mut v: Vec<T> = Vec::with_capacity(n);
         unsafe {
@@ -1568,10 +1573,16 @@ mod tests {
         let good = ix.to_bytes();
 
         assert_eq!(Ix8::from_bytes(L2, b"no").err(), Some(LoadError::Truncated));
-        assert_eq!(Ix8::from_bytes(L2, b"nope").err(), Some(LoadError::BadMagic));
+        assert_eq!(
+            Ix8::from_bytes(L2, b"nope").err(),
+            Some(LoadError::BadMagic)
+        );
         let mut bad_magic = good.clone();
         bad_magic[0] = b'X';
-        assert_eq!(Ix8::from_bytes(L2, &bad_magic).err(), Some(LoadError::BadMagic));
+        assert_eq!(
+            Ix8::from_bytes(L2, &bad_magic).err(),
+            Some(LoadError::BadMagic)
+        );
         // truncated mid-array
         assert_eq!(
             Ix8::from_bytes(L2, &good[..good.len() / 2]).err(),
@@ -1582,7 +1593,10 @@ mod tests {
         long.extend_from_slice(&[0u8; 16]);
         assert_eq!(Ix8::from_bytes(L2, &long).err(), Some(LoadError::Corrupt));
         // wrong shape: DIM 16 index reading a DIM 8 blob
-        assert_eq!(Ix16::from_bytes(L2, &good).err(), Some(LoadError::ShapeMismatch));
+        assert_eq!(
+            Ix16::from_bytes(L2, &good).err(),
+            Some(LoadError::ShapeMismatch)
+        );
     }
 
     // ======================= filtered search =======================
@@ -1657,12 +1671,20 @@ mod tests {
         for _ in 0..25 {
             let q: [f32; 8] = qrng.vec();
             let truth = brute(&subset, &q, 10);
-            let got: Vec<u32> = ix.search_among(&q, &ids).into_iter().map(|(_, i)| i).collect();
+            let got: Vec<u32> = ix
+                .search_among(&q, &ids)
+                .into_iter()
+                .map(|(_, i)| i)
+                .collect();
             assert_eq!(got, truth, "search_among must be exact");
         }
         // dead ids are skipped
         ix.remove(ids[0]);
-        let got: Vec<u32> = ix.search_among(&[0.5; 8], &ids).into_iter().map(|(_, i)| i).collect();
+        let got: Vec<u32> = ix
+            .search_among(&[0.5; 8], &ids)
+            .into_iter()
+            .map(|(_, i)| i)
+            .collect();
         assert!(!got.contains(&ids[0]));
     }
 }

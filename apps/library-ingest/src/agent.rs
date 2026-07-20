@@ -20,7 +20,9 @@ pub const LABEL: &str = "computer.flower.library.ingest";
 
 pub fn plist_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("no HOME")?;
-    Ok(PathBuf::from(home).join("Library/LaunchAgents").join(format!("{LABEL}.plist")))
+    Ok(PathBuf::from(home)
+        .join("Library/LaunchAgents")
+        .join(format!("{LABEL}.plist")))
 }
 
 pub fn plist_body(bin: &Path, data: &Path) -> String {
@@ -80,7 +82,7 @@ pub fn install(bin: &Path, data: &Path) -> Result<PathBuf> {
     if installed_matches(bin, data) {
         return Ok(path);
     }
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::create_dir_all(path.parent().expect("plist path always has a parent"))?;
     std::fs::create_dir_all(data.join("logs"))?;
     let tmp = path.with_extension("plist.tmp");
     std::fs::write(&tmp, plist_body(bin, data))?;

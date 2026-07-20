@@ -8,11 +8,12 @@
     <link rel="preload" href="/fonts/instrument-sans-vf.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin />
-    <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="/src/styles/index.css" />
   </head>
   <body>
     <header>
       <nav id="cols" role="group" title="Collections"></nav>
+      <button id="notes-toggle" title="Note box">notes</button>
       <button id="chat-toggle" title="Ask the librarian">chat</button>
     </header>
     <main>
@@ -35,8 +36,17 @@
           <div id="reader-pages"></div>
         </div>
         <div id="reader-ticks"></div>
+        <div id="reader-aticks"></div>
         <aside id="reader-drawer" hidden></aside>
       </div>
+    </section>
+    <section id="notes" hidden>
+      <div id="notes-top">
+        <button id="notes-back" title="Back (Esc)">←</button>
+        <div id="notes-title"></div>
+        <button id="notes-new" title="New card (c)">+ card</button>
+      </div>
+      <div id="notes-body"></div>
     </section>
     <div id="overlay" hidden>
       <aside id="viewer">

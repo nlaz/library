@@ -248,7 +248,7 @@ impl<D: Clone + Serialize, G: Push<D>> Push<D> for Distinct<D, G> {
 
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &D, delta: isize) {
         tx.buf.clear();
-        postcard::to_io(data, &mut tx.buf).unwrap();
+        postcard::to_io(data, &mut tx.buf).expect("postcard encode of distinct element failed");
         self.pending
             .entry(tx.buf.clone())
             .or_insert_with(|| (data.clone(), 0))
@@ -256,14 +256,20 @@ impl<D: Clone + Serialize, G: Push<D>> Push<D> for Distinct<D, G> {
     }
 
     fn commit(&mut self, tx: &mut WriteTx<'_>) {
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
         for (key, (data, delta)) in self.pending.drain() {
             if delta == 0 {
                 continue;
             }
             let cur = tx
                 .get(&ks, &key)
-                .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+                .map(|v| {
+                    i64::from_be_bytes(
+                        v.as_ref()
+                            .try_into()
+                            .expect("corrupt distinct count: not 8 bytes"),
+                    )
+                })
                 .unwrap_or(0);
             let new = cur + delta;
             debug_assert!(new >= 0, "distinct multiplicity went negative");

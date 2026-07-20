@@ -11,21 +11,18 @@
 /// hit-rate against this list; OCR salad has almost none.
 const STOPWORDS: &[&str] = &[
     // English
-    "the", "of", "and", "to", "a", "in", "is", "it", "you", "that", "for",
-    "on", "with", "as", "are", "this", "be", "at", "or", "from", "by",
-    "an", "was", "we", "can", "your", "all", "have", "will", "one", "but",
-    "not", "they", "his", "her", "has", "had", "more", "when", "which",
-    "their", "if", "there", "what", "about", "out", "up", "so", "them",
-    "some", "into", "than", "then", "its", "also", "how", "our", "these",
-    // Italian
-    "di", "e", "il", "la", "che", "un", "per", "è", "con", "non", "si",
-    "le", "del", "i", "da", "al", "come", "dei", "nel", "se", "della",
-    "o", "ma", "più", "lo", "su", "una", "questo", "anche", "ne", "gli",
-    "alla", "poi", "quando", "chi", "due", "essa", "ed", "delle", "alle",
+    "the", "of", "and", "to", "a", "in", "is", "it", "you", "that", "for", "on", "with", "as",
+    "are", "this", "be", "at", "or", "from", "by", "an", "was", "we", "can", "your", "all", "have",
+    "will", "one", "but", "not", "they", "his", "her", "has", "had", "more", "when", "which",
+    "their", "if", "there", "what", "about", "out", "up", "so", "them", "some", "into", "than",
+    "then", "its", "also", "how", "our", "these", // Italian
+    "di", "e", "il", "la", "che", "un", "per", "è", "con", "non", "si", "le", "del", "i", "da",
+    "al", "come", "dei", "nel", "se", "della", "o", "ma", "più", "lo", "su", "una", "questo",
+    "anche", "ne", "gli", "alla", "poi", "quando", "chi", "due", "essa", "ed", "delle", "alle",
     // French
-    "les", "des", "du", "et", "en", "une", "dans", "pour", "que", "qui",
-    "sur", "avec", "au", "aux", "ce", "cette", "elle", "pas", "ou",
-    "mais", "son", "sa", "ses", "vous", "nous", "je", "faire", "bien",
+    "les", "des", "du", "et", "en", "une", "dans", "pour", "que", "qui", "sur", "avec", "au", "aux",
+    "ce", "cette", "elle", "pas", "ou", "mais", "son", "sa", "ses", "vous", "nous", "je", "faire",
+    "bien",
 ];
 
 /// Pages at or above this overall score are served without hesitation;
@@ -97,8 +94,7 @@ pub fn legibility(text: &str) -> f32 {
     } else {
         (1.0 - (mean_len - 9.0) / 6.0).max(0.0)
     };
-    (0.55 * stop_score + 0.20 * shaped_score + 0.15 * junk_free + 0.10 * len_score)
-        .clamp(0.0, 1.0)
+    (0.55 * stop_score + 0.20 * shaped_score + 0.15 * junk_free + 0.10 * len_score).clamp(0.0, 1.0)
 }
 
 /// Minimum `legibility` over sliding ~40-token windows (stride 20).
@@ -148,7 +144,11 @@ pub fn legible_excerpt(text: &str) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.len() <= BLOCK {
         let joined = words.join(" ");
-        return if legibility(&joined) >= LEGIBLE_OK { joined } else { String::new() };
+        return if legibility(&joined) >= LEGIBLE_OK {
+            joined
+        } else {
+            String::new()
+        };
     }
     let mut out: Vec<String> = Vec::new();
     let mut prev_kept = false;
@@ -217,7 +217,10 @@ mod tests {
         assert!(ex.contains("do-it-yourself kit"), "prose survived: {ex}");
         // interior salad blocks drop; at most boundary bleed survives
         let veckly = ex.matches("Veckly").count();
-        assert!(veckly <= 1, "salad bulk dropped ({veckly} of 4 remain): {ex}");
+        assert!(
+            veckly <= 1,
+            "salad bulk dropped ({veckly} of 4 remain): {ex}"
+        );
         assert!(legibility(&ex) > legibility(&mixed));
         // fully garbled text has no quotable stretch at all
         assert_eq!(legible_excerpt(GARBLED), "");

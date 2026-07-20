@@ -1,0 +1,95 @@
+
+/* --- §8 search results ------------------------------------------------------ */
+
+#stats {
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  padding: 12px 20px 0;
+}
+
+#results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  padding: 16px 20px;
+}
+
+/* infinite-scroll sentinel: fixed height so it always has intersectable
+   area; "· · ·" while a page loads, "· end ·" when relevance ran out */
+#more {
+  min-height: 44px;
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  text-align: center;
+  padding: 14px 20px 24px;
+  letter-spacing: 0.4em;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.card:hover {
+  border-color: var(--line-strong);
+}
+
+.card.img .preview {
+  height: 240px; /* figures deserve a taller window than text strips */
+}
+
+.preview {
+  position: relative;
+  height: 190px; /* keep in sync with PREVIEW_H in main.ts */
+  overflow: hidden;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+
+.pv-inner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%; /* until place() measures the crop */
+}
+
+.pv-inner img {
+  width: 100%;
+  display: block;
+}
+
+.card .meta {
+  padding: 10px 12px;
+}
+
+.card .loc {
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card .snip {
+  color: var(--ink);
+  font-size: var(--fs-ui);
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* highlighter over the words, not colored words */
+mark {
+  background: var(--hl-wash);
+  color: inherit;
+  padding: 0 1px;
+}

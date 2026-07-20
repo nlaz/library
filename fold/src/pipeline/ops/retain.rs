@@ -11,7 +11,7 @@ use crate::{
 fn wall_clock_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock is before the unix epoch")
         .as_millis() as u64
 }
 
@@ -106,7 +106,8 @@ where
         self.ks_idx = Some(init.keyspace(&format!("{}_idx", self.name)));
         // resume the arrival sequence past any persisted buffer entries
         if let Some(last) = init.snapshot().last_key_value(&ks_buf) {
-            let ((_, seq), _) = <(u64, u64)>::decode(&last.key().unwrap());
+            let ((_, seq), _) =
+                <(u64, u64)>::decode(&last.key().expect("retain buffer scan failed"));
             self.seq = seq + 1;
         }
         self.ks_buf = Some(ks_buf);
@@ -115,7 +116,7 @@ where
 
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &V, delta: isize) {
         tx.buf.clear();
-        postcard::to_io(data, &mut tx.buf).unwrap();
+        postcard::to_io(data, &mut tx.buf).expect("postcard encode of retained record failed");
         self.pending
             .entry(tx.buf.clone())
             .or_insert_with(|| (data.clone(), 0))
@@ -123,8 +124,8 @@ where
     }
 
     fn commit(&mut self, tx: &mut WriteTx<'_>) {
-        let ks_buf = self.ks_buf.clone().unwrap();
-        let ks_idx = self.ks_idx.clone().unwrap();
+        let ks_buf = self.ks_buf.clone().expect("sink used before init()");
+        let ks_idx = self.ks_idx.clone().expect("sink used before init()");
         let now = (self.clock)();
 
         // expire everything stamped before the horizon; the buffer is in
@@ -132,7 +133,7 @@ where
         let cutoff = now.saturating_sub(self.horizon_ms);
         let mut expired = Vec::new();
         for kv in tx.iter(&ks_buf) {
-            let (key, value) = kv.into_inner().unwrap();
+            let (key, value) = kv.into_inner().expect("retain buffer scan failed");
             let ((ms, _), _) = <(u64, u64)>::decode(&key);
             if ms >= cutoff {
                 break;
@@ -140,10 +141,12 @@ where
             expired.push((key.to_vec(), value.to_vec()));
         }
         for (key, value) in expired {
-            let (count, val): (i64, V) = postcard::from_bytes(&value).unwrap();
+            let (count, val): (i64, V) = postcard::from_bytes(&value)
+                .expect("corrupt retain buffer entry: postcard decode failed");
 
             self.scratch.clear();
-            postcard::to_io(&val, &mut self.scratch).unwrap();
+            postcard::to_io(&val, &mut self.scratch)
+                .expect("postcard encode of retained record failed");
 
             let idx_key = &mut self.scratch;
             idx_key.extend_from_slice(&key);
@@ -164,7 +167,8 @@ where
                 self.seq += 1;
 
                 self.scratch.clear();
-                postcard::to_io(&(delta, &val), &mut self.scratch).unwrap();
+                postcard::to_io(&(delta, &val), &mut self.scratch)
+                    .expect("postcard encode of retain buffer entry failed");
 
                 tx.insert(&ks_buf, &key, &self.scratch);
                 let mut idx_key = enc_val;
@@ -177,7 +181,7 @@ where
                 // this record's entries
                 let mut idx_keys = Vec::new();
                 for kv in tx.prefix(&ks_idx, &enc_val) {
-                    idx_keys.push(kv.key().unwrap().to_vec());
+                    idx_keys.push(kv.key().expect("retain index scan failed").to_vec());
                 }
                 let mut need = -delta;
                 let mut matched = 0;
@@ -186,15 +190,19 @@ where
                         break;
                     }
                     let key = &idx_key[enc_val.len()..];
-                    let value = tx.get(&ks_buf, key).unwrap();
-                    let (count, _): (i64, V) = postcard::from_bytes(&value).unwrap();
+                    let value = tx
+                        .get(&ks_buf, key)
+                        .expect("retain buffer row missing for index entry");
+                    let (count, _): (i64, V) = postcard::from_bytes(&value)
+                        .expect("corrupt retain buffer entry: postcard decode failed");
                     let take = count.min(need);
                     if take == count {
                         tx.remove(&ks_buf, key);
                         tx.remove(&ks_idx, &idx_key);
                     } else {
                         self.scratch.clear();
-                        postcard::to_io(&(count - take, &val), &mut self.scratch).unwrap();
+                        postcard::to_io(&(count - take, &val), &mut self.scratch)
+                            .expect("postcard encode of retain buffer entry failed");
                         tx.insert(&ks_buf, key, &self.scratch);
                     }
                     need -= take;

@@ -7,7 +7,18 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import type { Transport } from "./transport";
-import type { Collections, DocInfo, IngestEvent, QueryMsg, WireResponse } from "./types";
+import type {
+  AnnotRec,
+  CardRec,
+  Collections,
+  DocInfo,
+  IngestEvent,
+  NeighborCard,
+  NewCard,
+  QueryMsg,
+  ThreadProposal,
+  WireResponse,
+} from "./types";
 
 export class TauriTransport implements Transport {
   private cb: (msg: WireResponse) => void = () => {};
@@ -66,7 +77,7 @@ export function ingestPaths(
 /** Ask before relocating files into the library folder. */
 export function confirmMove(names: string[], destDir: string): Promise<boolean> {
   const what =
-    names.length === 1 ? `“${names[0]}”` : `${names.length} PDFs`;
+    names.length === 1 ? `“${names[0]}”` : `${names.length} files`;
   return confirmDialog(
     `This will move ${what} into your library folder (${destDir}). Move ${names.length === 1 ? "it" : "them"}?`,
     { title: "Add to library", kind: "info" },
@@ -89,7 +100,7 @@ export function setCollections(doc: string, collections: string[]): Promise<void
   return invoke("set_collections", { doc, collections });
 }
 
-/** Remove a doc from the library (its PDF in data/pdfs is kept). */
+/** Remove a doc from the library (its source file in data/pdfs is kept). */
 export function deleteDoc(doc: string): Promise<void> {
   return invoke("delete_doc", { doc });
 }
@@ -101,7 +112,7 @@ export function retryDoc(doc: string): Promise<void> {
 
 export function confirmDelete(title: string): Promise<boolean> {
   return confirmDialog(
-    `Remove “${title}” from the library? Its pages and search entries are deleted; the PDF is kept.`,
+    `Remove “${title}” from the library? Its pages and search entries are deleted; the original file is kept.`,
     { title: "Delete document", kind: "warning" },
   );
 }
@@ -130,6 +141,40 @@ export async function chatTurn(
 /** Cancel the active chat turn (the sidecar stops between snapshots). */
 export function chatCancel(): void {
   invoke("chat_cancel").catch(() => {});
+}
+
+// --- marginalia: annotations + note-box cards -------------------------------
+
+export function listAnnotations(doc: string): Promise<AnnotRec[]> {
+  return invoke<AnnotRec[]>("list_annotations", { doc });
+}
+
+export function saveAnnotation(annot: AnnotRec): Promise<AnnotRec> {
+  return invoke<AnnotRec>("save_annotation", { annot });
+}
+
+export function deleteAnnotation(doc: string, id: string): Promise<void> {
+  return invoke("delete_annotation", { doc, id });
+}
+
+export function listCards(): Promise<CardRec[]> {
+  return invoke<CardRec[]>("list_cards");
+}
+
+export function createCard(input: NewCard): Promise<CardRec> {
+  return invoke<CardRec>("create_card", { input });
+}
+
+export function updateCard(card: CardRec): Promise<CardRec> {
+  return invoke<CardRec>("update_card", { card });
+}
+
+export function proposeThread(text: string): Promise<ThreadProposal | null> {
+  return invoke<ThreadProposal | null>("propose_thread", { text });
+}
+
+export function cardNeighbors(id: string, k?: number): Promise<NeighborCard[]> {
+  return invoke<NeighborCard[]>("card_neighbors", { id, k });
 }
 
 export function onIngestProgress(cb: (e: IngestEvent) => void): void {

@@ -71,17 +71,17 @@ where
 
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &Keyed<K, V>, delta: isize) {
         tx.buf.clear();
-        postcard::to_io(&data.key, &mut tx.buf).unwrap();
+        postcard::to_io(&data.key, &mut tx.buf).expect("postcard encode of table key failed");
         self.pending
             .insert(tx.buf.clone(), (data.val.clone(), delta));
     }
 
     fn commit(&mut self, tx: &mut WriteTx<'_>) {
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
         for (key, (val, delta)) in self.pending.drain() {
             if delta > 0 {
                 tx.buf.clear();
-                postcard::to_io(&val, &mut tx.buf).unwrap();
+                postcard::to_io(&val, &mut tx.buf).expect("postcard encode of table value failed");
                 let v = std::mem::take(&mut tx.buf);
                 tx.insert(&ks, &key, &v);
                 tx.buf = v;
@@ -98,7 +98,7 @@ where
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         TableReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
             _p: PhantomData,
         }
     }
@@ -118,7 +118,7 @@ impl<'tx, R: Readable, K: Serialize, V: DeserializeOwned> TableReader<'tx, R, K,
         }
         KEY_BUF.with_borrow_mut(|buf| {
             buf.clear();
-            postcard::to_io(key, &mut *buf).unwrap();
+            postcard::to_io(key, &mut *buf).expect("postcard encode of table key failed");
             f(self, buf)
         })
     }
@@ -126,15 +126,18 @@ impl<'tx, R: Readable, K: Serialize, V: DeserializeOwned> TableReader<'tx, R, K,
     /// The current value under `key`, if any.
     pub fn get(&self, key: &K) -> Option<V> {
         self.with_key(key, |s, k| {
-            s.tx.get(&s.ks, k)
-                .unwrap()
-                .map(|v| postcard::from_bytes(&v).unwrap())
+            s.tx.get(&s.ks, k).expect("table read failed").map(|v| {
+                postcard::from_bytes(&v).expect("corrupt table value: postcard decode failed")
+            })
         })
     }
 
     /// Whether `key` holds a value.
     pub fn contains(&self, key: &K) -> bool {
-        self.with_key(key, |s, k| s.tx.contains_key(&s.ks, k).unwrap())
+        self.with_key(key, |s, k| {
+            s.tx.contains_key(&s.ks, k)
+                .expect("table contains read failed")
+        })
     }
 
     /// Iterate all `(key, value)` pairs, ordered by the key's `postcard`
@@ -144,10 +147,10 @@ impl<'tx, R: Readable, K: Serialize, V: DeserializeOwned> TableReader<'tx, R, K,
         K: DeserializeOwned,
     {
         self.tx.iter(&self.ks).map(|kv| {
-            let (key, val) = kv.into_inner().unwrap();
+            let (key, val) = kv.into_inner().expect("table scan failed");
             (
-                postcard::from_bytes(&key).unwrap(),
-                postcard::from_bytes(&val).unwrap(),
+                postcard::from_bytes(&key).expect("corrupt table key: postcard decode failed"),
+                postcard::from_bytes(&val).expect("corrupt table value: postcard decode failed"),
             )
         })
     }

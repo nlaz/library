@@ -102,18 +102,16 @@ fn ingest(
 
     // ids continue from the persisted count, so history-across-restarts
     // works if you remove the cleanup in main
-    let mut next_id = st.rtx(|(total, _, _)| total.get()) as u64;
+    let next_id = st.rtx(|(total, _, _)| total.get()) as u64;
     let _ = state_tx.send(snapshot!(st));
 
-    for (author, body) in rx {
+    for (id, (author, body)) in (next_id..).zip(rx) {
         let msg = ChatMsg {
-            id: next_id,
+            id,
             at_ms: now_ms(),
             author,
             body,
         };
-        next_id += 1;
-
         st.wtx(|tx| tx.insert(&msg));
         let _ = state_tx.send(snapshot!(st));
     }

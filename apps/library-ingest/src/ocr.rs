@@ -1,7 +1,9 @@
-//! Render PDF pages to JPEG and extract their words, in-process. Pages with
-//! an embedded text layer (see `pdftext`) skip OCR entirely; the rest go
-//! through Apple Vision. Work fans out across a small worker pool — Vision
-//! and the renderer are the ingest's long pole, and pages are independent.
+//! Render source files to page JPEGs and extract their words, in-process.
+//! PDF pages with an embedded text layer (see `pdftext`) skip OCR entirely;
+//! the rest go through Apple Vision. Standalone images ([`ocr_image`]) are
+//! one-page docs and always OCR. PDF work fans out across a small worker
+//! pool — Vision and the renderer are the ingest's long pole, and pages are
+//! independent.
 //!
 //! The on-disk contract is unchanged so existing caches stay valid:
 //!
@@ -23,12 +25,17 @@ use objc2::rc::autoreleasepool;
 use objc2_core_foundation::{
     CFDictionary, CFNumber, CFRetained, CFString, CFURL, CGPoint, CGRect, CGSize,
 };
+use objc2_core_foundation::{CFType, kCFBooleanTrue};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGContext, CGImage,
     CGImageAlphaInfo, CGPDFBox, CGPDFDocument, CGPDFPage,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSRange};
-use objc2_image_io::{CGImageDestination, kCGImageDestinationLossyCompressionQuality};
+use objc2_image_io::{
+    CGImageDestination, CGImageSource, kCGImageDestinationLossyCompressionQuality,
+    kCGImageSourceCreateThumbnailFromImageAlways, kCGImageSourceCreateThumbnailWithTransform,
+    kCGImageSourceThumbnailMaxPixelSize,
+};
 use objc2_vision::{
     VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel,
 };
@@ -89,8 +96,8 @@ pub fn ocr_pdf(
                 // undocumented, and reopening is nothing next to a page of
                 // OCR. The progress callback isn't Send, so results go back
                 // over the channel and the caller's thread reports them.
-                let Some(doc) = CFURL::from_file_path(pdf)
-                    .and_then(|url| CGPDFDocument::with_url(Some(&url)))
+                let Some(doc) =
+                    CFURL::from_file_path(pdf).and_then(|url| CGPDFDocument::with_url(Some(&url)))
                 else {
                     let _ = tx.send(Err(anyhow::anyhow!("cannot open {}", pdf.display())));
                     return;
@@ -112,7 +119,10 @@ pub fn ocr_pdf(
         for msg in rx {
             layered += usize::from(msg?);
             done += 1;
-            progress(Progress::Ocr { done: (skipped + done) as u32, total: n as u32 });
+            progress(Progress::Ocr {
+                done: (skipped + done) as u32,
+                total: n as u32,
+            });
         }
         Ok(())
     })?;
@@ -151,11 +161,75 @@ fn process_page(
             None => Ok((ocr_words(&img)?, false)),
         }
     })?;
-    // tmp + rename so a crash can't leave a half-written page json
-    let tmp = js.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&PageOcr { page: i as u32, words })?)?;
-    std::fs::rename(&tmp, &js)?;
+    write_page_json(&js, i as u32, words)?;
     Ok(layered)
+}
+
+/// Write a page's words as OCR JSON, via tmp + rename so a crash can't
+/// leave a half-written file.
+fn write_page_json(js: &Path, page: u32, words: Vec<Word>) -> Result<()> {
+    let tmp = js.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(&PageOcr { page, words })?)?;
+    std::fs::rename(&tmp, js)?;
+    Ok(())
+}
+
+/// One image file is a one-page doc: decode via ImageIO (EXIF orientation
+/// applied, longest edge capped at `width`, never upscaled), write
+/// page-0001.jpg, Vision-OCR it, write page-0001.json. Same on-disk contract
+/// as [`ocr_pdf`], including the incremental skip when both files exist.
+pub fn ocr_image(
+    src: &Path,
+    pages_dir: &Path,
+    ocr_dir: &Path,
+    width: u32,
+    progress: ProgressFn,
+) -> Result<()> {
+    std::fs::create_dir_all(pages_dir)?;
+    std::fs::create_dir_all(ocr_dir)?;
+    let jpg = pages_dir.join("page-0001.jpg");
+    let js = ocr_dir.join("page-0001.json");
+
+    let cached = jpg.exists() && js.exists();
+    if !cached {
+        // drain autoreleased buffers like process_page does — callers may
+        // ingest many images back to back
+        let words = autoreleasepool(|_| -> Result<Vec<Word>> {
+            let url = CFURL::from_file_path(src).context("bad image path")?;
+            let source = unsafe { CGImageSource::with_url(&url, None) }
+                .with_context(|| format!("cannot open {}", src.display()))?;
+            // thumbnail_at_index rather than image_at_index: it applies the
+            // EXIF orientation (a phone photo would otherwise OCR sideways)
+            // and downscales to `width` in one decode, never upscaling
+            let yes = unsafe { kCFBooleanTrue }.context("no kCFBooleanTrue")?;
+            let max_px = CFNumber::new_i32(width as i32);
+            let keys = unsafe {
+                [
+                    kCGImageSourceCreateThumbnailFromImageAlways,
+                    kCGImageSourceCreateThumbnailWithTransform,
+                    kCGImageSourceThumbnailMaxPixelSize,
+                ]
+            };
+            let values: [&CFType; 3] = [yes, yes, &max_px];
+            let opts = CFDictionary::from_slices(&keys, &values);
+            let img = unsafe { source.thumbnail_at_index(0, Some(opts.as_opaque())) }
+                .with_context(|| format!("cannot decode {}", src.display()))?;
+            save_jpeg(&img, &jpg)?;
+            ocr_words(&img)
+        })?;
+        write_page_json(&js, 1, words)?;
+    }
+    progress(Progress::Ocr { done: 1, total: 1 });
+    let (vision, skipped) = (u32::from(!cached), u32::from(cached));
+    progress(Progress::Log(format!(
+        "ocr complete: 0 text-layer, {vision} ocr'd, {skipped} cached, 1 total"
+    )));
+    progress(Progress::OcrSummary {
+        text_layer: 0,
+        vision,
+        cached: skipped,
+    });
+    Ok(())
 }
 
 /// Rasterize page `i` (1-based) to `width` px wide, white background.
@@ -185,7 +259,10 @@ fn render_page(doc: &CGPDFDocument, i: usize, width: u32) -> Result<CFRetained<C
     .context("cannot create bitmap context")?;
     let rect = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
-        size: CGSize { width: w as f64, height: h as f64 },
+        size: CGSize {
+            width: w as f64,
+            height: h as f64,
+        },
     };
     CGContext::set_rgb_fill_color(Some(&ctx), 1.0, 1.0, 1.0, 1.0);
     CGContext::fill_rect(Some(&ctx), rect);
@@ -196,7 +273,10 @@ fn render_page(doc: &CGPDFDocument, i: usize, width: u32) -> Result<CFRetained<C
     CGContext::scale_ctm(Some(&ctx), scale, scale);
     let natural = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
-        size: CGSize { width: pw, height: ph },
+        size: CGSize {
+            width: pw,
+            height: ph,
+        },
     };
     let tf = CGPDFPage::drawing_transform(Some(&page), CGPDFBox::MediaBox, natural, 0, true);
     CGContext::concat_ctm(Some(&ctx), tf);
@@ -272,12 +352,11 @@ fn ocr_words(img: &CGImage) -> Result<Vec<Word>> {
 
 /// Whitespace-split `line`, yielding each token with its byte offset.
 pub(crate) fn split_tokens(line: &str) -> impl Iterator<Item = (usize, &str)> {
-    line.split_whitespace()
-        .scan(0usize, |pos, tok| {
-            let loc = line[*pos..].find(tok).expect("token comes from this line") + *pos;
-            *pos = loc + tok.len();
-            Some((loc, tok))
-        })
+    line.split_whitespace().scan(0usize, |pos, tok| {
+        let loc = line[*pos..].find(tok).expect("token comes from this line") + *pos;
+        *pos = loc + tok.len();
+        Some((loc, tok))
+    })
 }
 
 pub(crate) fn utf16_len(s: &str) -> usize {
@@ -309,5 +388,34 @@ mod tests {
     fn round5_matches_contract() {
         assert_eq!(round5(0.123456789), 0.12346);
         assert_eq!(round5(1.0), 1.0);
+    }
+
+    #[test]
+    fn ocr_image_skips_cached_page() {
+        let dir = std::env::temp_dir().join(format!("ocr-imgcache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (pages, ocr) = (dir.join("pages"), dir.join("ocr"));
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::create_dir_all(&ocr).unwrap();
+        std::fs::write(pages.join("page-0001.jpg"), b"jpg").unwrap();
+        std::fs::write(ocr.join("page-0001.json"), br#"{"page":1,"words":[]}"#).unwrap();
+
+        let mut summary = None;
+        let mut cb = |p: Progress| {
+            if let Progress::OcrSummary {
+                text_layer,
+                vision,
+                cached,
+            } = p
+            {
+                summary = Some((text_layer, vision, cached));
+            }
+        };
+        // a nonexistent src proves the cache check runs before any decode:
+        // reaching ImageIO or Vision here would error, not skip
+        ocr_image(Path::new("/nonexistent.png"), &pages, &ocr, 1600, &mut cb).unwrap();
+        assert_eq!(summary, Some((0, 0, 1)));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

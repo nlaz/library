@@ -12,6 +12,25 @@ members = [
     "apps/library-app",
 ]
 
+[workspace.package]
+edition = "2024"
+# truthful floor: fold uses APIs stabilized in 1.93 (clippy enforces this
+# via incompatible_msrv); CI pins the actual toolchain in rust-toolchain.toml
+rust-version = "1.93"
+
+# Shared lint policy (see AGENTS.md). Members opt in with [lints]
+# workspace = true; examples/* and tools stay unlinted demo code.
+# unwrap_used: audited crates only — survivors carry #[expect] + an
+# // invariant: comment; tests are exempt via clippy.toml.
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+# fold's statically-composed pipelines put the whole graph in the type;
+# nested generics are the design, not an accident (see Graph in
+# library-core::store)
+type_complexity = "allow"
+
 [workspace.dependencies]
 fold = { path = "fold" }
 anny = { path = "anny" }

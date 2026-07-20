@@ -2,9 +2,9 @@
 //!
 //! One file per doc, written atomically (tmp + rename), so the app, the
 //! background worker, and any CLI run share one crash-safe view of what
-//! still needs ingesting. The filesystem is the source of truth: a PDF in
-//! `data/pdfs/` whose status is not terminal is pending work — there is no
-//! other queue.
+//! still needs ingesting. The filesystem is the source of truth: a source
+//! file in `data/pdfs/` whose status is not terminal is pending work —
+//! there is no other queue.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ pub enum DocState {
     Ready,
     /// Ingest errored (`error` says why). Terminal until re-queued.
     Failed,
-    /// Tombstone: the PDF stays in `data/pdfs/` but the doc is out of the
+    /// Tombstone: the source file stays in `data/pdfs/` but the doc is out of the
     /// library. Terminal until the same doc is re-added.
     Deleted,
 }
@@ -77,7 +77,10 @@ impl DocStatus {
     }
 
     pub fn failed(error: String) -> Self {
-        DocStatus { error: Some(error), ..DocStatus::new(DocState::Failed) }
+        DocStatus {
+            error: Some(error),
+            ..DocStatus::new(DocState::Failed)
+        }
     }
 }
 
@@ -97,13 +100,11 @@ fn path(data: &Path, doc: &str) -> PathBuf {
 }
 
 /// Serialize `v` as pretty JSON via tmp + rename, so concurrent readers
-/// never see a torn file.
+/// never see a torn file. Delegates to the core helper (shared with cards
+/// and annotations), keeping the anyhow context ingest callers expect.
 pub fn write_json_atomic<T: Serialize>(path: &Path, v: &T) -> Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(v)?)
-        .with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    library_core::sidecar::write_json_atomic(path, v)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 pub fn read(data: &Path, doc: &str) -> Option<DocStatus> {

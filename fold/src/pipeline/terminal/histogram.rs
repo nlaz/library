@@ -92,14 +92,20 @@ where
         if self.pending.is_empty() {
             return;
         }
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
         for (key, delta) in self.pending.drain() {
             if delta == 0 {
                 continue;
             }
             let cur = tx
                 .get(&ks, &key)
-                .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+                .map(|v| {
+                    i64::from_be_bytes(
+                        v.as_ref()
+                            .try_into()
+                            .expect("corrupt histogram count: not 8 bytes"),
+                    )
+                })
                 .unwrap_or(0);
             let new = cur + delta;
             debug_assert!(new >= 0, "histogram count went negative");
@@ -111,7 +117,13 @@ where
         }
         let total = tx
             .get(&ks, [TOTAL])
-            .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+            .map(|v| {
+                i64::from_be_bytes(
+                    v.as_ref()
+                        .try_into()
+                        .expect("corrupt histogram total: not 8 bytes"),
+                )
+            })
             .unwrap_or(0)
             + self.total;
         if total > 0 {
@@ -130,7 +142,7 @@ where
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         HistogramReader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
             _p: PhantomData,
         }
     }
@@ -148,8 +160,14 @@ impl<'tx, R: Readable, T: Score> HistogramReader<'tx, R, T> {
     pub fn total(&self) -> i64 {
         self.tx
             .get(&self.ks, [TOTAL])
-            .unwrap()
-            .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+            .expect("histogram total read failed")
+            .map(|v| {
+                i64::from_be_bytes(
+                    v.as_ref()
+                        .try_into()
+                        .expect("corrupt histogram total: not 8 bytes"),
+                )
+            })
             .unwrap_or(0)
     }
 
@@ -159,8 +177,14 @@ impl<'tx, R: Readable, T: Score> HistogramReader<'tx, R, T> {
         bucket.encode(&mut key);
         self.tx
             .get(&self.ks, &key)
-            .unwrap()
-            .map(|v| i64::from_be_bytes(v.as_ref().try_into().unwrap()))
+            .expect("histogram bucket read failed")
+            .map(|v| {
+                i64::from_be_bytes(
+                    v.as_ref()
+                        .try_into()
+                        .expect("corrupt histogram count: not 8 bytes"),
+                )
+            })
             .unwrap_or(0)
     }
 
@@ -168,10 +192,14 @@ impl<'tx, R: Readable, T: Score> HistogramReader<'tx, R, T> {
     /// order; `.rev()` scans descending.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (T, i64)> + '_ {
         self.tx.prefix(&self.ks, [BUCKET]).map(|kv| {
-            let (key, val) = kv.into_inner().unwrap();
+            let (key, val) = kv.into_inner().expect("histogram scan failed");
             (
                 T::decode(&key[1..]).0,
-                i64::from_be_bytes(val.as_ref().try_into().unwrap()),
+                i64::from_be_bytes(
+                    val.as_ref()
+                        .try_into()
+                        .expect("corrupt histogram count: not 8 bytes"),
+                ),
             )
         })
     }

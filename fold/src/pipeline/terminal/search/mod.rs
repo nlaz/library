@@ -191,14 +191,14 @@ where
         for (term, n) in tf {
             tx.buf.clear();
             tx.buf.push(POSTING);
-            postcard::to_io(term, &mut tx.buf).unwrap();
-            postcard::to_io(key, &mut tx.buf).unwrap();
+            postcard::to_io(term, &mut tx.buf).expect("postcard encode of bm25 term failed");
+            postcard::to_io(key, &mut tx.buf).expect("postcard encode of bm25 doc key failed");
             *self.postings.entry(tx.buf.clone()).or_insert(0) += n * delta;
         }
 
         tx.buf.clear();
         tx.buf.push(DOCLEN);
-        postcard::to_io(key, &mut tx.buf).unwrap();
+        postcard::to_io(key, &mut tx.buf).expect("postcard encode of bm25 doc key failed");
         *self.doc_lens.entry(tx.buf.clone()).or_insert(0) += dl * delta;
 
         self.docs += delta;
@@ -209,14 +209,16 @@ where
         if self.postings.is_empty() && self.doc_lens.is_empty() {
             return;
         }
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
         fold(tx, &ks, &mut self.postings);
 
         // fold doc_lens into fjall AND mirror the same net-delta semantics
         // into doc_len_cache, so search never needs a point-read to learn a
         // document's length
         {
-            let mut cache = self.doc_len_cache.write().unwrap();
+            let mut cache = self.doc_len_cache.write().expect(
+                "bm25 doc-length cache lock poisoned by an earlier panic; reopen the store",
+            );
             let cache = cache.get_or_insert_with(FxHashMap::default);
             for (key, delta) in self.doc_lens.drain() {
                 match delta {
@@ -238,8 +240,8 @@ where
             .map(|v| {
                 let v = v.as_ref();
                 (
-                    i64::from_be_bytes(v[..8].try_into().unwrap()),
-                    i64::from_be_bytes(v[8..].try_into().unwrap()),
+                    i64::from_be_bytes(v[..8].try_into().expect("corrupt bm25 stats row")),
+                    i64::from_be_bytes(v[8..].try_into().expect("corrupt bm25 stats row")),
                 )
             })
             .unwrap_or((0, 0));
@@ -267,7 +269,7 @@ where
     fn reader<'tx, R: Readable>(&self, tx: &'tx R) -> Self::Reader<'tx, R> {
         Bm25Reader {
             tx,
-            ks: self.ks.clone().unwrap(),
+            ks: self.ks.clone().expect("sink used before init()"),
             tok: self.tok.clone(),
             k1: self.k1,
             b: self.b,
@@ -292,12 +294,12 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
     fn stats(&self) -> (i64, i64) {
         self.tx
             .get(&self.ks, [STATS])
-            .unwrap()
+            .expect("bm25 stats read failed")
             .map(|v| {
                 let v = v.as_ref();
                 (
-                    i64::from_be_bytes(v[..8].try_into().unwrap()),
-                    i64::from_be_bytes(v[8..].try_into().unwrap()),
+                    i64::from_be_bytes(v[..8].try_into().expect("corrupt bm25 stats row")),
+                    i64::from_be_bytes(v[8..].try_into().expect("corrupt bm25 stats row")),
                 )
             })
             .unwrap_or((0, 0))
@@ -316,16 +318,31 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
     /// is then correct for every later search, updated incrementally by
     /// `Bm25::commit`.
     fn doc_len(&self, doclen_key: &[u8]) -> f64 {
-        if let Some(map) = self.doc_len_cache.read().unwrap().as_ref() {
+        if let Some(map) = self
+            .doc_len_cache
+            .read()
+            .expect("bm25 doc-length cache lock poisoned by an earlier panic; reopen the store")
+            .as_ref()
+        {
             return map.get(doclen_key).copied().unwrap_or(0) as f64;
         }
         let mut map = FxHashMap::default();
         for kv in self.tx.prefix(&self.ks, [DOCLEN]) {
-            let (key, val) = kv.into_inner().unwrap();
-            map.insert(key.to_vec(), i64::from_be_bytes(*val.as_array::<8>().unwrap()));
+            let (key, val) = kv.into_inner().expect("bm25 doc-length scan failed");
+            map.insert(
+                key.to_vec(),
+                i64::from_be_bytes(
+                    *val.as_array::<8>()
+                        .expect("corrupt bm25 doc length: not 8 bytes"),
+                ),
+            );
         }
         let dl = map.get(doclen_key).copied().unwrap_or(0) as f64;
-        *self.doc_len_cache.write().unwrap() = Some(map);
+        *self
+            .doc_len_cache
+            .write()
+            .expect("bm25 doc-length cache lock poisoned by an earlier panic; reopen the store") =
+            Some(map);
         dl
     }
 
@@ -382,15 +399,22 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
                 }
                 bufs.key.clear();
                 bufs.key.push(POSTING);
-                postcard::to_io(term, &mut bufs.key).unwrap();
+                postcard::to_io(term, &mut bufs.key).expect("postcard encode of bm25 term failed");
                 let plen = bufs.key.len();
-                let t = if cfg!(debug_assertions) { Some(std::time::Instant::now()) } else { None };
+                let t = if cfg!(debug_assertions) {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 bufs.postings
                     .extend(self.tx.prefix(&self.ks, &bufs.key[..]).map(|kv| {
-                        let (key, val) = kv.into_inner().unwrap();
+                        let (key, val) = kv.into_inner().expect("bm25 postings scan failed");
                         (
                             key[plen..].to_vec(),
-                            i64::from_be_bytes(*val.as_array::<8>().unwrap()),
+                            i64::from_be_bytes(
+                                *val.as_array::<8>()
+                                    .expect("corrupt bm25 term frequency: not 8 bytes"),
+                            ),
                         )
                     }));
                 if bufs.postings.is_empty() {
@@ -409,7 +433,9 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
                         Entry::Vacant(e) => {
                             // filter at first sight of the doc, before
                             // limit-truncation
-                            if !pred(&postcard::from_bytes::<K>(e.key()).unwrap()) {
+                            let key = postcard::from_bytes::<K>(e.key())
+                                .expect("corrupt bm25 posting key: postcard decode failed");
+                            if !pred(&key) {
                                 bufs.rejected.insert(e.into_key());
                                 continue;
                             }
@@ -436,7 +462,13 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
             let mut hits: Vec<Scored<f64, K>> = bufs
                 .docs
                 .drain()
-                .map(|(kenc, (score, _))| Scored::new(score, postcard::from_bytes(&kenc).unwrap()))
+                .map(|(kenc, (score, _))| {
+                    Scored::new(
+                        score,
+                        postcard::from_bytes(&kenc)
+                            .expect("corrupt bm25 posting key: postcard decode failed"),
+                    )
+                })
                 .collect();
             hits.sort_by(|a, b| b.score.total_cmp(&a.score));
             hits.truncate(limit);

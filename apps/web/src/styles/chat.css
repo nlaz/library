@@ -1,0 +1,204 @@
+
+/* --- §15 librarian chat ------------------------------------------------------
+   Right-docked collapsible panel, toggled from the header. Overlays the
+   reader (z 11 > reader 8, viewer 10) so citation chips can flip pages
+   underneath without closing the conversation. */
+
+#chat-toggle {
+  margin-left: auto;
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  padding: 4px 10px;
+}
+
+#chat-toggle:active {
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  transform: translate(1px, 1px);
+}
+
+#chat {
+  position: fixed;
+  top: 52px;
+  right: 0;
+  bottom: 0;
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, 90vw);
+  background: var(--surface);
+  border-top: 1px solid var(--line-strong);
+  border-left: 1px solid var(--line-strong);
+}
+
+#chat[hidden] {
+  display: none;
+}
+
+#chat::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 0;
+  left: -5px;
+  width: 4px;
+  background: var(--dither-50) 0 0 / 2px 2px;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+#chat-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  color: var(--ink-dim);
+}
+
+.chat-actions {
+  display: flex;
+  gap: var(--sp-1);
+}
+
+#chat-close,
+#chat-stop,
+#chat-clear {
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  padding: 1px 6px;
+}
+
+#chat-close:active,
+#chat-stop:active,
+#chat-clear:active {
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  transform: translate(1px, 1px);
+}
+
+#chat-stop {
+  background: var(--hl-wash);
+}
+
+#chat-stop[hidden] {
+  display: none;
+}
+
+#chat-log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-3);
+}
+
+.cmsg {
+  font-size: var(--fs-body);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.cmsg.user {
+  align-self: flex-end;
+  max-width: 85%;
+  background: var(--well);
+  border: 1px solid;
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  padding: 6px 10px;
+}
+
+.cmsg.tool {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
+  border-left: 2px solid var(--line-strong);
+  padding-left: var(--sp-2);
+  white-space: normal;
+}
+
+.cmsg.cerr {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  background: var(--ink);
+  color: var(--bg);
+  padding: 6px 10px;
+}
+
+.cchip {
+  display: inline-block;
+  margin: 3px 4px 0 0;
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  padding: 2px 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cchip:hover {
+  background: var(--hl-wash);
+}
+
+.cchip:active {
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  transform: translate(1px, 1px);
+}
+
+#chat-form {
+  border-top: 1px solid var(--line);
+  padding: var(--sp-2);
+}
+
+#chat-input {
+  width: 100%;
+  border: 1px solid;
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  background: var(--well);
+  color: var(--ink);
+  border-radius: var(--r);
+  font: inherit;
+  font-size: var(--fs-ui);
+  padding: 7px 10px;
+  outline: none;
+}
+
+#chat-input::placeholder {
+  color: var(--ink-faint);
+}
+
+#chat-input:focus {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+
+#chat-input:disabled {
+  color: var(--ink-faint);
+}

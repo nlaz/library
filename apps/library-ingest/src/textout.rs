@@ -80,14 +80,22 @@ fn fuse(prev: &str, next: &str, vocab: &FxHashSet<String>) -> Option<String> {
     }
     let fused = format!("{}{}", &prev[..prev.len() - 1], next);
     let known = tokenize(&fused).first().is_some_and(|t| vocab.contains(t));
-    Some(if known { fused } else { format!("{prev}{next}") })
+    Some(if known {
+        fused
+    } else {
+        format!("{prev}{next}")
+    })
 }
 
 /// Join a paragraph's words into prose, fusing hyphenated line breaks.
 fn join_words(words: &[Word], vocab: &FxHashSet<String>) -> String {
     let mut out = String::new();
     for w in words {
-        if let Some(at) = out.rfind(' ').map(|i| i + 1).or(Some(0)).filter(|_| !out.is_empty())
+        if let Some(at) = out
+            .rfind(' ')
+            .map(|i| i + 1)
+            .or(Some(0))
+            .filter(|_| !out.is_empty())
             && let Some(fused) = fuse(&out[at..], &w.t, vocab)
         {
             out.truncate(at);
@@ -134,7 +142,11 @@ fn lines(words: &[Word]) -> Vec<Line> {
                 line.h = (line.h * n + w.h) / (n + 1.0);
                 line.words.push(w.clone());
             }
-            _ => out.push(Line { words: vec![w.clone()], cy, h: w.h }),
+            _ => out.push(Line {
+                words: vec![w.clone()],
+                cy,
+                h: w.h,
+            }),
         }
     }
     out
@@ -176,12 +188,21 @@ mod tests {
     use super::*;
 
     fn w(t: &str, x: f32, y: f32) -> Word {
-        Word { t: t.into(), x, y, w: 0.04, h: 0.02 }
+        Word {
+            t: t.into(),
+            x,
+            y,
+            w: 0.04,
+            h: 0.02,
+        }
     }
 
     /// A line of words at `y`, starting at `x0`.
     fn line(ts: &[&str], x0: f32, y: f32) -> Vec<Word> {
-        ts.iter().enumerate().map(|(i, t)| w(t, x0 + i as f32 * 0.05, y)).collect()
+        ts.iter()
+            .enumerate()
+            .map(|(i, t)| w(t, x0 + i as f32 * 0.05, y))
+            .collect()
     }
 
     fn vocab_of(words: &[Word]) -> FxHashSet<String> {
@@ -210,7 +231,10 @@ mod tests {
             line(&["Calc"], 0.1, 0.16),
         ]
         .concat();
-        assert_eq!(join_words(&words, &FxHashSet::default()), "either-- it Visi- Calc");
+        assert_eq!(
+            join_words(&words, &FxHashSet::default()),
+            "either-- it Visi- Calc"
+        );
     }
 
     #[test]
@@ -220,7 +244,11 @@ mod tests {
         // big vertical gap
         words.extend(line(&["Second", "paragraph."], 0.10, 0.25));
         // first-line indent
-        words.extend(line(&["Third", "paragraph", "opens", "indented"], 0.13, 0.28));
+        words.extend(line(
+            &["Third", "paragraph", "opens", "indented"],
+            0.13,
+            0.28,
+        ));
         words.extend(line(&["and", "continues", "flush."], 0.10, 0.31));
         let paras: Vec<String> = paragraphs(&lines(&words))
             .iter()
@@ -242,7 +270,11 @@ mod tests {
         // is part of the line's geometry, so merging must not make the
         // second line look indented and split the paragraph.
         let mut words = line(&["thanks", "mainly", "to", "the", "develop-"], 0.10, 0.10);
-        words.extend(line(&["ment", "of", "better", "software", "development"], 0.10, 0.13));
+        words.extend(line(
+            &["ment", "of", "better", "software", "development"],
+            0.10,
+            0.13,
+        ));
         let paras: Vec<String> = paragraphs(&lines(&words))
             .iter()
             .map(|p| join_words(p, &vocab_of(&words)))
@@ -256,8 +288,14 @@ mod tests {
     #[test]
     fn markdown_carries_page_markers() {
         let pages = vec![
-            PageOcr { page: 1, words: line(&["Hello", "world."], 0.1, 0.1) },
-            PageOcr { page: 2, words: vec![] },
+            PageOcr {
+                page: 1,
+                words: line(&["Hello", "world."], 0.1, 0.1),
+            },
+            PageOcr {
+                page: 2,
+                words: vec![],
+            },
         ];
         let md = markdown("some-doc", &pages);
         assert!(md.starts_with("# some-doc\n"));

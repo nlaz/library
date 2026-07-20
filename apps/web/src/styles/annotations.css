@@ -1,0 +1,222 @@
+/* --- §16 the pen: persistent marks, selection toolbar, margin card -------- */
+
+/* persistent marks: wash + a darker settle line along the baseline — the
+   ink a real highlighter leaves where it pools. Find hits stay pure wash
+   (outline style, .hlayer): kept marks vs ephemeral hits at a glance. */
+/* purely visual — clicks are hit-tested geometrically in annotations.ts,
+   so the text layer above stays selectable through the wash */
+.alayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.alayer.off {
+  display: none;
+}
+
+.alayer .mark {
+  position: absolute;
+  background: var(--hl-wash);
+  border-bottom: 2px solid var(--hl-line);
+}
+
+.alayer .mark.region {
+  background: var(--hl-wash);
+  border: 2px solid var(--hl-line);
+}
+
+/* a mark carrying a margin note gets a corner stitch */
+.alayer .mark.noted::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 6px;
+  height: 6px;
+  background: var(--hl-line);
+}
+
+/* scroll-rail marks: settle-line squares, inset from the find slivers */
+#reader-aticks {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+#reader-aticks.off {
+  display: none;
+}
+
+#reader-aticks .atick {
+  position: absolute;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  background: var(--hl-line);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* drawer marginalia: page-ordered mark list */
+.mnotes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.mnotes .mrow {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: var(--sp-2);
+  align-items: baseline;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.mnotes .mrow:hover .mtext {
+  color: var(--ink);
+}
+
+.mnotes .mloc {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.mnotes .mtext {
+  color: var(--ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnotes .mdel {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.mnotes .mdel:hover {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+/* region mode: crosshair + live drag preview */
+#reader-scroll.region-mode {
+  cursor: crosshair;
+}
+
+#reader-scroll.region-mode .tlayer {
+  pointer-events: none; /* drag over text without selecting it */
+}
+
+.region-preview {
+  position: absolute;
+  border: 2px solid var(--hl-line);
+  background: var(--hl-wash);
+  pointer-events: none;
+}
+
+/* selection toolbar: bezeled mono verbs above the selection */
+#sel-toolbar {
+  position: absolute;
+  z-index: 12;
+  display: flex;
+  gap: 1px;
+  background: var(--line-strong);
+  border: 1px solid var(--line-strong);
+}
+
+#sel-toolbar button {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--surface);
+  border: none;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+
+#sel-toolbar button.prime {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+#sel-toolbar button:active {
+  translate: 1px 1px;
+}
+
+/* the margin card: note popover anchored to a mark */
+#annot-pop {
+  position: absolute;
+  z-index: 12;
+  width: 240px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+}
+
+#annot-pop .ap-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: var(--sp-2);
+}
+
+#annot-pop .ap-when {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+/* severity by inversion, not hue */
+#annot-pop .ap-delete {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+#annot-pop .ap-delete:hover {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+#annot-pop .ap-note {
+  width: 100%;
+  resize: vertical;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  padding: var(--sp-1) var(--sp-2);
+}
+
+#annot-pop .ap-note:focus {
+  outline: 2px solid var(--hl-line);
+}

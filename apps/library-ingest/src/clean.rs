@@ -64,7 +64,7 @@ pub fn clean_doc(data: &Path, doc: &str, progress: ProgressFn) -> Result<(usize,
         .stderr(Stdio::inherit())
         .spawn()
         .with_context(|| format!("spawning {}", tool.display()))?;
-    for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines() {
+    for line in std::io::BufReader::new(child.stdout.take().expect("piped stdout")).lines() {
         let line = line?;
         // "clean <done>/<total>"
         if let Some((done, total)) = line
@@ -79,7 +79,10 @@ pub fn clean_doc(data: &Path, doc: &str, progress: ProgressFn) -> Result<(usize,
     if !status.success() {
         // model unavailable (Apple Intelligence off) or helper failure:
         // report and carry on with raw OCR — cleanup is best-effort
-        progress(Progress::Log(format!("cleanup skipped: {} exited {status}", tool.display())));
+        progress(Progress::Log(format!(
+            "cleanup skipped: {} exited {status}",
+            tool.display()
+        )));
         return Ok((0, read_pages(data, doc)?));
     }
 
@@ -115,8 +118,8 @@ pub fn apply_edits(data: &Path, doc: &str, progress: ProgressFn) -> Result<(usiz
         let ef = edits_dir.join(format!("page-{:04}.json", page.page));
         let mut edited = false;
         if let Ok(bytes) = std::fs::read(&ef) {
-            let pe: PageEdits =
-                serde_json::from_slice(&bytes).context(format!("bad edits json {}", ef.display()))?;
+            let pe: PageEdits = serde_json::from_slice(&bytes)
+                .context(format!("bad edits json {}", ef.display()))?;
             for e in pe.edits {
                 match apply(&mut words, &e) {
                     Ok(()) => {
@@ -131,7 +134,10 @@ pub fn apply_edits(data: &Path, doc: &str, progress: ProgressFn) -> Result<(usiz
             }
         }
 
-        let rec = PageOcr { page: page.page, words };
+        let rec = PageOcr {
+            page: page.page,
+            words,
+        };
         if fused || edited {
             let out = clean_dir.join(format!("page-{:04}.json", page.page));
             let tmp = out.with_extension("json.tmp");
@@ -166,7 +172,11 @@ fn fuse_hyphens(words: &[Word], vocab: &FxHashSet<String>) -> Vec<Word> {
         {
             let fused = format!("{}{}", &prev.t[..prev.t.len() - 1], w.t);
             let known = tokenize(&fused).first().is_some_and(|t| vocab.contains(t));
-            prev.t = if known { fused } else { format!("{}{}", prev.t, w.t) };
+            prev.t = if known {
+                fused
+            } else {
+                format!("{}{}", prev.t, w.t)
+            };
             continue;
         }
         out.push(w.clone());
@@ -266,7 +276,13 @@ mod tests {
     use super::*;
 
     fn w(t: &str) -> Word {
-        Word { t: t.into(), x: 0.1, y: 0.1, w: 0.04, h: 0.02 }
+        Word {
+            t: t.into(),
+            x: 0.1,
+            y: 0.1,
+            w: 0.04,
+            h: 0.02,
+        }
     }
 
     fn words(ts: &[&str]) -> Vec<Word> {
@@ -274,16 +290,40 @@ mod tests {
     }
 
     fn edit(o: &str, c: &str) -> Edit {
-        Edit { original: o.into(), corrected: c.into(), verified: true }
+        Edit {
+            original: o.into(),
+            corrected: c.into(),
+            verified: true,
+        }
     }
 
     #[test]
     fn applies_single_and_multi_word_edits() {
-        let mut ws = words(&["the", "creation", "of", "preadsheets", "and", "impor", "tant", "things"]);
+        let mut ws = words(&[
+            "the",
+            "creation",
+            "of",
+            "preadsheets",
+            "and",
+            "impor",
+            "tant",
+            "things",
+        ]);
         apply(&mut ws, &edit("preadsheets", "spreadsheets")).unwrap();
         apply(&mut ws, &edit("impor tant", "important")).unwrap();
         let ts: Vec<&str> = ws.iter().map(|w| w.t.as_str()).collect();
-        assert_eq!(ts, vec!["the", "creation", "of", "spreadsheets", "and", "important", "things"]);
+        assert_eq!(
+            ts,
+            vec![
+                "the",
+                "creation",
+                "of",
+                "spreadsheets",
+                "and",
+                "important",
+                "things"
+            ]
+        );
     }
 
     #[test]
@@ -292,9 +332,15 @@ mod tests {
         let mut e = edit("plain", "plane");
         e.verified = false;
         assert_eq!(apply(&mut ws, &e), Err("unverified"));
-        assert_eq!(apply(&mut ws, &edit("missing", "present")), Err("no anchor"));
+        assert_eq!(
+            apply(&mut ws, &edit("missing", "present")),
+            Err("no anchor")
+        );
         // "text" -> something entirely different: distance gate
-        assert_eq!(apply(&mut ws, &edit("text", "manuscript")), Err("edit distance"));
+        assert_eq!(
+            apply(&mut ws, &edit("text", "manuscript")),
+            Err("edit distance")
+        );
         // partial-word matches must not anchor ("plain" != "plai")
         assert_eq!(apply(&mut ws, &edit("plai", "play")), Err("no anchor"));
     }
@@ -313,14 +359,25 @@ mod tests {
 
         // punctuation strictly inside the span still blocks the anchor
         let mut ws = words(&["impor,", "tant"]);
-        assert_eq!(apply(&mut ws, &edit("impor tant", "important")), Err("no anchor"));
+        assert_eq!(
+            apply(&mut ws, &edit("impor tant", "important")),
+            Err("no anchor")
+        );
     }
 
     #[test]
     fn rejects_boundary_duplication() {
-        let mut ws = words(&["folded", "in", "1979,", "a", "victim", "of", "its", "strategy"]);
-        assert_eq!(apply(&mut ws, &edit("a victim", "a victim of")), Err("duplicates next word"));
-        assert_eq!(apply(&mut ws, &edit("victim of", "a victim of")), Err("duplicates previous word"));
+        let mut ws = words(&[
+            "folded", "in", "1979,", "a", "victim", "of", "its", "strategy",
+        ]);
+        assert_eq!(
+            apply(&mut ws, &edit("a victim", "a victim of")),
+            Err("duplicates next word")
+        );
+        assert_eq!(
+            apply(&mut ws, &edit("victim of", "a victim of")),
+            Err("duplicates previous word")
+        );
     }
 
     #[test]
@@ -330,5 +387,105 @@ mod tests {
         let fused = fuse_hyphens(&ws, &vocab);
         let ts: Vec<&str> = fused.iter().map(|w| w.t.as_str()).collect();
         assert_eq!(ts, vec!["development", "Apple-compatible", "development"]);
+    }
+
+    #[test]
+    fn fuse_hyphens_vocab_hit_fuses() {
+        // "automatic" is in the vocab, so the hyphen is dropped and the two
+        // OCR tokens fuse into one clean word.
+        let ws = words(&["auto-", "matic"]);
+        let vocab: FxHashSet<String> = ["automatic".to_string()].into_iter().collect();
+        let fused = fuse_hyphens(&ws, &vocab);
+        let ts: Vec<&str> = fused.iter().map(|w| w.t.as_str()).collect();
+        assert_eq!(ts, vec!["automatic"]);
+    }
+
+    #[test]
+    fn fuse_hyphens_vocab_miss_merges_but_keeps_hyphen() {
+        // Surprising current behavior, pinned here: when the fused spelling
+        // isn't in the vocab, `fuse_hyphens` does NOT leave the two OCR
+        // tokens as separate words. It still merges them into a single
+        // `Word`, just keeping the hyphen literally ("cats-dogs") instead of
+        // producing the clean fusion ("catsdogs"). So an unknown fusion
+        // collapses the word count exactly like a known one does — it just
+        // spells the merged word differently.
+        let ws = words(&["cats-", "dogs"]);
+        let vocab: FxHashSet<String> = ["cats".to_string(), "dogs".to_string()]
+            .into_iter()
+            .collect();
+        let fused = fuse_hyphens(&ws, &vocab);
+        let ts: Vec<&str> = fused.iter().map(|w| w.t.as_str()).collect();
+        assert_eq!(ts, vec!["cats-dogs"]);
+    }
+
+    #[test]
+    fn fuse_hyphens_trailing_hyphen_at_end_of_input() {
+        // A hyphenated word with nothing after it has no candidate to fuse
+        // with, so it passes through unchanged.
+        let ws = words(&["hello", "world-"]);
+        let vocab: FxHashSet<String> = FxHashSet::default();
+        let fused = fuse_hyphens(&ws, &vocab);
+        let ts: Vec<&str> = fused.iter().map(|w| w.t.as_str()).collect();
+        assert_eq!(ts, vec!["hello", "world-"]);
+    }
+
+    #[test]
+    fn distance_exact_on_small_pairs() {
+        assert_eq!(distance("kitten", "sitting"), 3);
+        assert_eq!(distance("abc", "abc"), 0);
+        assert_eq!(distance("", "abc"), 3);
+        assert_eq!(distance("abc", ""), 3);
+        assert_eq!(distance("flaw", "lawn"), 2);
+    }
+
+    #[test]
+    fn distance_is_symmetric() {
+        let pairs = [
+            ("kitten", "sitting"),
+            ("preadsheets", "spreadsheets"),
+            ("", "x"),
+            ("same", "same"),
+            ("abcdef", "fedcba"),
+        ];
+        for (a, b) in pairs {
+            assert_eq!(distance(a, b), distance(b, a), "distance({a:?}, {b:?})");
+        }
+    }
+
+    #[test]
+    fn distance_has_no_internal_bound_or_early_exit() {
+        // Despite the "bounded ... with early exit" framing one might expect
+        // from a fast approximate-match helper, `distance` as written takes
+        // no bound parameter and computes the full Levenshtein matrix every
+        // time — there's no sentinel/cap value it can return. Any bounding
+        // happens at the call site in `apply`, which thresholds the result
+        // against `2.max(o.len() / 4)`. This pins the current (unbounded)
+        // behavior: two completely dissimilar equal-length strings cost one
+        // substitution per character, exactly `len`, not a capped value.
+        assert_eq!(distance("abcdefghij", "zyxwvutsrq"), 10);
+    }
+
+    #[test]
+    fn squash_removes_all_spaces_and_hyphens() {
+        // `squash` isn't a whitespace-run collapse — it deletes every literal
+        // ' ' and '-' character outright (runs, single occurrences, leading,
+        // and trailing all disappear entirely rather than collapsing to one
+        // space).
+        assert_eq!(squash("a  b"), "ab");
+        assert_eq!(squash("a-b"), "ab");
+        assert_eq!(squash("multi-word-hyphen"), "multiwordhyphen");
+        assert_eq!(squash("  leading and trailing  "), "leadingandtrailing");
+    }
+
+    #[test]
+    fn squash_leaves_other_whitespace_untouched() {
+        // Only ' ' and '-' are filtered; tabs/newlines are not whitespace-
+        // normalized and pass straight through unchanged.
+        assert_eq!(squash("a\tb\nc"), "a\tb\nc");
+    }
+
+    #[test]
+    fn squash_empty_string_is_empty() {
+        assert_eq!(squash(""), "");
     }
 }

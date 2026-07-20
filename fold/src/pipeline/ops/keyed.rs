@@ -168,7 +168,7 @@ where
 
     fn push(&mut self, tx: &mut WriteTx<'_>, data: &Keyed<K, V>, delta: isize) {
         tx.buf.clear();
-        postcard::to_io(&data.key, &mut tx.buf).unwrap();
+        postcard::to_io(&data.key, &mut tx.buf).expect("postcard encode of aggregate key failed");
         self.pending
             .entry(tx.buf.clone())
             .or_insert_with(|| (data.key.clone(), Vec::new()))
@@ -177,11 +177,13 @@ where
     }
 
     fn commit(&mut self, tx: &mut WriteTx<'_>) {
-        let ks = self.ks.clone().unwrap();
+        let ks = self.ks.clone().expect("sink used before init()");
         for (enc_key, (key, updates)) in self.pending.drain() {
             let (mut count, mut acc): (i64, A) = tx
                 .get(&ks, &enc_key)
-                .map(|v| postcard::from_bytes(&v).unwrap())
+                .map(|v| {
+                    postcard::from_bytes(&v).expect("corrupt aggregate row: postcard decode failed")
+                })
                 .unwrap_or((0, A::default()));
 
             // retract previous aggregate if the key existed
@@ -199,7 +201,8 @@ where
             if count > 0 {
                 self.next.push(tx, &Keyed::new(key, acc.clone()), 1);
                 tx.buf.clear();
-                postcard::to_io(&(count, &acc), &mut tx.buf).unwrap();
+                postcard::to_io(&(count, &acc), &mut tx.buf)
+                    .expect("postcard encode of aggregate row failed");
                 let v = std::mem::take(&mut tx.buf);
                 tx.insert(&ks, &enc_key, &v);
                 tx.buf = v;

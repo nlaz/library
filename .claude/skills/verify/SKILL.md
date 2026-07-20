@@ -34,14 +34,9 @@ resolve relative to CWD.
 
 ## Gotchas
 
-- **fjall stores are single-process.** Stop library-server before running the
-  CLI search or the app, or the second opener panics with `Locked`.
-- **tauri v2 hook CWD is `apps/` (the crate dir's parent), not the config
-  dir** — `beforeDevCommand` is `npm --prefix web run dev` for this layout.
-  `frontendDist` resolves from the config dir instead (`../web/dist`).
-- First workspace build downloads the ese model into `target/ese-cache/`
-  (network once; wiped by `cargo clean`).
-- Playwright screenshots can only be saved under its own temp root — take
-  them unnamed and Read the returned path.
-- A panicked write tx poisons the fjall write lock for the process; reads
-  still work, writes need a reopen. Don't chase this as a regression.
+See the **Gotchas** and **Data safety** sections of the repo-root
+[`AGENTS.md`](../../../AGENTS.md) — fjall single-process locking, tauri hook
+CWD, ese model cache, poisoned write locks.
+
+Skill-specific: Playwright screenshots can only be saved under its own temp
+root — take them unnamed and Read the returned path.

@@ -4,7 +4,7 @@
 // dozen 1600px JPEGs in the webview at once. Each visible page also gets a
 // transparent OCR text layer so scanned text can be selected and copied.
 
-import { attachAnnotLayer, setAnnotationsDoc } from "./annotations";
+import { attachAnnotLayer, scheduleAnnotTicks, setAnnotationsDoc } from "./annotations";
 import { ocrUrl, pageImg } from "./assets";
 import { hlBoxes } from "./highlights";
 import type { OcrWord, WireHit } from "./types";
@@ -83,6 +83,7 @@ function buildPages(doc: string, pages: number) {
               el.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
               fitTextLayer(el);
               scheduleTicks(); // page heights shifted — tick offsets moved
+              scheduleAnnotTicks();
             });
             el.append(img);
             attachTextLayer(el, doc, Number(el.dataset.page));

@@ -35,6 +35,82 @@
   background: var(--hl-line);
 }
 
+/* scroll-rail marks: settle-line squares, inset from the find slivers */
+#reader-aticks {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+#reader-aticks.off {
+  display: none;
+}
+
+#reader-aticks .atick {
+  position: absolute;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  background: var(--hl-line);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* drawer marginalia: page-ordered mark list */
+.mnotes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.mnotes .mrow {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: var(--sp-2);
+  align-items: baseline;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.mnotes .mrow:hover .mtext {
+  color: var(--ink);
+}
+
+.mnotes .mloc {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.mnotes .mtext {
+  color: var(--ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnotes .mdel {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.mnotes .mdel:hover {
+  background: var(--ink);
+  color: var(--bg);
+}
+
 /* region mode: crosshair + live drag preview */
 #reader-scroll.region-mode {
   cursor: crosshair;

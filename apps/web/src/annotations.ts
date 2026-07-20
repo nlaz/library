@@ -14,6 +14,7 @@ import type { AnnotRec, Box, OcrWord } from "./types";
 const $reader = document.getElementById("reader")!;
 const $scroll = document.getElementById("reader-scroll")!;
 const $pagesEl = document.getElementById("reader-pages")!;
+const $aticks = document.getElementById("reader-aticks")!;
 
 let currentDoc = "";
 let annots: AnnotRec[] = [];
@@ -52,6 +53,7 @@ export async function setAnnotationsDoc(doc: string) {
 
 function redecorate() {
   for (const el of $pagesEl.children) attachAnnotLayer(el as HTMLElement);
+  scheduleAnnotTicks();
 }
 
 function changed() {
@@ -98,7 +100,42 @@ export function attachAnnotLayer(el: HTMLElement) {
 export function toggleMarks() {
   marksVisible = !marksVisible;
   for (const l of $pagesEl.querySelectorAll(".alayer")) l.classList.toggle("off", !marksVisible);
+  $aticks.classList.toggle("off", !marksVisible);
 }
+
+// ---------------------------------------------------------------------------
+// scroll-rail ticks: one square per mark, settle-line colored — the find
+// rail's yellow slivers stay ephemeral, these are the kept marks
+// ---------------------------------------------------------------------------
+
+function layoutAnnotTicks() {
+  $aticks.replaceChildren();
+  if (!annots.length) return;
+  const sh = $scroll.scrollHeight;
+  const th = $aticks.clientHeight;
+  if (!sh || !th) return;
+  for (const a of annots) {
+    const el = $pagesEl.children[a.page - 1] as HTMLElement | undefined;
+    if (!el) continue;
+    const t = document.createElement("div");
+    t.className = "atick";
+    t.title = a.note || (a.kind === "text" ? a.text : "region");
+    t.style.top = `${((el.offsetTop + markBoxes(a)[0][1] * el.offsetHeight) / sh) * th}px`;
+    t.addEventListener("click", () => openPopover(a.id, true));
+    $aticks.append(t);
+  }
+}
+
+let atickRaf = 0;
+/** rAF-coalesced relayout; page-image loads shift every offset below. */
+export function scheduleAnnotTicks() {
+  if (atickRaf || !annots.length) return;
+  atickRaf = requestAnimationFrame(() => {
+    atickRaf = 0;
+    layoutAnnotTicks();
+  });
+}
+window.addEventListener("resize", scheduleAnnotTicks);
 
 // ---------------------------------------------------------------------------
 // selection toolbar: select words → Highlight / + Note

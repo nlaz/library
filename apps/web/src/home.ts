@@ -3,7 +3,7 @@
 // command), including the book-card "…" menus and ingest-progress rendering.
 // ---------------------------------------------------------------------------
 
-import { pageImg } from "./assets";
+import { coverImg } from "./assets";
 import { $cols, $home } from "./dom";
 import { collectionsChecklist } from "./drawer";
 import { displayTitle, prettify, setDocList, STAGE_LABEL, statusEvent } from "./format";
@@ -29,7 +29,9 @@ export const ingesting = new Map<string, IngestEvent>();
 // collections tabs
 // ---------------------------------------------------------------------------
 
-export async function loadCollections() {
+/** Redraw the tabs and return the map, so callers that re-render the shelves
+ * next can pass it along instead of fetching collections a second time. */
+export async function loadCollections(): Promise<Collections> {
   const cols = await transport.collections();
   // the active collection can vanish (last doc removed) — fall back to all
   if (col && !(col in cols)) col = "";
@@ -47,18 +49,19 @@ export async function loadCollections() {
       return btn;
     }),
   );
+  return cols;
 }
 
-export async function renderHome() {
+export async function renderHome(cols?: Collections) {
   if (!desktop) return;
-  const [ds, cols] = await Promise.all([desktop.docs(), transport.collections()]);
+  const [ds, colMap] = await Promise.all([desktop.docs(), cols ?? transport.collections()]);
   setDocList(ds);
 
   const byId = new Map(ds.map((d) => [d.id, d]));
-  const shelves: [string, DocInfo[]][] = Object.entries(cols)
+  const shelves: [string, DocInfo[]][] = Object.entries(colMap)
     .map(([name, ids]) => [name, ids.map((id) => byId.get(id)).filter(Boolean)] as [string, DocInfo[]])
     .filter(([, docs]) => docs.length > 0);
-  const sorted = new Set(Object.values(cols).flat());
+  const sorted = new Set(Object.values(colMap).flat());
   const unsorted = ds.filter((d) => !sorted.has(d.id));
   if (unsorted.length) shelves.push(["Unsorted", unsorted]);
 
@@ -71,7 +74,7 @@ export async function renderHome() {
       h.textContent = name;
       const row = document.createElement("div");
       row.className = "books";
-      row.append(...docs.map((d) => bookCard(d, cols)));
+      row.append(...docs.map((d) => bookCard(d, colMap)));
       shelf.append(h, row);
       return shelf;
     }),
@@ -94,7 +97,8 @@ function bookCard(d: DocInfo, cols: Collections): HTMLElement {
   if (d.pages > 0) {
     const img = document.createElement("img");
     img.loading = "lazy";
-    img.src = pageImg(d.id, 1);
+    img.decoding = "async";
+    img.src = coverImg(d.id);
     cover.append(img);
   }
   const title = document.createElement("div");
@@ -195,8 +199,7 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
     } catch (e) {
       notify(`collections: ${e}`, { sticky: true });
     }
-    await loadCollections();
-    renderHome();
+    renderHome(await loadCollections());
   };
   const { el: colList, checked } = collectionsChecklist(Object.keys(cols), d.collections, apply);
   const newCol = document.createElement("input");
@@ -223,8 +226,7 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
     } catch (e) {
       notify(`delete failed: ${e}`, { sticky: true });
     }
-    await loadCollections();
-    renderHome();
+    renderHome(await loadCollections());
   });
 
   panel.append(rename, colList, newCol, del);

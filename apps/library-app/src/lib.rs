@@ -26,7 +26,7 @@ use tauri::Manager;
 
 use crate::engine::{AppState, init_engine};
 use crate::ingest::{ingest_worker, install_agent};
-use crate::serve::serve_static;
+use crate::serve::{serve_pages, serve_static};
 use crate::settings::load_settings;
 
 pub fn run() {
@@ -44,7 +44,7 @@ pub fn run() {
             // pool instead of a raw OS thread per request, which used to mean
             // a burst of thread creations on every keystroke's re-render
             tauri::async_runtime::spawn_blocking(move || {
-                responder.respond(serve_static(data.join("pages"), "image/jpeg", request))
+                responder.respond(serve_pages(data.join("pages"), request))
             });
         })
         .register_asynchronous_uri_scheme_protocol("ocr", |ctx, request, responder| {

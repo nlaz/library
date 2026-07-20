@@ -46,8 +46,7 @@ export function wireDesktop() {
       ingesting.delete(e.doc);
       // "done" needs no announcement — the book appears on the shelf
       if (e.stage === "error") notify(`ingest failed: ${e.message}`, { sticky: true });
-      loadCollections();
-      renderHome();
+      loadCollections().then(renderHome);
       return;
     }
     ingesting.set(e.doc, e);

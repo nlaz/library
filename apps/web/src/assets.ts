@@ -13,6 +13,12 @@ export function pageImg(doc: string, page: number): string {
   return pageUrl(`/pages/${doc}/page-${String(page).padStart(4, "0")}.jpg`);
 }
 
+/** Small derived shelf cover (the desktop `pages://` handler builds it from
+ * page 1 on first request) — cards never decode the full scan. */
+export function coverImg(doc: string): string {
+  return pageUrl(`/pages/${doc}/cover.jpg`);
+}
+
 /** Per-page OCR words ({page, words: [{t,x,y,w,h}]}), for the text layer. */
 export function ocrUrl(doc: string, page: number): string {
   const p = `/${encodeURIComponent(doc)}/page-${String(page).padStart(4, "0")}.json`;

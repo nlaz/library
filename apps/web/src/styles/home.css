@@ -74,6 +74,9 @@ header {
 .book {
   position: relative;
   cursor: pointer;
+  /* shelves below the fold skip layout/paint until scrolled near */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 270px;
 }
 
 .book.processing {

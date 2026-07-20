@@ -107,8 +107,7 @@ async function main() {
     // no write path in the web build — the drawer renders read-only
     edit: desktop ? { setTitle: desktop.setTitle, setCollections: desktop.setCollections } : null,
     onChanged: async (id) => {
-      await loadCollections();
-      await renderHome();
+      await renderHome(await loadCollections());
       // a rename must show in the reader chrome immediately
       if (readerDoc() === id) {
         document.getElementById("reader-title")!.textContent = docTitle(id);

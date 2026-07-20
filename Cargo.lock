@@ -3404,6 +3404,7 @@ dependencies = [
  "ese",
  "fastembed",
  "fjall",
+ "image",
  "libc",
  "library-core",
  "library-ingest",

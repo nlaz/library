@@ -8,6 +8,7 @@ pub mod perf;
 pub mod rank;
 pub mod records;
 pub mod search_api;
+pub mod sidecar;
 pub mod store;
 pub mod termdict;
 pub mod text;

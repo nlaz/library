@@ -37,17 +37,28 @@ pub struct Hit {
     pub words: Vec<Word>,
 }
 
-/// Pre-fusion ranker list sizes, reported through the `stats` out-param of
-/// [`search`] — the fused hit list alone can't reconstruct them.
+/// Pre-fusion ranker list sizes and per-phase timings, reported through the
+/// `stats` out-param of [`search`] — the fused hit list alone can't
+/// reconstruct them. The timing fields become the perf view's sub-stages of
+/// the text search (formerly one opaque "lex+rrf" span).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RankerStats {
     pub lex_n: usize,
     pub sem_n: usize,
+    /// µs: tokenization + typeahead completion + fuzzy vocabulary correction.
+    pub term_expand_us: u64,
+    /// µs: BM25 postings search (plus relevance-map assembly).
+    pub lex_search_us: u64,
+    /// µs: HNSW vector search (0 when the query has no embedding).
+    pub vec_search_us: u64,
+    /// µs: RRF fusion + MMR re-rank + hit resolution (primary-table
+    /// point-reads).
+    pub fuse_us: u64,
 }
 
 /// Hits scoring below this fraction of the query's top BM25 hit are noise;
-/// the paginated result stream ends here. Tuning knob — the dev `[perf]`
-/// logging in `search` is the place to eyeball rel distributions.
+/// the paginated result stream ends here. Tuning knob — the perf view's
+/// provenance table is the place to eyeball rel distributions.
 pub const MIN_REL: f32 = 0.25;
 
 /// How deep to fetch from the lexical ranker regardless of `k`. Pinning the
@@ -195,6 +206,7 @@ pub fn search<R: Readable>(
 ) -> Vec<Hit> {
     let ((lex, vec), (_, terms)) = r;
 
+    let mut st = RankerStats::default();
     let t = std::time::Instant::now();
     let orig = tokenize(query);
     let mut toks = orig.clone();
@@ -221,10 +233,11 @@ pub fn search<R: Readable>(
             }
         }
     }
-    if cfg!(debug_assertions) {
-        eprintln!("[perf] term_expand elapsed={}us", t.elapsed().as_micros());
-    }
+    st.term_expand_us = t.elapsed().as_micros() as u64;
     if toks.is_empty() {
+        if let Some(s) = stats {
+            *s = st;
+        }
         return Vec::new();
     }
 
@@ -257,13 +270,7 @@ pub fn search<R: Readable>(
         .enumerate()
         .map(|(i, k)| (k.clone(), i as u32))
         .collect();
-    if cfg!(debug_assertions) {
-        eprintln!(
-            "[perf] lex_search elapsed={}us hits={}",
-            t.elapsed().as_micros(),
-            lexical.len()
-        );
-    }
+    st.lex_search_us = t.elapsed().as_micros() as u64;
     let t = std::time::Instant::now();
     let sem_scored: Vec<Scored<f32, ChunkKey>> = match (qemb, filter) {
         (Some(e), Some(f)) => vec.search_filtered(e, |key: &ChunkKey| f.contains(&key.doc)),
@@ -276,17 +283,9 @@ pub fn search<R: Readable>(
         .map(|(i, h)| (h.val.clone(), (i as u32, h.score)))
         .collect();
     let semantic: Vec<ChunkKey> = sem_scored.into_iter().map(|h| h.val).collect();
-    if cfg!(debug_assertions) {
-        eprintln!(
-            "[perf] vec_search elapsed={}us hits={}",
-            t.elapsed().as_micros(),
-            semantic.len()
-        );
-    }
-    if let Some(s) = stats {
-        s.lex_n = lexical.len();
-        s.sem_n = semantic.len();
-    }
+    st.vec_search_us = t.elapsed().as_micros() as u64;
+    st.lex_n = lexical.len();
+    st.sem_n = semantic.len();
 
     let t = std::time::Instant::now();
     let fused = rrf(&[lexical, semantic]);
@@ -320,12 +319,9 @@ pub fn search<R: Readable>(
             })
         })
         .collect();
-    if cfg!(debug_assertions) {
-        eprintln!(
-            "[perf] fuse_rerank_resolve elapsed={}us hits={}",
-            t.elapsed().as_micros(),
-            hits.len()
-        );
+    st.fuse_us = t.elapsed().as_micros() as u64;
+    if let Some(s) = stats {
+        *s = st;
     }
     hits
 }

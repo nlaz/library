@@ -95,8 +95,10 @@ pub struct SearchRecord {
     pub offset: u32,
     pub phase: String,
     pub total_us: u64,
-    /// Per-stage µs in execution order (ese_embed, lex+rrf, clip_embed,
-    /// image_search, blend — stages that didn't run are absent).
+    /// Per-stage µs (text track: ese_embed, term_expand, lex_search,
+    /// vec_search, fuse+resolve; image track: clip_embed, image_search;
+    /// then blend — stages that didn't run are absent). The two tracks run
+    /// concurrently, so the stage sum can exceed `total_us`.
     pub stages: Vec<(String, u64)>,
     /// Pre-fusion ranker list sizes.
     pub lex_n: usize,

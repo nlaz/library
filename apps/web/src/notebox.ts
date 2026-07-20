@@ -4,7 +4,7 @@
 // read as an argument: address order, branch indentation, j/k walking.
 
 import { composerOpen, openComposer } from "./composer";
-import { listCards } from "./marginalia-api";
+import { cardNeighbors, listCards, updateCard } from "./marginalia-api";
 import {
   backlinks,
   compareCards,
@@ -13,6 +13,7 @@ import {
   threads,
   wikiTokens,
 } from "./notebox-model";
+import { notify } from "./toast";
 import type { CardRec } from "./types";
 
 const $notes = document.getElementById("notes")!;
@@ -125,7 +126,81 @@ function renderThread(thread: number) {
     wrap.append(rule);
     for (const c of filed) wrap.append(cardEl(c));
   }
-  $body.replaceChildren(wrap);
+  const grid = document.createElement("div");
+  grid.className = "nb-threadwrap";
+  grid.append(wrap, railEl());
+  $body.replaceChildren(grid);
+}
+
+// ---------------------------------------------------------------------------
+// the rail: what the box suggests — near-but-unlinked cards
+// ---------------------------------------------------------------------------
+
+let railToken = 0;
+
+function railEl(): HTMLElement {
+  const rail = document.createElement("aside");
+  rail.id = "notes-rail";
+  const me = selectedCard();
+  if (!me || me.filed) return rail;
+
+  const box = document.createElement("div");
+  box.className = "railbox";
+  const lab = document.createElement("div");
+  lab.className = "rail-lab";
+  lab.textContent = "near this card · unlinked";
+  const list = document.createElement("div");
+  list.className = "rail-list";
+  list.textContent = "…";
+  box.append(lab, list);
+  rail.append(box);
+
+  const token = ++railToken;
+  cardNeighbors(me.id, 6)
+    .then((ns) => {
+      if (token !== railToken) return;
+      list.replaceChildren();
+      if (!ns.length) {
+        list.textContent = "nothing near yet";
+        return;
+      }
+      for (const n of ns) {
+        const row = document.createElement("div");
+        row.className = "rail-row";
+        const a = document.createElement("span");
+        a.className = "rail-addr";
+        a.textContent = n.address;
+        const t = document.createElement("span");
+        t.className = "rail-title";
+        t.textContent = n.title;
+        t.addEventListener("click", () => {
+          const c = cards.find((x) => x.id === n.id);
+          if (c) jumpToCard(c);
+        });
+        const add = document.createElement("button");
+        add.className = "rail-add";
+        add.textContent = "link";
+        add.addEventListener("click", () => void linkTo(n.id));
+        row.append(a, t, add);
+        list.append(row);
+      }
+    })
+    .catch(() => {
+      if (token === railToken) list.textContent = "";
+    });
+  return rail;
+}
+
+/** One click in the rail = a relates-link from the active card. */
+async function linkTo(neighborId: string) {
+  const me = selectedCard();
+  if (!me) return;
+  try {
+    await updateCard({ ...me, links: [...me.links, { to: neighborId, kind: "relates" }] });
+    await reload();
+  } catch (e) {
+    notify(`couldn't link: ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 function cardEl(c: CardRec): HTMLElement {

@@ -6,7 +6,9 @@
 // note in a popover card. Persistence rides marginalia-api (Tauri or
 // HTTP — both land in the same sidecars + search index).
 
-import { deleteAnnotation, listAnnotations, saveAnnotation } from "./marginalia-api";
+import { openComposer } from "./composer";
+import { deleteAnnotation, listAnnotations, proposeThread, saveAnnotation } from "./marginalia-api";
+import { displayAddr } from "./notebox-model";
 import { dragBox, lineBoxes, negligible, selectionText } from "./selection";
 import { notify } from "./toast";
 import type { AnnotRec, Box, OcrWord } from "./types";
@@ -148,7 +150,8 @@ $reader.append(toolbar);
 
 const tbHighlight = tbButton("highlight", true);
 const tbNote = tbButton("+ note", false);
-toolbar.append(tbHighlight, tbNote);
+const tbQuote = tbButton("quote", false);
+toolbar.append(tbHighlight, tbNote, tbQuote);
 
 function tbButton(label: string, prime: boolean): HTMLButtonElement {
   const b = document.createElement("button");
@@ -239,6 +242,29 @@ async function commitHighlight(openNote: boolean) {
 
 tbHighlight.addEventListener("click", () => commitHighlight(false));
 tbNote.addEventListener("click", () => commitHighlight(true));
+
+/** Quote: the passage becomes a card's evidence. The box proposes where
+ * it files (embedding-nearest card); no proposal = new thread. The cost
+ * of a cited, filed card is the claim sentence, nothing else. */
+async function quoteToCard() {
+  if (!pending) return;
+  const { page, w0, w1, words } = pending;
+  const anchor = { doc: currentDoc, page, w0, w1, text: selectionText(words) };
+  hideToolbar();
+  window.getSelection()?.removeAllRanges();
+  let parent: { id: string; address: string; title: string } | null = null;
+  try {
+    const p = await proposeThread(anchor.text);
+    if (p) parent = { id: p.parent, address: p.parent_address, title: p.parent_title };
+  } catch {
+    // cold engine — fall through to "new thread"
+  }
+  openComposer({ kind: "create", seed: { evidence: [anchor], parent } }, (saved) => {
+    if (saved) notify(`card ${displayAddr(saved.thread, saved.addr)} filed`);
+  });
+}
+
+tbQuote.addEventListener("click", () => void quoteToCard());
 
 document.addEventListener("mouseup", (e) => {
   if ($reader.hidden) return;

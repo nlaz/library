@@ -11,6 +11,7 @@ import { docTitle, getDocList, prettify, setDocList } from "./format";
 import { getCol, loadCollections, renderHome, setCol } from "./home";
 import { wireDesktop } from "./ingest-ui";
 import { perfOpen, togglePerf } from "./perf";
+import { closeNotes, notesOpen, openNotes } from "./notebox";
 import { closeReader, openReader, readerDoc, readerOpen } from "./reader";
 import { initSearch, sendQuery, sentDoc, showSearch } from "./search";
 import { desktop, setDesktop, setTransport, transport } from "./state";
@@ -23,13 +24,19 @@ import { isTauri, makeTransport } from "./transport";
 
 async function route() {
   const m = location.hash.match(/^#\/read\/([^?]+)(?:\?p=(\d+))?$/);
+  const nm = location.hash.match(/^#\/notes(?:\/(\d+))?(?:\?card=([^&]+))?$/);
   closeDrawer(); // drawer is per-doc; any navigation invalidates it
   if (m) {
+    closeNotes();
     const doc = decodeURIComponent(m[1]);
     // no explicit ?p= -> the reader resumes the remembered position
     openReader(doc, await pagesOf(doc), m[2] ? Number(m[2]) : undefined, docTitle(doc));
+  } else if (nm) {
+    closeReader();
+    await openNotes(nm[1] ? Number(nm[1]) : null, nm[2] ? decodeURIComponent(nm[2]) : null);
   } else {
     closeReader();
+    closeNotes();
   }
   // crossing the library/reader boundary re-scopes the query: in-flight
   // answers for the old scope are dropped by seq, this refreshes the new one

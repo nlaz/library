@@ -3,9 +3,12 @@
 /* persistent marks: wash + a darker settle line along the baseline — the
    ink a real highlighter leaves where it pools. Find hits stay pure wash
    (outline style, .hlayer): kept marks vs ephemeral hits at a glance. */
+/* purely visual — clicks are hit-tested geometrically in annotations.ts,
+   so the text layer above stays selectable through the wash */
 .alayer {
   position: absolute;
   inset: 0;
+  pointer-events: none;
 }
 
 .alayer.off {
@@ -16,7 +19,6 @@
   position: absolute;
   background: var(--hl-wash);
   border-bottom: 2px solid var(--hl-line);
-  cursor: pointer;
 }
 
 .alayer .mark.region {

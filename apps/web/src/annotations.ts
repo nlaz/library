@@ -202,6 +202,12 @@ function showToolbar() {
   }
   const sel = window.getSelection()!;
   const r = sel.getRangeAt(0).getBoundingClientRect();
+  if (!r.width && !r.height) {
+    // degenerate rect (e.g. a selection living inside a textarea) — a
+    // toolbar clamped to the corner would just be litter
+    hideToolbar();
+    return;
+  }
   const host = $reader.getBoundingClientRect();
   toolbar.hidden = false;
   const left = Math.max(8, r.left - host.left + r.width / 2 - toolbar.offsetWidth / 2);
@@ -368,6 +374,9 @@ apNote.addEventListener("keydown", (e) => {
   e.stopPropagation();
   if (e.key === "Escape") closePopover();
 });
+// wherever focus goes, the note is not lost — blur commits (clicks that
+// land outside the pages container never reach the close handler)
+apNote.addEventListener("blur", () => void closePopover());
 
 function fmtWhen(a: AnnotRec): string {
   const d = new Date(a.created * 1000);
@@ -442,11 +451,34 @@ export async function removeAnnotation(id: string) {
   changed();
 }
 
+// Marks are hit-tested geometrically, not through the DOM: the OCR text
+// layer attaches async (after its fetch) and lands above the mark layer,
+// and raising marks above the text would break selecting inside a
+// highlighted passage. The wash stays visual; the click math is ours.
 $pagesEl.addEventListener("click", (e) => {
-  const mark = (e.target as HTMLElement).closest<HTMLElement>(".alayer .mark");
-  if (mark?.dataset.annot) {
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) return; // a selection drag, not a click
+  const pageEl = (e.target as HTMLElement).closest<HTMLElement>(".rpage");
+  if (!pageEl) {
+    void closePopover();
+    return;
+  }
+  const r = pageEl.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width;
+  const y = (e.clientY - r.top) / r.height;
+  const page = Number(pageEl.dataset.page);
+  const hit = marksVisible
+    ? annots.find(
+        (a) =>
+          a.page === page &&
+          markBoxes(a).some(
+            ([bx, by, bw, bh]) => x >= bx && x <= bx + bw && y >= by && y <= by + bh,
+          ),
+      )
+    : undefined;
+  if (hit) {
     e.preventDefault();
-    openPopover(mark.dataset.annot);
+    openPopover(hit.id);
   } else if (!popover.contains(e.target as Node)) {
     void closePopover();
   }

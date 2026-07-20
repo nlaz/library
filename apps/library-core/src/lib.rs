@@ -27,7 +27,7 @@ pub(crate) use rank::{MMR_LAMBDA, MMR_POOL};
 pub use records::{ChunkKey, ChunkRec, Word};
 pub use store::{
     ChunkIn, Graph, LexSink, LexTok, Library, ManifestSink, Readers, TermSink, VecIndex, VecSink,
-    graph, open, try_open,
+    commit_chunks, graph, open, try_open,
 };
 pub use termdict::{TermDict, TermDictReader};
 pub use text::{lex_tokenize, tokenize};

@@ -91,6 +91,31 @@ pub fn graph() -> Graph {
     )
 }
 
+/// Atomic swap of one doc's chunks: upsert the new records, remove keys
+/// that vanished, checkpoint. The table retracts replaced records itself
+/// and byte-equal upserts skip the graph, so an unchanged chunk costs one
+/// point read. Passing `&[]` retracts the doc entirely. Returns
+/// (removed, added) — removed counts keys actually deleted.
+pub fn commit_chunks(st: &mut Library, doc: &str, recs: &[ChunkRec]) -> (usize, usize) {
+    let counts = st.wtx(|tx| {
+        let old: Vec<ChunkKey> = tx.rtx(|(_, (manifest, _))| manifest.search(&doc.to_string()));
+        let new: crate::FxHashSet<&ChunkKey> = recs.iter().map(|r| &r.key).collect();
+        for rec in recs {
+            tx.upsert(&rec.key, rec);
+        }
+        let mut removed = 0;
+        for key in old {
+            if !new.contains(&key) {
+                tx.remove(&key);
+                removed += 1;
+            }
+        }
+        (removed, recs.len())
+    });
+    st.checkpoint();
+    counts
+}
+
 pub fn open(path: impl AsRef<std::path::Path>) -> Library {
     KeyedStream::new(path, graph())
 }

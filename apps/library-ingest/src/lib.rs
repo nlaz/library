@@ -470,23 +470,7 @@ pub fn prepare_text_cached(
 /// The only text-pipeline step that needs exclusive store access.
 /// Returns (removed, added) — removed counts keys actually deleted.
 pub fn commit_text(st: &mut Library, doc: &str, recs: &[ChunkRec]) -> (usize, usize) {
-    let counts = st.wtx(|tx| {
-        let old: Vec<ChunkKey> = tx.rtx(|(_, (manifest, _))| manifest.search(&doc.to_string()));
-        let new: FxHashSet<&ChunkKey> = recs.iter().map(|r| &r.key).collect();
-        for rec in recs {
-            tx.upsert(&rec.key, rec);
-        }
-        let mut removed = 0;
-        for key in old {
-            if !new.contains(&key) {
-                tx.remove(&key);
-                removed += 1;
-            }
-        }
-        (removed, recs.len())
-    });
-    st.checkpoint();
-    counts
+    library_core::store::commit_chunks(st, doc, recs)
 }
 
 // ---------------------------------------------------------------------------

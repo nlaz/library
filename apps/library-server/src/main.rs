@@ -13,7 +13,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -77,8 +77,10 @@ struct SampleParams {
 }
 
 struct App {
-    lib: Library,
-    images: Images,
+    /// Behind rwlocks so the marginalia write routes can commit while
+    /// searches keep running — the same shape as the desktop Engine.
+    lib: RwLock<Library>,
+    images: RwLock<Images>,
     /// CLIP text encoder: embeds queries into the shared text/image space
     /// for figure search. Text-chunk queries use ese (no model object).
     clip: TextEmbedding,
@@ -87,7 +89,9 @@ struct App {
 
 impl App {
     fn answer(&self, q: &Query) -> library_core::wire::Response {
-        library_core::answer(&self.lib, &self.images, &self.data, q, |s| {
+        let lib = self.lib.read().expect("library lock poisoned");
+        let images = self.images.read().expect("images lock poisoned");
+        library_core::answer(&lib, &images, &self.data, q, |s| {
             self.clip
                 .embed(vec![s.to_string()], None)
                 .ok()
@@ -124,8 +128,8 @@ async fn main() -> Result<()> {
     );
 
     let app = Arc::new(App {
-        lib,
-        images,
+        lib: RwLock::new(lib),
+        images: RwLock::new(images),
         clip,
         data: args.data.clone(),
     });
@@ -186,7 +190,9 @@ async fn main() -> Result<()> {
                                 .and_then(|v| v.try_into().ok());
                             let found = qemb
                                 .map(|e| {
-                                    app.images.rtx(|r| {
+                                    let images =
+                                        app.images.read().expect("images lock poisoned");
+                                    images.rtx(|r| {
                                         library_core::image_search(
                                             &r,
                                             &e,
@@ -198,9 +204,10 @@ async fn main() -> Result<()> {
                                 .unwrap_or_default();
                             library_core::tools::image_hits_for_tool(&found, &app.data, k)
                         } else {
-                            app.lib.rtx(|r| {
+                            let lib = app.lib.read().expect("library lock poisoned");
+                            lib.rtx(|r| {
                                 library_core::tools::search_tool(
-                                    &r, &app.lib, &app.data, &p.q, &p.col, k,
+                                    &r, &lib, &app.data, &p.q, &p.col, k,
                                 )
                             })
                         }
@@ -226,7 +233,8 @@ async fn main() -> Result<()> {
                             return Vec::<String>::new();
                         }
                         let k = p.k.unwrap_or(8);
-                        app.lib.rtx(|(_, (_, terms))| terms.complete_ranked(q, k))
+                        let lib = app.lib.read().expect("library lock poisoned");
+                        lib.rtx(|(_, (_, terms))| terms.complete_ranked(q, k))
                     })
                     .await
                     .expect("complete task panicked");
@@ -242,8 +250,16 @@ async fn main() -> Result<()> {
                 let app = app.clone();
                 async move {
                     let out = tokio::task::spawn_blocking(move || {
-                        let chunks = app.lib.rtx(|((_, vec), _)| vec.len());
-                        let figures = app.images.rtx(|(vec, _)| vec.len());
+                        let chunks = app
+                            .lib
+                            .read()
+                            .expect("library lock poisoned")
+                            .rtx(|((_, vec), _)| vec.len());
+                        let figures = app
+                            .images
+                            .read()
+                            .expect("images lock poisoned")
+                            .rtx(|(vec, _)| vec.len());
                         let docs = std::fs::read_dir(app.data.join("pages"))
                             .map(|d| d.filter_map(|e| e.ok()).count())
                             .unwrap_or(0);

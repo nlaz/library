@@ -76,8 +76,10 @@ fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value)
             Ok(m) => m,
             Err(e) => return e.to_string(),
         };
-        let qemb: Option<ClipEmb> = eng
-            .clip_text
+        let Some(clip) = eng.clip_text.get() else {
+            return "figure search is still warming up — try again in a moment".to_string();
+        };
+        let qemb: Option<ClipEmb> = clip
             .embed(vec![q.to_string()], None)
             .ok()
             .and_then(|mut v| v.pop())

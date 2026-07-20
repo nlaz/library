@@ -2,7 +2,7 @@
 //! the app state that owns it.
 
 use std::path::{Path, PathBuf};
-use std::sync::{RwLock, mpsc};
+use std::sync::{OnceLock, RwLock, mpsc};
 use std::time::{Duration, Instant};
 
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
@@ -18,7 +18,9 @@ pub struct Engine {
     pub(crate) lib: RwLock<Library>,
     pub(crate) images: RwLock<Images>,
     /// CLIP text encoder for figure search; text queries embed with ese.
-    pub(crate) clip_text: TextEmbedding,
+    /// Loads in the background *after* `app:ready` — empty means still
+    /// warming, and hybrid answers degrade to text-only until it lands.
+    pub(crate) clip_text: OnceLock<TextEmbedding>,
 }
 
 pub struct AppState {
@@ -88,28 +90,34 @@ pub(crate) fn init_engine(app: AppHandle) {
     };
     println!("stores open in {:?}", t.elapsed());
 
-    let t = Instant::now();
-    let models = settings.data.join("models");
-    // text queries embed with ese (no model object); only the CLIP text
-    // encoder (shared space with figure crops) still loads
-    let clip_text = match TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::ClipVitB32).with_cache_dir(models),
-    ) {
-        Ok(c) => c,
-        Err(e) => return fail(format!("embedding model failed to load: {e}")),
-    };
-    println!("embedding model ready in {:?}", t.elapsed());
-
     let engine = std::sync::Arc::new(Engine {
         lib: RwLock::new(lib),
         images: RwLock::new(images),
-        clip_text,
+        clip_text: OnceLock::new(),
     });
     *app.state::<AppState>()
         .engine
         .write()
-        .expect("engine slot lock poisoned") = Some(engine);
+        .expect("engine slot lock poisoned") = Some(engine.clone());
     let _ = app.emit("app:ready", ());
+
+    // Readiness doesn't wait for CLIP: text queries embed with ese (no model
+    // object), so search works the moment the stores open. Only figure search
+    // needs the encoder (shared space with figure crops), and its callers
+    // treat "not loaded yet" as no figure results.
+    let t = Instant::now();
+    let models = settings.data.join("models");
+    match TextEmbedding::try_new(
+        InitOptions::new(EmbeddingModel::ClipVitB32).with_cache_dir(models),
+    ) {
+        Ok(c) => {
+            let _ = engine.clip_text.set(c);
+            println!("embedding model ready in {:?}", t.elapsed());
+        }
+        Err(e) => fail(format!(
+            "figure search unavailable — embedding model failed to load: {e}"
+        )),
+    }
 }
 
 pub(crate) fn engine(state: &AppState) -> Result<std::sync::Arc<Engine>, String> {
@@ -126,6 +134,7 @@ pub(crate) fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
     let images = eng.images.read().expect("images lock poisoned");
     library_core::answer(&lib, &images, data, q, |s| {
         eng.clip_text
+            .get()?
             .embed(vec![s.to_string()], None)
             .ok()
             .and_then(|mut v| v.pop())

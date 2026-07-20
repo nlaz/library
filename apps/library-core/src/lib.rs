@@ -4,6 +4,7 @@ pub use fxhash::FxHashSet;
 
 pub mod images;
 pub mod legibility;
+pub mod notes;
 pub mod perf;
 pub mod rank;
 pub mod records;

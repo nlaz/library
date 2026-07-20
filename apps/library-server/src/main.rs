@@ -17,7 +17,12 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use anyhow::Result;
-use axum::{Json, Router, extract::Path as UrlPath, routing::get, routing::post};
+use axum::http::StatusCode;
+use axum::{
+    Json, Router,
+    extract::Path as UrlPath,
+    routing::{delete, get, post, put},
+};
 use clap::Parser;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use library_core::wire::{count_pages, read_collections};
@@ -63,6 +68,28 @@ struct CompleteParams {
 struct TextParams {
     from: Option<u32>,
     to: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct NeighborParams {
+    k: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct ProposeBody {
+    text: String,
+}
+
+/// Text-chunk embeddings come from ese's static model — free functions,
+/// no loaded object (unlike CLIP).
+fn embed(s: &str) -> library_core::Emb {
+    ese::encode_single(s)
+}
+
+/// Uniform error mapping for the marginalia write routes: core returns
+/// io errors with caller-actionable messages, clients get 400 + text.
+fn bad<T: std::fmt::Display>(e: T) -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, e.to_string())
 }
 
 #[derive(Deserialize)]
@@ -366,6 +393,131 @@ async fn main() -> Result<()> {
                 let data = data.clone();
                 async move {
                     Json(serde_json::json!({ "pages": count_pages(&data.join("pages").join(doc)) }))
+                }
+            }
+        }))
+        // --- marginalia: annotations + note-box cards (write-capable; the
+        // desktop build reaches the same core logic via Tauri commands) ----
+        .route("/api/annotations/{doc}", get({
+            let app = app.clone();
+            move |UrlPath(doc): UrlPath<String>| {
+                let app = app.clone();
+                async move {
+                    let out = tokio::task::spawn_blocking(move || {
+                        library_core::annots::load_annots(&app.data, &doc)
+                    })
+                    .await
+                    .expect("annotations task panicked");
+                    Json(out)
+                }
+            }
+        }))
+        .route("/api/annotations", post({
+            let app = app.clone();
+            move |Json(annot): Json<library_core::annots::AnnotRec>| {
+                let app = app.clone();
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let mut lib = app.lib.write().expect("library lock poisoned");
+                        library_core::annots::save_annot(&mut lib, &app.data, annot, &embed)
+                            .map(Json)
+                            .map_err(bad)
+                    })
+                    .await
+                    .expect("save annotation task panicked")
+                }
+            }
+        }))
+        .route("/api/annotations/{doc}/{id}", delete({
+            let app = app.clone();
+            move |UrlPath((doc, id)): UrlPath<(String, String)>| {
+                let app = app.clone();
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let mut lib = app.lib.write().expect("library lock poisoned");
+                        library_core::annots::delete_annot(&mut lib, &app.data, &doc, &id)
+                            .map(|()| StatusCode::NO_CONTENT)
+                            .map_err(bad)
+                    })
+                    .await
+                    .expect("delete annotation task panicked")
+                }
+            }
+        }))
+        .route("/api/cards", get({
+            let app = app.clone();
+            move || {
+                let app = app.clone();
+                async move {
+                    let out = tokio::task::spawn_blocking(move || {
+                        library_core::notes::load_cards(&app.data)
+                    })
+                    .await
+                    .expect("cards task panicked");
+                    Json(out)
+                }
+            }
+        }))
+        .route("/api/cards", post({
+            let app = app.clone();
+            move |Json(input): Json<library_core::notes::NewCard>| {
+                let app = app.clone();
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let mut lib = app.lib.write().expect("library lock poisoned");
+                        library_core::notes::create_card(&mut lib, &app.data, input, &embed)
+                            .map(Json)
+                            .map_err(bad)
+                    })
+                    .await
+                    .expect("create card task panicked")
+                }
+            }
+        }))
+        .route("/api/cards", put({
+            let app = app.clone();
+            move |Json(card): Json<library_core::notes::CardRec>| {
+                let app = app.clone();
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let mut lib = app.lib.write().expect("library lock poisoned");
+                        library_core::notes::update_card(&mut lib, &app.data, card, &embed)
+                            .map(Json)
+                            .map_err(bad)
+                    })
+                    .await
+                    .expect("update card task panicked")
+                }
+            }
+        }))
+        .route("/api/cards/{id}/neighbors", get({
+            let app = app.clone();
+            move |UrlPath(id): UrlPath<String>,
+                  axum::extract::Query(p): axum::extract::Query<NeighborParams>| {
+                let app = app.clone();
+                async move {
+                    let out = tokio::task::spawn_blocking(move || {
+                        let lib = app.lib.read().expect("library lock poisoned");
+                        library_core::notes::card_neighbors(&lib, &app.data, &id, p.k.unwrap_or(8))
+                    })
+                    .await
+                    .expect("neighbors task panicked");
+                    Json(out)
+                }
+            }
+        }))
+        .route("/api/cards/propose_thread", post({
+            let app = app.clone();
+            move |Json(body): Json<ProposeBody>| {
+                let app = app.clone();
+                async move {
+                    let out = tokio::task::spawn_blocking(move || {
+                        let lib = app.lib.read().expect("library lock poisoned");
+                        library_core::notes::propose_thread(&lib, &app.data, &embed(&body.text))
+                    })
+                    .await
+                    .expect("propose thread task panicked");
+                    Json(out)
                 }
             }
         }))

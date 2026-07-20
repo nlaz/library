@@ -762,6 +762,19 @@ mod tests {
     }
 
     #[test]
+    fn doc_ids_never_look_reserved() {
+        // synthetic search docs live under `~card/…` / `~annot/…`; the
+        // sanitizer must make those unreachable from any real filename
+        for name in ["~card/abc.pdf", "~annot/x.png", "a/b~c.pdf", "~~.pdf"] {
+            let id = doc_id(Path::new(name));
+            assert!(
+                !library_core::records::is_reserved(&id) && !id.contains('/'),
+                "{name} -> {id}"
+            );
+        }
+    }
+
+    #[test]
     fn source_kind_classifies_by_extension() {
         assert_eq!(SourceKind::of(Path::new("a.pdf")), Some(SourceKind::Pdf));
         assert_eq!(SourceKind::of(Path::new("a.PDF")), Some(SourceKind::Pdf));

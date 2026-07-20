@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::sidecar;
+use crate::{ChunkKey, ChunkRec, Emb, Library, Word, sidecar};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -81,6 +81,107 @@ pub fn load_annots(data: &Path, doc: &str) -> Vec<AnnotRec> {
 pub fn store_annots(data: &Path, doc: &str, annots: &[AnnotRec]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir(data))?;
     sidecar::write_json_atomic(&path(data, doc), &annots)
+}
+
+// --- search integration ----------------------------------------------------
+
+/// Reserved search-namespace doc id for an annotation. Never
+/// filesystem-safe.
+pub fn annot_doc(id: &str) -> String {
+    format!("~annot/{id}")
+}
+
+fn annot_key(id: &str) -> ChunkKey {
+    ChunkKey {
+        doc: annot_doc(id),
+        page: 0,
+        idx: 0,
+    }
+}
+
+/// The searchable text of a mark: the margin note, plus the quoted
+/// snapshot for context. Only the *note* makes a mark searchable — the
+/// passage itself is already indexed under its real page, so a bare
+/// highlight minting a chunk would just duplicate that hit.
+fn annot_text(a: &AnnotRec) -> Option<String> {
+    if a.note.trim().is_empty() {
+        return None;
+    }
+    let mut text = a.note.clone();
+    if let AnnotKind::Text { text: snap, .. } = &a.kind
+        && !snap.is_empty()
+    {
+        text.push('\n');
+        text.push_str(snap);
+    }
+    Some(text)
+}
+
+/// One synthetic chunk per noted mark; zero-geometry words like cards.
+pub fn annot_chunk(a: &AnnotRec, embed: &dyn Fn(&str) -> Emb) -> Option<ChunkRec> {
+    let text = annot_text(a)?;
+    let words = text
+        .split_whitespace()
+        .map(|t| Word {
+            t: t.to_string(),
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        })
+        .collect();
+    Some(ChunkRec {
+        key: annot_key(&a.id),
+        words,
+        emb: embed(&text),
+    })
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Create or update a mark: sidecar write, then its search presence.
+/// An empty id mints one; a note-less mark retracts any prior chunk.
+pub fn save_annot(
+    lib: &mut Library,
+    data: &Path,
+    mut a: AnnotRec,
+    embed: &dyn Fn(&str) -> Emb,
+) -> std::io::Result<AnnotRec> {
+    if a.id.is_empty() {
+        a.id = crate::notes::mint_id('a');
+    }
+    if a.created == 0 {
+        a.created = now();
+    }
+    let mut annots = load_annots(data, &a.doc);
+    match annots.iter_mut().find(|x| x.id == a.id) {
+        Some(slot) => *slot = a.clone(),
+        None => annots.push(a.clone()),
+    }
+    store_annots(data, &a.doc, &annots)?;
+    let doc = annot_doc(&a.id);
+    match annot_chunk(&a, embed) {
+        Some(chunk) => {
+            crate::store::commit_chunks(lib, &doc, &[chunk]);
+        }
+        None => {
+            crate::store::commit_chunks(lib, &doc, &[]);
+        }
+    }
+    Ok(a)
+}
+
+pub fn delete_annot(lib: &mut Library, data: &Path, doc: &str, id: &str) -> std::io::Result<()> {
+    let mut annots = load_annots(data, doc);
+    annots.retain(|a| a.id != id);
+    store_annots(data, doc, &annots)?;
+    crate::store::commit_chunks(lib, &annot_doc(id), &[]);
+    Ok(())
 }
 
 #[cfg(test)]

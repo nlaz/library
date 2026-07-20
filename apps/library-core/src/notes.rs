@@ -11,12 +11,14 @@
 //! Source of truth is `data/notes/cards.json` (one atomic sidecar, see
 //! [`crate::sidecar`]); the search index holds derived synthetic chunks.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::sidecar;
+use crate::store::commit_chunks;
+use crate::{ChunkKey, ChunkRec, Emb, Library, Word, sidecar};
 
 /// A quoted passage: `w0..w1` (exclusive) word-index range into the page's
 /// OCR words, plus the text snapshot taken at quote time. The snapshot is
@@ -217,6 +219,252 @@ pub fn load_cards(data: &Path) -> Vec<CardRec> {
 pub fn store_cards(data: &Path, cards: &[CardRec]) -> std::io::Result<()> {
     std::fs::create_dir_all(data.join("notes"))?;
     sidecar::write_json_atomic(&cards_path(data), &cards)
+}
+
+// --- search integration ----------------------------------------------------
+
+/// Reserved search-namespace doc id for a card. Never filesystem-safe.
+pub fn card_doc(id: &str) -> String {
+    format!("~card/{id}")
+}
+
+fn card_key(id: &str) -> ChunkKey {
+    ChunkKey {
+        doc: card_doc(id),
+        page: 0,
+        idx: 0,
+    }
+}
+
+/// A card's searchable text: claim, body, and the quoted evidence — so
+/// quoting a passage makes the card findable by that passage's words.
+fn card_text(card: &CardRec) -> String {
+    let mut text = card.title.clone();
+    if !card.body.is_empty() {
+        text.push('\n');
+        text.push_str(&card.body);
+    }
+    for q in &card.evidence {
+        text.push('\n');
+        text.push_str(&q.text);
+    }
+    text
+}
+
+/// One synthetic chunk per card (cards stay card-sized — far under the
+/// ingest window — and one chunk means one hit, never a double surface).
+/// Words carry zero geometry; wire shaping strips the boxes downstream.
+pub fn card_chunk(card: &CardRec, embed: &dyn Fn(&str) -> Emb) -> ChunkRec {
+    let text = card_text(card);
+    let words = text
+        .split_whitespace()
+        .map(|t| Word {
+            t: t.to_string(),
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        })
+        .collect();
+    ChunkRec {
+        key: card_key(&card.id),
+        words,
+        emb: embed(&text),
+    }
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Re-mint a card's search presence after a save: filed cards retract,
+/// live cards commit their one chunk (the manifest diff replaces any
+/// prior version).
+fn reindex_card(lib: &mut Library, card: &CardRec, embed: &dyn Fn(&str) -> Emb) {
+    let doc = card_doc(&card.id);
+    if card.filed {
+        commit_chunks(lib, &doc, &[]);
+    } else {
+        commit_chunks(lib, &doc, &[card_chunk(card, embed)]);
+    }
+}
+
+/// Input for a card birth. `parent` wins over `thread`; neither starts a
+/// fresh thread.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewCard {
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub evidence: Vec<QuoteAnchor>,
+    #[serde(default)]
+    pub links: Vec<CardLink>,
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub thread: Option<u32>,
+}
+
+/// Mint and persist a new card: address from its birth context, sidecar
+/// write, then the synthetic chunk.
+pub fn create_card(
+    lib: &mut Library,
+    data: &Path,
+    input: NewCard,
+    embed: &dyn Fn(&str) -> Emb,
+) -> io::Result<CardRec> {
+    let mut cards = load_cards(data);
+    let (thread, addr) = match (&input.parent, input.thread) {
+        (Some(pid), _) => {
+            let parent = cards
+                .iter()
+                .find(|c| c.id == *pid)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "unknown parent card"))?
+                .clone();
+            (parent.thread, mint_branch(&cards, &parent))
+        }
+        (None, Some(t)) => (t, mint_trunk(&cards, t)),
+        (None, None) => {
+            let t = next_thread(&cards);
+            (t, vec![1])
+        }
+    };
+    let ts = now();
+    let card = CardRec {
+        id: mint_id('c'),
+        thread,
+        addr,
+        title: input.title,
+        body: input.body,
+        evidence: input.evidence,
+        links: input.links,
+        created: ts,
+        modified: ts,
+        filed: false,
+        split_hinted: false,
+    };
+    cards.push(card.clone());
+    store_cards(data, &cards)?;
+    reindex_card(lib, &card, embed);
+    Ok(card)
+}
+
+/// Save an edit. Identity and address are immutable — the stored id,
+/// thread, addr, and created stamp win over whatever the client sent.
+pub fn update_card(
+    lib: &mut Library,
+    data: &Path,
+    card: CardRec,
+    embed: &dyn Fn(&str) -> Emb,
+) -> io::Result<CardRec> {
+    let mut cards = load_cards(data);
+    let slot = cards
+        .iter_mut()
+        .find(|c| c.id == card.id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "unknown card"))?;
+    let saved = CardRec {
+        id: slot.id.clone(),
+        thread: slot.thread,
+        addr: slot.addr.clone(),
+        created: slot.created,
+        modified: now(),
+        ..card
+    };
+    *slot = saved.clone();
+    store_cards(data, &cards)?;
+    reindex_card(lib, &saved, embed);
+    Ok(saved)
+}
+
+/// Where a fresh card with this text would file: after its nearest
+/// existing card by embedding. `None` when the box is empty (of live,
+/// indexed cards) — the composer falls back to "new thread".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadProposal {
+    /// The proposed parent card.
+    pub parent: String,
+    pub parent_address: String,
+    pub parent_title: String,
+    pub thread: u32,
+    /// The address the new card would receive.
+    pub address: String,
+}
+
+pub fn propose_thread(lib: &Library, data: &Path, emb: &Emb) -> Option<ThreadProposal> {
+    let nearest = lib.rtx(|((_, vec), _)| {
+        vec.search_filtered(emb, |key: &ChunkKey| key.doc.starts_with("~card/"))
+            .into_iter()
+            .next()
+            .map(|s| s.val)
+    })?;
+    let id = nearest.doc.strip_prefix("~card/")?.to_string();
+    let cards = load_cards(data);
+    let parent = cards.iter().find(|c| c.id == id)?;
+    let addr = mint_branch(&cards, parent);
+    Some(ThreadProposal {
+        parent: parent.id.clone(),
+        parent_address: display_addr(parent.thread, &parent.addr),
+        parent_title: parent.title.clone(),
+        thread: parent.thread,
+        address: display_addr(parent.thread, &addr),
+    })
+}
+
+/// A near-but-unlinked card for the thread rail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NeighborCard {
+    pub id: String,
+    pub address: String,
+    pub title: String,
+    /// Cosine distance (smaller = nearer).
+    pub score: f32,
+}
+
+/// Embedding neighbors of `id` among live cards, excluding itself and
+/// anything already linked in either direction.
+pub fn card_neighbors(lib: &Library, data: &Path, id: &str, k: usize) -> Vec<NeighborCard> {
+    let Some(rec) = lib.get(&card_key(id)) else {
+        return Vec::new(); // filed or unknown: no chunk, no neighborhood
+    };
+    let cards = load_cards(data);
+    let Some(me) = cards.iter().find(|c| c.id == id) else {
+        return Vec::new();
+    };
+    let linked: crate::FxHashSet<&str> = me
+        .links
+        .iter()
+        .map(|l| l.to.as_str())
+        .chain(
+            cards
+                .iter()
+                .filter(|c| c.links.iter().any(|l| l.to == id))
+                .map(|c| c.id.as_str()),
+        )
+        .collect();
+    let scored = lib.rtx(|((_, vec), _)| {
+        vec.search_filtered(&rec.emb, |key: &ChunkKey| key.doc.starts_with("~card/"))
+    });
+    scored
+        .into_iter()
+        .filter_map(|s| {
+            let nid = s.val.doc.strip_prefix("~card/")?;
+            if nid == id || linked.contains(nid) {
+                return None;
+            }
+            let c = cards.iter().find(|c| c.id == nid && !c.filed)?;
+            Some(NeighborCard {
+                id: c.id.clone(),
+                address: display_addr(c.thread, &c.addr),
+                title: c.title.clone(),
+                score: s.score,
+            })
+        })
+        .take(k)
+        .collect()
 }
 
 #[cfg(test)]

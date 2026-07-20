@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
-// search core: query state + debounce, result cards, the render/append paths,
-// infinite-scroll paging, and the type-ahead dropdown. All query/paging state
-// lives here — main.ts only calls initSearch() and sendQuery().
+// search core: query state + single-flight dispatch, result cards, the
+// render/append paths, infinite-scroll paging, and the type-ahead dropdown.
+// All query/paging state lives here — main.ts only calls initSearch() and
+// sendQuery().
 // ---------------------------------------------------------------------------
 
 import { pageUrl } from "./assets";
@@ -14,12 +15,6 @@ import { transport } from "./state";
 import type { WireHit, WireResponse } from "./types";
 import { openViewer } from "./viewer";
 
-const FULL_DEBOUNCE_MS = 60;
-// once the query first reaches this many characters, fire the hybrid/image
-// query immediately instead of waiting out the debounce — the first
-// meaningful result set shows up sooner, and typing further still debounces
-// normally off this point
-const FULL_FLUSH_CHARS = 3;
 const PREVIEW_H = 190; // px, keep in sync with .preview height in style.css
 // one page of the blended result order; keep in sync with K in
 // library-server/src/main.rs and library-app/src/lib.rs
@@ -27,8 +22,8 @@ const PAGE = 20;
 
 let seq = 0;
 let rendered = 0; // highest seq drawn; anything older is stale
-let instantSeq = 0; // seq of the in-flight instant query; 0 = none
-let instantDirty = false; // input changed while an instant was in flight
+let pendingSeq = 0; // seq of the in-flight keystroke query; 0 = none
+let pendingDirty = false; // input/state changed while a query was in flight
 // dev-only: seq -> performance.now() at send, for round-trip logging
 const sentAt = new Map<number, number>();
 // seqs sent doc-scoped (reader find) and to which doc — their responses
@@ -44,7 +39,7 @@ let endReached = false;
 // mid-ingest index change can drift the slices slightly
 const seen = new Set<string>();
 // send() closes over initSearch()'s state; route() (in main.ts) needs it too
-export let sendQuery: (mode: "instant" | "full") => void = () => {};
+export let sendQuery: () => void = () => {};
 
 // ---------------------------------------------------------------------------
 // search results (unchanged card/viewer logic, URLs via pageUrl)
@@ -189,8 +184,6 @@ function render(msg: WireResponse) {
   seen.clear();
   for (const h of msg.hits) seen.add(hitKey(h));
   moreOffset = msg.hits.length;
-  // an instant response can be short of PAGE and flag "end" prematurely;
-  // the debounced full re-render 60ms later recomputes it
   endReached = settled && msg.hits.length < PAGE;
   setMoreState(!msg.hits.length ? "hidden" : endReached ? "end" : "idle");
   $main.scrollTop = 0;
@@ -223,21 +216,15 @@ export function showSearch(active: boolean) {
 /** Wire query dispatch, the response handler, infinite scroll, and the
  * type-ahead dropdown. Call once at startup, after the transport is ready. */
 export function initSearch() {
-  // query text of the last "full" (hybrid+image) request sent, so a
-  // catch-up "instant" — resent once a stale in-flight instant finally
-  // resolves — doesn't fire (and later render over) a full response the
-  // current text has already gotten
-  let lastFullQuery = "";
-
-  const send = (mode: "instant" | "full") => {
+  const send = () => {
     const q = $q.value.trim();
     // reader open = the query is a find scoped to that doc; the library
     // views behind the reader must not churn
     const doc = readerDoc();
     if (!q) {
       rendered = ++seq;
-      instantSeq = 0;
-      instantDirty = false;
+      pendingSeq = 0;
+      pendingDirty = false;
       sentDoc.clear();
       resetPaging();
       if (doc) {
@@ -255,7 +242,7 @@ export function initSearch() {
     // and don't let a stale in-flight answer render over this state
     if (q.length < 2) {
       rendered = ++seq;
-      instantDirty = false;
+      pendingDirty = false;
       resetPaging();
       if (doc) {
         clearReaderHits();
@@ -266,27 +253,26 @@ export function initSearch() {
       }
       return;
     }
-    // at most one instant query in flight: a burst of keystrokes must not
-    // stack concurrent scans on the engine — mark dirty and catch up when
-    // the pending answer lands
-    if (mode === "instant") {
-      if (instantSeq > rendered) {
-        instantDirty = true;
-        return;
-      }
-      instantSeq = seq + 1;
+    // at most one query in flight: a burst of keystrokes must not stack
+    // concurrent hybrid scans on the engine — mark dirty and catch up when
+    // the pending answer lands. Self-pacing replaces the old debounce: the
+    // engine answers well under a keystroke interval, so every send is a
+    // full (hybrid+image) query.
+    if (pendingSeq > rendered) {
+      pendingDirty = true;
+      return;
     }
-    if (mode === "full") lastFullQuery = q;
+    pendingSeq = seq + 1;
     if (!doc) $stats.textContent = "searching…";
     if (import.meta.env.DEV) sentAt.set(seq + 1, performance.now());
     if (doc) sentDoc.set(seq + 1, doc);
     // "" = search all kinds — the UI has no text/images toggle
-    transport.send({ seq: ++seq, q, mode, col: getCol(), kind: "", doc });
+    transport.send({ seq: ++seq, q, mode: "full", col: getCol(), kind: "", doc });
   };
   sendQuery = send;
 
   // infinite scroll continuation — deliberately NOT routed through send():
-  // it must not touch lastFullQuery or the instant machinery
+  // it must not touch the single-flight machinery
   const sendMore = () => {
     const q = $q.value.trim();
     if (readerOpen() || $search.hidden || endReached || q.length < 2) return;
@@ -320,14 +306,11 @@ export function initSearch() {
         );
       }
     }
-    if (msg.seq === instantSeq) {
-      instantSeq = 0;
-      const dirty = instantDirty;
-      instantDirty = false;
-      // a full response for the current text is already in flight (or
-      // rendered) — a lex-only catch-up would only regress what's on screen
-      if (dirty && $q.value.trim() !== lastFullQuery) {
-        send("instant"); // the box changed while we were waiting
+    if (msg.seq === pendingSeq) {
+      pendingSeq = 0;
+      if (pendingDirty) {
+        pendingDirty = false;
+        send(); // the box (or collection) changed while we were waiting
       }
     }
     const hitDoc = sentDoc.get(msg.seq);
@@ -366,20 +349,7 @@ export function initSearch() {
     render(msg);
   });
 
-  let fullTimer: ReturnType<typeof setTimeout>;
-  let flushedLen = 0; // query length we last eagerly flushed at; 0 = not yet
-  $q.addEventListener("input", () => {
-    const q = $q.value.trim();
-    send("instant"); // lexical, every keystroke
-    clearTimeout(fullTimer);
-    if (!q.length) {
-      flushedLen = 0;
-    } else if (!flushedLen && q.length >= FULL_FLUSH_CHARS) {
-      flushedLen = q.length;
-      send("full"); // enough to search meaningfully — don't wait for the pause
-    }
-    fullTimer = setTimeout(() => send("full"), FULL_DEBOUNCE_MS); // hybrid, on pause
-  });
+  $q.addEventListener("input", () => send()); // hybrid, every keystroke
 
   // --- type-ahead: frequency-ranked word completions in a dropdown ---------
   // Additive and independent of the search grid + seq machinery. Stale
@@ -398,8 +368,7 @@ export function initSearch() {
   const applyAc = (term: string) => {
     $q.value = term;
     hideAc();
-    flushedLen = term.length;
-    send("full");
+    send();
     $q.focus();
   };
   const renderAc = () => {

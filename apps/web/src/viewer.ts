@@ -97,7 +97,7 @@ document.addEventListener(
       // (which also seq-guards any answer still in flight)
       if (readerOpen() && $q.value) {
         $q.value = "";
-        sendQuery("instant");
+        sendQuery();
       }
     }
   },

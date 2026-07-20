@@ -34,7 +34,7 @@ async function route() {
   // crossing the library/reader boundary re-scopes the query: in-flight
   // answers for the old scope are dropped by seq, this refreshes the new one
   sentDoc.clear();
-  if ($q.value.trim()) sendQuery("full");
+  if ($q.value.trim()) sendQuery();
   $searchNav.hidden = !readerOpen();
 }
 window.addEventListener("hashchange", route);
@@ -127,7 +127,7 @@ async function main() {
     // no "Everything" tab: clicking the active collection again clears it
     setCol(getCol() === btn.dataset.col ? "" : btn.dataset.col!);
     for (const b of $cols.children) b.classList.toggle("on", b === btn && getCol() !== "");
-    if ($q.value.trim()) sendQuery("full");
+    if ($q.value.trim()) sendQuery();
     else renderHome();
   });
 }

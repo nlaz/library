@@ -2,6 +2,7 @@
 
 pub use fxhash::FxHashSet;
 
+pub mod annots;
 pub mod images;
 pub mod legibility;
 pub mod notes;

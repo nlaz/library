@@ -149,6 +149,10 @@ pub(crate) fn set_collections(
 /// worker from re-ingesting it (re-adding the same file revives it).
 #[tauri::command]
 pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Result<(), String> {
+    if library_core::records::is_reserved(&doc) {
+        // reserved ids contain `/` — never let one near remove_dir_all
+        return Err("not a document".into());
+    }
     let data = state.settings.data.clone();
     if worker::claimed(&data, &doc)
         || status::read(&data, &doc).map(|s| s.state) == Some(DocState::Preparing)

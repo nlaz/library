@@ -440,6 +440,10 @@ pub fn image_hits_for_tool(found: &[crate::ImageHit], data: &Path, k: usize) -> 
 /// the model treats explicit errors correctly but confabulates over
 /// silently-empty text.
 pub fn read_pages_tool(data: &Path, doc: &str, from: Option<u32>, to: Option<u32>) -> Value {
+    if crate::records::is_reserved(doc) {
+        // reserved ids contain `/` and must never reach a path join
+        return serde_json::json!({ "error": "no such document" });
+    }
     let dir = data.join("text");
     let stems: Vec<String> = std::fs::read_dir(&dir)
         .map(|it| {

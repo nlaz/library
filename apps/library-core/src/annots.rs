@@ -176,6 +176,25 @@ pub fn save_annot(
     Ok(a)
 }
 
+/// Every annotation across every doc — the id → record view wire shaping
+/// needs (annotation ids don't encode their doc). One small JSON per doc;
+/// a personal library has dozens, not thousands.
+pub fn load_all(data: &Path) -> Vec<AnnotRec> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir(data)) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "json")
+            && let Some(annots) = sidecar::read_json::<Vec<AnnotRec>>(&p)
+        {
+            out.extend(annots);
+        }
+    }
+    out
+}
+
 pub fn delete_annot(lib: &mut Library, data: &Path, doc: &str, id: &str) -> std::io::Result<()> {
     let mut annots = load_annots(data, doc);
     annots.retain(|a| a.id != id);

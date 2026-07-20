@@ -135,6 +135,9 @@ pub fn answer(
                 .map(perf::HitProv::from),
         );
         text_hits.extend(found.iter().map(|h| wire::wire_hit(h, &qtoks)));
+        // note-box cards and annotation notes ranked through the normal
+        // text path; strip their page-scan assumptions before the wire
+        wire::decorate_reserved_hits(&mut text_hits, data);
     }
 
     if want_imgs {

@@ -9,6 +9,7 @@ import { $ac, $home, $main, $more, $q, $results, $search, $searchCount, $stats }
 import { docTitle, hitKey } from "./format";
 import { getCol, renderHome } from "./home";
 import { hlBoxes } from "./highlights";
+import { notesOpen } from "./notebox";
 import { clearReaderHits, readerDoc, readerOpen, setReaderHits } from "./reader";
 import { transport } from "./state";
 import type { WireHit, WireResponse } from "./types";
@@ -50,7 +51,60 @@ export let sendQuery: (mode: "instant" | "full") => void = () => {};
 // search results (unchanged card/viewer logic, URLs via pageUrl)
 // ---------------------------------------------------------------------------
 
+/** Note-box and annotation hits have no page scan — a text card face
+ * (title/snippet) replaces the crop preview, and the click goes where the
+ * hit actually lives: the thread view, or the marked page. */
+function marginaliaCard(hit: WireHit): { el: HTMLElement; place: () => void } {
+  const el = document.createElement("div");
+  el.className = "card notehit";
+
+  const face = document.createElement("div");
+  face.className = "preview note-face";
+  if (hit.card) {
+    const addr = document.createElement("span");
+    addr.className = "nf-addr";
+    addr.textContent = hit.card.address;
+    const title = document.createElement("div");
+    title.className = "nf-title";
+    title.textContent = hit.card.title;
+    face.append(addr, title);
+  }
+  const body = document.createElement("div");
+  body.className = "nf-snip";
+  for (const w of hit.snippet) {
+    const node = w.m ? document.createElement("mark") : document.createElement("span");
+    node.textContent = w.t;
+    body.append(node, " ");
+  }
+  face.append(body);
+
+  const loc = document.createElement("div");
+  loc.className = "loc";
+  loc.textContent = hit.card
+    ? `note · thread ${hit.card.breadcrumb}`
+    : hit.annot
+      ? `${docTitle(hit.annot.doc)} · p.${hit.annot.page} · mark`
+      : "note";
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.append(loc);
+  el.append(face, meta);
+
+  el.addEventListener("click", () => {
+    // the hit is the destination — end the search session first, or the
+    // still-live query would bounce the notes view straight back to the
+    // grid (showSearch leaves the box whenever results render)
+    $q.value = "";
+    $q.dispatchEvent(new Event("input", { bubbles: true }));
+    if (hit.card) location.hash = `#/notes/${hit.card.thread}?card=${hit.card.id}`;
+    else if (hit.annot) location.hash = `#/read/${hit.annot.doc}?p=${hit.annot.page}`;
+  });
+  return { el, place: () => {} };
+}
+
 function card(hit: WireHit): { el: HTMLElement; place: () => void } {
+  if (hit.kind === "card" || hit.kind === "annotation") return marginaliaCard(hit);
+
   const el = document.createElement("div");
   el.className = "card";
 
@@ -216,6 +270,10 @@ function appendResults(msg: WireResponse) {
 // ---------------------------------------------------------------------------
 
 export function showSearch(active: boolean) {
+  // a library-wide query while the note box is open means "show me the
+  // results" — leave the box by navigation, the way the reader is left
+  // (the box sits over the grid and would swallow every click)
+  if (active && notesOpen()) location.hash = "#/";
   $search.hidden = !active;
   $home.hidden = active;
 }

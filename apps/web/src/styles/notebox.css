@@ -322,6 +322,52 @@
   margin-top: var(--sp-2);
 }
 
+/* search results: a note-box hit is an index card, not a page crop */
+.card.notehit .note-face {
+  position: relative;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 24px 14px 12px;
+  font-size: var(--fs-ui);
+  line-height: 1.55;
+  overflow: hidden;
+}
+
+.card.notehit .note-face::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 20px;
+  border-top: 1.5px solid var(--hl-line);
+  opacity: 0.75;
+}
+
+@media (prefers-color-scheme: dark) {
+  .card.notehit .note-face {
+    background: var(--surface);
+  }
+}
+
+.card.notehit .nf-addr {
+  position: absolute;
+  top: 5px;
+  right: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+}
+
+.card.notehit .nf-title {
+  font-weight: 600;
+  font-size: var(--fs-body);
+  margin-bottom: 5px;
+}
+
+.card.notehit .nf-snip {
+  color: var(--ink-dim);
+}
+
 /* composer: the same small card, over a dithered scrim */
 #composer {
   position: fixed;

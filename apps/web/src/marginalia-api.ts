@@ -3,7 +3,7 @@
 // core functions server-side, so callers never care which host they're on.
 
 import { desktop } from "./state";
-import type { AnnotRec, CardRec, NeighborCard, NewCard, ThreadProposal } from "./types";
+import type { CardRec, NeighborCard, NewCard, ThreadProposal } from "./types";
 
 async function j<T>(res: Promise<Response>): Promise<T> {
   const r = await res;
@@ -16,22 +16,6 @@ const json = (method: string, body: unknown): RequestInit => ({
   headers: { "content-type": "application/json" },
   body: JSON.stringify(body),
 });
-
-export function listAnnotations(doc: string): Promise<AnnotRec[]> {
-  return desktop
-    ? desktop.listAnnotations(doc)
-    : j(fetch(`/api/annotations/${encodeURIComponent(doc)}`));
-}
-
-export function saveAnnotation(annot: AnnotRec): Promise<AnnotRec> {
-  return desktop ? desktop.saveAnnotation(annot) : j(fetch("/api/annotations", json("POST", annot)));
-}
-
-export function deleteAnnotation(doc: string, id: string): Promise<void> {
-  return desktop
-    ? desktop.deleteAnnotation(doc, id)
-    : j(fetch(`/api/annotations/${encodeURIComponent(doc)}/${encodeURIComponent(id)}`, { method: "DELETE" }));
-}
 
 export function listCards(): Promise<CardRec[]> {
   return desktop ? desktop.listCards() : j(fetch("/api/cards"));

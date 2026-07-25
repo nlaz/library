@@ -50,20 +50,18 @@ pub struct CardMeta {
     pub thread: u32,
     /// `21 · <thread name>` for the result card's locator line.
     pub breadcrumb: String,
-}
-
-/// Jump target on a `kind: "annotation"` hit — the *real* doc and page
-/// the mark lives on (the hit's own doc is the reserved namespace id).
-#[derive(Serialize)]
-pub struct AnnotMeta {
-    pub id: String,
-    pub doc: String,
-    pub page: u32,
+    /// Where the card's first mark lives — the *real* doc and page (the
+    /// hit's own doc is the reserved namespace id), so a mark-card hit
+    /// can jump into the reader. Absent when the card cites nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
 }
 
 #[derive(Serialize)]
 pub struct WireHit {
-    /// "text" | "image" | "card" | "annotation"
+    /// "text" | "image" | "card"
     pub kind: &'static str,
     pub score: f32,
     /// BM25 score as a fraction of the top lexical hit (the MIN_REL cutoff
@@ -81,8 +79,6 @@ pub struct WireHit {
     pub crop: [f32; 4],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub card: Option<CardMeta>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub annot: Option<AnnotMeta>,
 }
 
 #[derive(Serialize)]
@@ -142,7 +138,6 @@ pub fn group_image_hits(found: &[ImageHit], k: usize) -> Vec<WireHit> {
                     (y1 - y0 + 2.0 * pad).min(1.0),
                 ],
                 card: None,
-                annot: None,
             }
         })
         .collect()
@@ -254,16 +249,15 @@ pub fn wire_hit(hit: &Hit, qtoks: &[String]) -> WireHit {
         boxes,
         crop,
         card: None,
-        annot: None,
     }
 }
 
-/// Rewrite reserved-namespace hits (`~card/…`, `~annot/…`) into their
-/// user-facing kinds. Synthetic chunks rank through the normal text path
-/// on merit; this is the one place their page-scan assumptions (the
-/// `/pages/…` img URL, all-zero word boxes) get stripped and their
-/// note-box context attached. No-op — and no sidecar reads — unless a
-/// reserved hit is actually present.
+/// Rewrite reserved-namespace hits (`~card/…`) into their user-facing
+/// kind. Synthetic chunks rank through the normal text path on merit;
+/// this is the one place their page-scan assumptions (the `/pages/…`
+/// img URL, all-zero word boxes) get stripped and their note-box
+/// context attached. No-op — and no sidecar reads — unless a reserved
+/// hit is actually present.
 pub fn decorate_reserved_hits(hits: &mut [WireHit], data: &std::path::Path) {
     use crate::records::is_reserved;
 
@@ -271,7 +265,6 @@ pub fn decorate_reserved_hits(hits: &mut [WireHit], data: &std::path::Path) {
         return;
     }
     let cards = crate::notes::load_cards(data);
-    let annots = crate::annots::load_all(data);
     for h in hits.iter_mut() {
         if let Some(id) = h.doc.strip_prefix("~card/") {
             h.kind = "card";
@@ -285,24 +278,15 @@ pub fn decorate_reserved_hits(hits: &mut [WireHit], data: &std::path::Path) {
                     .min_by_key(|t| t.addr[0])
                     .map(|t| t.title.as_str())
                     .unwrap_or(c.title.as_str());
+                let mark = c.evidence.first();
                 h.card = Some(CardMeta {
                     id: c.id.clone(),
                     address: crate::notes::display_addr(c.thread, &c.addr),
                     title: c.title.clone(),
                     thread: c.thread,
                     breadcrumb: format!("{} · {}", c.thread, name),
-                });
-            }
-        } else if let Some(id) = h.doc.strip_prefix("~annot/") {
-            h.kind = "annotation";
-            h.img = String::new();
-            h.boxes.clear();
-            h.crop = [0.0, 0.0, 1.0, 1.0];
-            if let Some(a) = annots.iter().find(|a| a.id == id) {
-                h.annot = Some(AnnotMeta {
-                    id: a.id.clone(),
-                    doc: a.doc.clone(),
-                    page: a.page,
+                    doc: mark.map(|q| q.doc.clone()),
+                    page: mark.map(|q| q.page),
                 });
             }
         }
@@ -326,7 +310,6 @@ mod tests {
             boxes: Vec::new(),
             crop: [0.0, 0.0, 1.0, 1.0],
             card: None,
-            annot: None,
         }
     }
 

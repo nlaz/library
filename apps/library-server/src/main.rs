@@ -21,7 +21,7 @@ use axum::http::StatusCode;
 use axum::{
     Json, Router,
     extract::Path as UrlPath,
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
 };
 use clap::Parser;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
@@ -405,54 +405,8 @@ async fn main() -> Result<()> {
                 }
             }
         }))
-        // --- marginalia: annotations + note-box cards (write-capable; the
-        // desktop build reaches the same core logic via Tauri commands) ----
-        .route("/api/annotations/{doc}", get({
-            let app = app.clone();
-            move |UrlPath(doc): UrlPath<String>| {
-                let app = app.clone();
-                async move {
-                    let out = tokio::task::spawn_blocking(move || {
-                        library_core::annots::load_annots(&app.data, &doc)
-                    })
-                    .await
-                    .expect("annotations task panicked");
-                    Json(out)
-                }
-            }
-        }))
-        .route("/api/annotations", post({
-            let app = app.clone();
-            move |Json(annot): Json<library_core::annots::AnnotRec>| {
-                let app = app.clone();
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        let mut lib = app.lib.write().expect("library lock poisoned");
-                        library_core::annots::save_annot(&mut lib, &app.data, annot, &embed)
-                            .map(Json)
-                            .map_err(bad)
-                    })
-                    .await
-                    .expect("save annotation task panicked")
-                }
-            }
-        }))
-        .route("/api/annotations/{doc}/{id}", delete({
-            let app = app.clone();
-            move |UrlPath((doc, id)): UrlPath<(String, String)>| {
-                let app = app.clone();
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        let mut lib = app.lib.write().expect("library lock poisoned");
-                        library_core::annots::delete_annot(&mut lib, &app.data, &doc, &id)
-                            .map(|()| StatusCode::NO_CONTENT)
-                            .map_err(bad)
-                    })
-                    .await
-                    .expect("delete annotation task panicked")
-                }
-            }
-        }))
+        // --- marginalia: note-box cards (write-capable; the desktop
+        // build reaches the same core logic via Tauri commands) -----------
         .route("/api/cards", get({
             let app = app.clone();
             move || {

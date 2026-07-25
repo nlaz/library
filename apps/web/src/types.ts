@@ -1,19 +1,19 @@
 export type SnippetWord = { t: string; m: boolean };
 
-/** Note-box context on a `kind: "card"` hit. */
+/** Note-box context on a `kind: "card"` hit. `doc`/`page` are the real
+ * page the card's first mark lives on — present only on mark-cards. */
 export type CardMeta = {
   id: string;
   address: string;
   title: string;
   thread: number;
   breadcrumb: string;
+  doc?: string;
+  page?: number;
 };
 
-/** Jump target on a `kind: "annotation"` hit — the real doc/page. */
-export type AnnotMeta = { id: string; doc: string; page: number };
-
 export type WireHit = {
-  kind: "text" | "image" | "card" | "annotation";
+  kind: "text" | "image" | "card";
   score: number;
   doc: string;
   page: number;
@@ -23,7 +23,6 @@ export type WireHit = {
   boxes: [number, number, number, number][];
   crop: [number, number, number, number];
   card?: CardMeta;
-  annot?: AnnotMeta;
 };
 export type WireResponse = { seq: number; phase: string; us: number; hits: WireHit[] };
 
@@ -72,22 +71,10 @@ export type DocInfo = {
 
 export type OcrWord = { t: string; x: number; y: number; w: number; h: number };
 
-// --- marginalia: annotations + note-box cards -------------------------------
+// --- marginalia: note-box cards ---------------------------------------------
 
 /** Normalized [x, y, w, h], top-left origin, 0..1 — OCR word space. */
 export type Box = [number, number, number, number];
-
-/** Mirror of the Rust AnnotRec wire shape (serde-flattened kind tag). */
-export type AnnotRec = {
-  id: string;
-  doc: string;
-  page: number;
-  note: string;
-  created: number;
-} & (
-  | { kind: "text"; w0: number; w1: number; text: string; boxes: Box[] }
-  | { kind: "region"; bbox: Box }
-);
 
 export type LinkKind = "continues" | "relates";
 export type CardLink = { to: string; kind: LinkKind };

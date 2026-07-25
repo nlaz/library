@@ -1,13 +1,13 @@
 //! Wire shaping of note-box hits through the full answer() path: reserved
-//! docs rank like text but reach the client as kind "card"/"annotation"
-//! with their page-scan assumptions stripped, and they never leak into
-//! collection- or doc-scoped queries (member sets hold real doc ids only
-//! — pinned here as intended behavior).
+//! docs rank like text but reach the client as kind "card" with their
+//! page-scan assumptions stripped (mark-cards carrying the real doc/page
+//! of their first anchor), and they never leak into collection- or
+//! doc-scoped queries (member sets hold real doc ids only — pinned here
+//! as intended behavior).
 
 use std::path::PathBuf;
 
-use library_core::annots::{AnnotKind, AnnotRec, save_annot};
-use library_core::notes::{NewCard, create_card};
+use library_core::notes::{AnchorKind, NewCard, QuoteAnchor, create_card};
 use library_core::{
     ChunkKey, ChunkRec, EMB_DIM, Emb, Images, Library, Query, Word, answer, commit_chunks, open,
     open_images,
@@ -90,34 +90,43 @@ fn reserved_hits_are_shaped_and_scoped() {
         &embed,
     )
     .expect("create card");
-    let annot = save_annot(
+    // a mark-card: born from the reader with an anchored page
+    let mark = create_card(
         &mut lib,
         &data,
-        AnnotRec {
-            id: String::new(),
-            doc: "moxon".into(),
-            page: 12,
-            kind: AnnotKind::Region {
-                bbox: [0.25, 0.25, 0.5, 0.25],
-            },
-            note: "escapement sketch compare".into(),
-            created: 0,
+        NewCard {
+            title: "escapement sketch compare".into(),
+            body: String::new(),
+            evidence: vec![QuoteAnchor {
+                doc: "moxon".into(),
+                page: 12,
+                kind: AnchorKind::Region {
+                    bbox: [0.25, 0.25, 0.5, 0.25],
+                },
+            }],
+            links: vec![],
+            parent: None,
+            thread: None,
         },
         &embed,
     )
-    .expect("save annot");
+    .expect("create mark card");
     library_core::sidecar::write_json_atomic(
         &data.join("collections.json"),
         &serde_json::json!({ "shelf": ["moxon"] }),
     )
     .expect("collections sidecar");
 
-    // library-wide: all three kinds surface, reserved ones decorated
+    // library-wide: both kinds surface, reserved ones decorated
     let r = answer(&lib, &images, &data, &query("escapement", "", ""), |_| None);
     let kinds: Vec<&str> = r.hits.iter().map(|h| h.kind).collect();
-    assert!(kinds.contains(&"text") && kinds.contains(&"card") && kinds.contains(&"annotation"));
+    assert!(kinds.contains(&"text") && kinds.contains(&"card"));
 
-    let c = r.hits.iter().find(|h| h.kind == "card").expect("card hit");
+    let c = r
+        .hits
+        .iter()
+        .find(|h| h.kind == "card" && h.doc.ends_with(&card.id))
+        .expect("card hit");
     assert_eq!(c.img, "", "no /pages url for a synthetic doc");
     assert!(c.boxes.is_empty(), "zero-geometry boxes stripped");
     let meta = c.card.as_ref().expect("card meta");
@@ -126,23 +135,31 @@ fn reserved_hits_are_shaped_and_scoped() {
     assert_eq!(meta.thread, 1);
     assert_eq!(meta.breadcrumb, "1 · escapement is the governor");
     assert!(!c.snippet.is_empty(), "snippet built from card words");
+    assert!(
+        meta.doc.is_none() && meta.page.is_none(),
+        "no anchor, no reader jump"
+    );
 
-    let a = r
+    // the mark-card carries its first anchor's real doc and page
+    let m = r
         .hits
         .iter()
-        .find(|h| h.kind == "annotation")
-        .expect("annotation hit");
-    assert_eq!(a.img, "");
-    let ameta = a.annot.as_ref().expect("annot meta");
-    assert_eq!((ameta.doc.as_str(), ameta.page), ("moxon", 12));
-    assert_eq!(ameta.id, annot.id);
+        .find(|h| h.kind == "card" && h.doc.ends_with(&mark.id))
+        .expect("mark-card hit");
+    let mmeta = m.card.as_ref().expect("mark-card meta");
+    assert_eq!(mmeta.doc.as_deref(), Some("moxon"));
+    assert_eq!(mmeta.page, Some(12));
 
     // wire shape: absent metas are absent keys, not nulls
     let t = r.hits.iter().find(|h| h.kind == "text").expect("text hit");
     let tj = serde_json::to_value(t).expect("json");
     assert!(tj.get("card").is_none() && tj.get("annot").is_none());
     let cj = serde_json::to_value(c).expect("json");
-    assert!(cj.get("card").is_some() && cj.get("annot").is_none());
+    assert!(cj.get("card").is_some());
+    assert!(cj["card"].get("doc").is_none(), "absent, not null");
+    let mj = serde_json::to_value(m).expect("json");
+    assert_eq!(mj["card"]["doc"], "moxon");
+    assert_eq!(mj["card"]["page"], 12);
 
     // collection scope: cards are not on shelves
     let r = answer(

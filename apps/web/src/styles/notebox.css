@@ -368,6 +368,22 @@
   color: var(--ink-dim);
 }
 
+/* a mark-card's second destination: the marked page itself */
+.card.notehit .nf-jump {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.card.notehit .nf-jump:hover {
+  background: var(--ink);
+  color: var(--bg);
+}
+
 /* composer: the same small card, over a dithered scrim */
 #composer {
   position: fixed;

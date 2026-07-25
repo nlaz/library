@@ -8,7 +8,6 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import type { Transport } from "./transport";
 import type {
-  AnnotRec,
   CardRec,
   Collections,
   DocInfo,
@@ -143,19 +142,7 @@ export function chatCancel(): void {
   invoke("chat_cancel").catch(() => {});
 }
 
-// --- marginalia: annotations + note-box cards -------------------------------
-
-export function listAnnotations(doc: string): Promise<AnnotRec[]> {
-  return invoke<AnnotRec[]>("list_annotations", { doc });
-}
-
-export function saveAnnotation(annot: AnnotRec): Promise<AnnotRec> {
-  return invoke<AnnotRec>("save_annotation", { annot });
-}
-
-export function deleteAnnotation(doc: string, id: string): Promise<void> {
-  return invoke("delete_annotation", { doc, id });
-}
+// --- marginalia: note-box cards ---------------------------------------------
 
 export function listCards(): Promise<CardRec[]> {
   return invoke<CardRec[]>("list_cards");

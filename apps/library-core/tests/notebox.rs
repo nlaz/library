@@ -6,12 +6,12 @@
 
 use std::path::PathBuf;
 
-use library_core::annots::{AnnotKind, AnnotRec, delete_annot, load_annots, save_annot};
+use library_core::annots::{AnnotKind, AnnotRec, annot_doc, store_annots};
 use library_core::notes::{
     AnchorKind, NewCard, QuoteAnchor, card_neighbors, create_card, load_cards, propose_thread,
     update_card,
 };
-use library_core::{EMB_DIM, Emb, Library, open, search};
+use library_core::{ChunkKey, ChunkRec, EMB_DIM, Emb, Library, Word, open, search};
 
 fn one_hot(hot: usize) -> Emb {
     let mut e = [0.0f32; EMB_DIM];
@@ -65,6 +65,32 @@ fn new_card(title: &str) -> NewCard {
         parent: None,
         thread: None,
     }
+}
+
+/// What the old pen's save path used to index for a noted mark: one
+/// zero-geometry chunk under `~annot/<id>` — seeded directly so the
+/// migration tests can watch it retract.
+fn commit_legacy_annot_chunk(lib: &mut Library, id: &str, text: &str) {
+    let words = text
+        .split_whitespace()
+        .map(|t| Word {
+            t: t.to_string(),
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        })
+        .collect();
+    let chunk = ChunkRec {
+        key: ChunkKey {
+            doc: annot_doc(id),
+            page: 0,
+            idx: 0,
+        },
+        words,
+        emb: embed(text),
+    };
+    library_core::store::commit_chunks(lib, &annot_doc(id), &[chunk]);
 }
 
 #[test]
@@ -144,82 +170,16 @@ fn card_births_follow_parent_and_thread() {
 }
 
 #[test]
-fn annotation_notes_are_the_searchable_part() {
-    let (mut lib, data) = fixture("annot-life");
-
-    // bare highlight: sidecar yes, search no
-    let bare = save_annot(
-        &mut lib,
-        &data,
-        AnnotRec {
-            id: String::new(),
-            doc: "moxon".into(),
-            page: 3,
-            kind: AnnotKind::Text {
-                w0: 5,
-                w1: 9,
-                text: "rubs and dresses the same".into(),
-                boxes: vec![[0.1, 0.2, 0.5, 0.02]],
-            },
-            note: String::new(),
-            created: 0,
-        },
-        &embed,
-    )
-    .unwrap();
-    assert!(bare.id.starts_with('a'));
-    assert!(lexical_docs(&lib, "dresses").is_empty());
-
-    // adding a note makes it findable — by the note and the snapshot
-    let mut noted = bare.clone();
-    noted.note = "compare plantin hinge".into();
-    save_annot(&mut lib, &data, noted, &embed).unwrap();
-    let doc = format!("~annot/{}", bare.id);
-    assert_eq!(lexical_docs(&lib, "plantin"), vec![doc.clone()]);
-    assert_eq!(lexical_docs(&lib, "dresses"), vec![doc.clone()]);
-
-    // region with note indexes; wiping the note retracts
-    let region = save_annot(
-        &mut lib,
-        &data,
-        AnnotRec {
-            id: String::new(),
-            doc: "moxon".into(),
-            page: 4,
-            kind: AnnotKind::Region {
-                bbox: [0.25, 0.25, 0.5, 0.25],
-            },
-            note: "the hand mold opened".into(),
-            created: 0,
-        },
-        &embed,
-    )
-    .unwrap();
-    assert_eq!(
-        lexical_docs(&lib, "mold"),
-        vec![format!("~annot/{}", region.id)]
-    );
-    let mut wiped = region.clone();
-    wiped.note = String::new();
-    save_annot(&mut lib, &data, wiped, &embed).unwrap();
-    assert!(lexical_docs(&lib, "mold").is_empty());
-
-    // delete removes sidecar row and index entry
-    delete_annot(&mut lib, &data, "moxon", &bare.id).unwrap();
-    assert!(lexical_docs(&lib, "plantin").is_empty());
-    assert_eq!(load_annots(&data, "moxon").len(), 1);
-}
-
-#[test]
 fn migration_moves_noted_marks_into_cards() {
     use library_core::annots::migrate_annots_to_cards;
 
     let (mut lib, data) = fixture("annot-migrate");
 
-    // seed through the old pen: two noted marks + a bare highlight on
-    // "moxon", one noted mark on "fournier" — all indexed under ~annot/
-    let mk = |page: u32, y: f32, note: &str| AnnotRec {
-        id: String::new(),
+    // seed what the old pen left behind: two noted marks + a bare
+    // highlight on "moxon", one noted mark on "fournier" — noted ones
+    // indexed under ~annot/
+    let mk = |id: &str, page: u32, y: f32, note: &str| AnnotRec {
+        id: id.into(),
         doc: String::new(),
         page,
         kind: AnnotKind::Text {
@@ -231,17 +191,19 @@ fn migration_moves_noted_marks_into_cards() {
         note: note.into(),
         created: 7,
     };
-    let mut late = mk(9, 0.3, "plantin built the hinge");
+    let mut late = mk("a1", 9, 0.3, "plantin built the hinge");
     late.doc = "moxon".into();
-    let mut early = mk(2, 0.5, "compare the day-book");
+    let mut early = mk("a2", 2, 0.5, "compare the day-book");
     early.doc = "moxon".into();
-    let mut bare = mk(4, 0.1, "");
+    let mut bare = mk("a3", 4, 0.1, "");
     bare.doc = "moxon".into();
-    let mut other = mk(1, 0.1, "fournier measured the foot");
+    let mut other = mk("a4", 1, 0.1, "fournier measured the foot");
     other.doc = "fournier".into();
-    // saved out of reading order on purpose
-    for a in [late.clone(), early.clone(), bare.clone(), other.clone()] {
-        save_annot(&mut lib, &data, a, &embed).unwrap();
+    // stored out of reading order on purpose
+    store_annots(&data, "moxon", &[late.clone(), early.clone(), bare.clone()]).unwrap();
+    store_annots(&data, "fournier", &[other.clone()]).unwrap();
+    for a in [&late, &early, &other] {
+        commit_legacy_annot_chunk(&mut lib, &a.id, &a.note);
     }
     assert_eq!(lexical_docs(&lib, "plantin").len(), 1);
     let sidecar_bytes = std::fs::read(data.join("annotations").join("moxon.json")).unwrap();
@@ -313,23 +275,9 @@ fn neighbors_and_proposals_stay_in_the_card_namespace() {
     let c = create_card(&mut lib, &data, linked, &embed).unwrap();
     let far = create_card(&mut lib, &data, new_card("cooking stock"), &embed).unwrap();
 
-    // an annotation in the same embedding bucket must never appear
-    save_annot(
-        &mut lib,
-        &data,
-        AnnotRec {
-            id: String::new(),
-            doc: "moxon".into(),
-            page: 1,
-            kind: AnnotKind::Region {
-                bbox: [0.0, 0.0, 1.0, 1.0],
-            },
-            note: "gears note".into(),
-            created: 0,
-        },
-        &embed,
-    )
-    .unwrap();
+    // a stray reserved chunk (a not-yet-migrated legacy mark) in the
+    // same embedding bucket must never appear as a card neighbor
+    commit_legacy_annot_chunk(&mut lib, "a9", "gears note");
 
     let n = card_neighbors(&lib, &data, &a.id, 8);
     let ids: Vec<&str> = n.iter().map(|x| x.id.as_str()).collect();

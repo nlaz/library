@@ -11,6 +11,7 @@
 //!   hits on a miss query still score 1.0.
 
 use std::path::Path;
+use std::time::Instant;
 
 use serde_json::{Value, json};
 
@@ -18,7 +19,7 @@ use crate::legibility::{
     LEGIBLE_OK, NOISY_MIN, legibility, legible_excerpt, min_window, squash_ws,
 };
 use crate::wire::read_collections;
-use crate::{ChunkKey, Emb, FxHashSet, Hit, Library, MIN_REL, Readers, search};
+use crate::{ChunkKey, Emb, FxHashSet, Hit, Library, MIN_REL, Readers, perf, search};
 
 /// Hits returned to the model per search (each ~40 tokens slim).
 pub const TOOL_K: usize = 6;
@@ -260,13 +261,23 @@ pub fn search_tool<R: fold::stream::Readable>(
         Err(e) => return e,
     };
 
+    // stage timings mirror the UI search path so the perf view can put an
+    // agent's search next to a human's and compare like with like
+    let start = Instant::now();
+    let mut stages: Vec<(String, u64)> = Vec::new();
+    let mut stage =
+        |name: &str, t: Instant| stages.push((name.to_owned(), t.elapsed().as_micros() as u64));
+
+    let t = Instant::now();
     let qemb: Emb = ese::encode_single(query);
+    stage("ese_embed", t);
     let k = k.clamp(1, TOOL_K);
     // fetch 2x: copy dedup below may drop hits, and the extras backfill.
     // complete off (agent queries are whole words, not mid-typing); fuzzy on
     // (only unknown tokens get corrected, so real words are untouched — this
     // recovers typos and OCR garble); diversify off (the tool does its own
     // dedup_doc_pages below).
+    let t = Instant::now();
     let mut hits = search(
         r,
         query,
@@ -279,7 +290,12 @@ pub fn search_tool<R: fold::stream::Readable>(
         |key| lib.get(key),
         None,
     );
+    stage("search", t);
+
+    let t = Instant::now();
+    let fetched = hits.len();
     hits.retain(|h| h.rel >= MIN_REL);
+    let rel_killed = fetched - hits.len();
     let keep = {
         let keys: Vec<(&str, u32)> = hits
             .iter()
@@ -294,6 +310,7 @@ pub fn search_tool<R: fold::stream::Readable>(
         keep_it
     });
     hits.truncate(k);
+    stage("dedup+cutoff", t);
 
     let top_bm25 = hits.iter().map(|h| h.bm25).fold(0.0f32, f32::max);
     let coverage = query_coverage(query, &hits);
@@ -321,6 +338,7 @@ pub fn search_tool<R: fold::stream::Readable>(
              so if they don't actually cover the question."
         );
     }
+    let t = Instant::now();
     if conf != "none"
         && let Some(top) = hits.first()
     {
@@ -341,6 +359,43 @@ pub fn search_tool<R: fold::stream::Readable>(
             }
         }
     }
+    stage("top_hit_page", t);
+
+    // The agent's searches used to be invisible: only `answer()` recorded,
+    // so "why did the librarian say that?" bottomed out at a tool summary
+    // with no ranker provenance behind it. Same ring, marked mode=agent, and
+    // the ts rides back in the tool JSON so the UI can link the two.
+    let ts_ms = perf::now_ms();
+    perf::record_search(perf::SearchRecord {
+        ts_ms,
+        q: query.to_owned(),
+        mode: "agent".into(),
+        kind: String::new(),
+        col: col.to_owned(),
+        doc: String::new(),
+        offset: 0,
+        phase: "tool".into(),
+        total_us: start.elapsed().as_micros() as u64,
+        stages,
+        // the agent path calls search() directly, which doesn't report
+        // pre-fusion list sizes; the UI renders these as "not measured"
+        lex_n: 0,
+        sem_n: 0,
+        rel_killed,
+        img_fetched: 0,
+        img_killed: 0,
+        img_top: 0.0,
+        img_floor: 0.0,
+        served: hits.len(),
+        zero: hits.is_empty(),
+        text_hits: hits
+            .iter()
+            .take(perf::HITS_PER_RECORD)
+            .map(perf::HitProv::from)
+            .collect(),
+        img_hits: Vec::new(),
+    });
+    out["perf_ts"] = json!(ts_ms);
     out
 }
 

@@ -649,6 +649,9 @@ fn probe(filter: Option<&str>) -> Result<()> {
 ///   {"kind":"content_regex","value":"p\\.\\s*\\d+"}      (last turn's content)
 ///   {"kind":"content_not_regex","value":"Document ID"}
 ///   {"kind":"all_content_not_regex","value":"\\\\n"}     (every turn's content)
+///   {"kind":"content_overlap_max","value":0.5}  (verbatim-dump tripwire: the
+///       longest run of consecutive words the answer shares with any injected
+///       tool text, as a fraction of the answer, must stay below value)
 fn check_expects(fx: &Value, result: &Value) -> Vec<(String, bool)> {
     let Some(expects) = fx.get("expect").and_then(|e| e.as_array()) else {
         return Vec::new();
@@ -709,6 +712,23 @@ fn check_expects(fx: &Value, result: &Value) -> Vec<(String, bool)> {
                         .map(|a| a.iter().all(|c| !re.is_match(c.as_str().unwrap_or(""))))
                         .unwrap_or_else(|| !re.is_match(content))
                 }
+                // `tool_texts` (the flattened texts the planned hop injected)
+                // rides on the probe result line; a planless turn has none and
+                // passes vacuously — there was nothing to dump
+                "content_overlap_max" => {
+                    let max = val.as_f64().unwrap_or(1.0);
+                    result["tool_texts"]
+                        .as_array()
+                        .map(|texts| {
+                            texts
+                                .iter()
+                                .filter_map(|t| t.as_str())
+                                .map(|t| overlap_fraction(content, t))
+                                .fold(0.0f64, f64::max)
+                        })
+                        .unwrap_or(0.0)
+                        <= max
+                }
                 _ => false,
             };
             (format!("{kind} {val}"), pass)
@@ -760,4 +780,76 @@ fn urlenc(s: &str) -> String {
         }
     }
     out
+}
+
+/// Fraction of `answer` covered by its longest run of consecutive words also
+/// appearing consecutively in `source` — the verbatim-dump metric behind
+/// `content_overlap_max`. Word-level, case- and punctuation-insensitive, so
+/// OCR spacing and quote marks don't hide a dump; a short quoted phrase in an
+/// otherwise original answer scores low.
+fn overlap_fraction(answer: &str, source: &str) -> f64 {
+    let words = |s: &str| -> Vec<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let a = words(answer);
+    let b = words(source);
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    // longest common substring over words, O(|a|·|b|) with a rolling row
+    let mut prev = vec![0usize; b.len() + 1];
+    let mut best = 0usize;
+    for wa in &a {
+        let mut cur = vec![0usize; b.len() + 1];
+        for (j, wb) in b.iter().enumerate() {
+            if wa == wb {
+                cur[j + 1] = prev[j] + 1;
+                best = best.max(cur[j + 1]);
+            }
+        }
+        prev = cur;
+    }
+    best as f64 / a.len() as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overlap_fraction;
+
+    #[test]
+    fn verbatim_dump_scores_high() {
+        let page = "290 CHAPTER SEVEN: MEAT sirloin steak. The best part of the \
+                    rib-roast section is usually boned and cut into rib steaks.";
+        // an answer that IS the page (modulo case/punctuation) is ~1.0
+        assert!(overlap_fraction(&page.to_lowercase(), page) > 0.95);
+        // a dump with a few words of framing still scores high
+        let framed = format!("The book says: {page}");
+        assert!(overlap_fraction(&framed, page) > 0.8);
+    }
+
+    #[test]
+    fn own_words_with_short_quote_scores_low() {
+        let page = "Entrecote. Rib steak, or rib eye steak, from the rib-roast \
+                    section, ribs 9 to 11. Delmonico or club steak, cut from \
+                    the rib end of the short loin, is a near equivalent.";
+        let answer = "French menus name their steak cuts after the part of the \
+                      animal: an entrecote comes from the rib-roast section, \
+                      and the book calls a Delmonico a near equivalent.";
+        assert!(overlap_fraction(answer, page) < 0.5);
+    }
+
+    #[test]
+    fn empty_inputs_score_zero() {
+        assert_eq!(overlap_fraction("", "some text"), 0.0);
+        assert_eq!(overlap_fraction("some text", ""), 0.0);
+        assert_eq!(overlap_fraction("…", "some text"), 0.0);
+    }
+
+    #[test]
+    fn disjoint_texts_score_zero() {
+        assert_eq!(overlap_fraction("alpha beta gamma", "delta epsilon"), 0.0);
+    }
 }

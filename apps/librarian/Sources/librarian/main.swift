@@ -545,12 +545,43 @@ func searchResultText(_ body: String) -> String {
     return parts.joined(separator: " ")
 }
 
+/// Browse injections carry less than the tool's 1600-char cap: ~700 chars is
+/// enough to find one interesting thing, and the full page invited verbatim
+/// dumps of the whole excerpt.
+let SAMPLE_PROMPT_CHARS = 700
+
+/// Truncate to at most `max` chars without splitting a word.
+func truncatedWords(_ s: String, max: Int) -> String {
+    guard s.count > max else { return s }
+    let cut = String(s.prefix(max))
+    if let sp = cut.lastIndex(of: " ") {
+        return String(cut[..<sp]) + "…"
+    }
+    return cut + "…"
+}
+
 /// Plain-text rendering of a sampled page for prompt injection.
 func sampleTextForPrompt(_ body: String) -> String {
     guard let obj = json(body) as? [String: Any] else { return body }
     if let err = obj["error"] as? String { return err }
     let title = obj["title"] as? String ?? obj["doc"] as? String ?? "?"
-    return "[\(title) p.\(obj["page"] ?? 0)] \(obj["text"] as? String ?? "")"
+    let text = truncatedWords(obj["text"] as? String ?? "", max: SAMPLE_PROMPT_CHARS)
+    return "[\(title) p.\(obj["page"] ?? 0)] \(text)"
+}
+
+/// One planned turn, ready to run: the prompt (with the planned hop's result
+/// woven in), the approach that shaped it (nil when planless — the answer
+/// schema falls back to the default guide), the retrieval confidence of the
+/// planned hop, a citation the host appends after the answer streams (browse
+/// turns: the model is told not to cite, so the citation is exact instead of
+/// mangled), and the flattened text that was injected (probe fixtures check
+/// answers against it for verbatim dumps).
+struct PlannedTurn {
+    let prompt: String
+    var approach: String? = nil
+    var confidence: String? = nil
+    var citation: String? = nil
+    var injected: String? = nil
 }
 
 /// Weave the plan into the turn prompt. "reply" (and a failed plan) adds
@@ -563,32 +594,60 @@ func sampleTextForPrompt(_ body: String) -> String {
 /// never searched; browse turns wandered into library_overview). The model
 /// still has every tool for follow-up hops (read_pages, another search);
 /// only the first, planned hop is guaranteed.
-func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages) async -> String {
-    guard let plan else { return prompt }
+func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages) async -> PlannedTurn {
+    guard let plan else { return PlannedTurn(prompt: prompt) }
     switch plan.approach {
     case "search":
         if plan.query.isEmpty {
-            return "\(prompt)\n\nPlan: search the library first."
+            return PlannedTurn(
+                prompt: "\(prompt)\n\nPlan: search the library first.",
+                approach: plan.approach)
         }
         let body = await runSearch(
             toolName: "search_library", query: plan.query,
             collection: plan.collection, kind: "")
-        return "\(prompt)\n\nLibrary search results for \"\(plan.query)\": \(searchResultText(body))"
+        let flat = searchResultText(body)
+        return PlannedTurn(
+            prompt: "\(prompt)\n\nLibrary search results for \"\(plan.query)\": \(flat)",
+            approach: plan.approach,
+            confidence: (json(body) as? [String: Any])?["confidence"] as? String,
+            injected: flat)
     case "figures":
         if plan.query.isEmpty {
-            return "\(prompt)\n\nPlan: find it with search_figures."
+            return PlannedTurn(
+                prompt: "\(prompt)\n\nPlan: find it with search_figures.",
+                approach: plan.approach)
         }
         let body = await runSearch(
             toolName: "search_figures", query: plan.query,
             collection: plan.collection, kind: "images")
-        return "\(prompt)\n\nFigure search results for \"\(plan.query)\": \(searchResultText(body))"
+        let flat = searchResultText(body)
+        return PlannedTurn(
+            prompt: "\(prompt)\n\nFigure search results for \"\(plan.query)\": \(flat)",
+            approach: plan.approach,
+            confidence: (json(body) as? [String: Any])?["confidence"] as? String,
+            injected: flat)
     case "browse":
         let body = await fetchSample(collection: plan.collection, seen: seen)
-        return "\(prompt)\n\nA page opened at random — share the most interesting thing on it: \(sampleTextForPrompt(body))"
+        let flat = sampleTextForPrompt(body)
+        var citation: String? = nil
+        if let obj = json(body) as? [String: Any], obj["error"] == nil {
+            let title = obj["title"] as? String ?? obj["doc"] as? String
+            if let title, let page = obj["page"] {
+                citation = "[\(title) p.\(page)]"
+            }
+        }
+        return PlannedTurn(
+            prompt:
+                "\(prompt)\n\nA page opened at random. Tell the user the most interesting thing on it, in your own words: \(flat)",
+            approach: plan.approach, citation: citation, injected: flat)
     case "overview":
-        return "\(prompt)\n\nAnswer from this library overview: \(overviewText(await fetchOverview()))"
+        let flat = overviewText(await fetchOverview())
+        return PlannedTurn(
+            prompt: "\(prompt)\n\nAnswer from this library overview: \(flat)",
+            approach: plan.approach, injected: flat)
     default:
-        return prompt
+        return PlannedTurn(prompt: prompt, approach: plan.approach)
     }
 }
 
@@ -607,11 +666,51 @@ let ANSWER_GUIDE = """
     [Title p.N]. Be concise.
     """
 
-/// The final answer's schema: a single guided `text` field. Built at runtime
-/// (macro-free) so the tool stays buildable without the @Generable macro.
-let ANSWER_SCHEMA = GenerationSchema(
-    type: GeneratedContent.self,
-    properties: [.init(name: "text", description: ANSWER_GUIDE, type: String.self)])
+/// Per-approach guide for the final answer's `text` field. The schema
+/// description is the one place decode-time rules reliably hold on this
+/// model (chat-spike), so the anti-dump rules live here, not in prose
+/// instructions: browse/read turns get told — at decode time — to retell
+/// rather than copy the injected page text.
+func answerGuide(approach: String?, confidence: String?) -> String {
+    switch approach {
+    case "browse":
+        return """
+            The single most interesting thing on the sampled page, told in two \
+            or three sentences entirely in your own words. Never copy the \
+            page's text, headers, or garbled words. Do not add a citation — \
+            it is added for you.
+            """
+    case "figures":
+        return """
+            One or two sentences saying what the figure shows and which book \
+            and page it is on, in your own words. The image itself is shown \
+            to the user — never reproduce the page's text.
+            """
+    case "read":
+        return """
+            What the page says, relayed as clean readable prose in your own \
+            words — drop page headers, page numbers, and OCR noise; never \
+            reproduce garbled text. Cite the page inline in square brackets: \
+            the book's title, a space, then p. and the page number.
+            """
+    default:
+        return ANSWER_GUIDE
+    }
+}
+
+/// The final answer's schema: a single guided `text` field whose description
+/// is chosen per plan approach. Built at runtime (macro-free) so the tool
+/// stays buildable without the @Generable macro.
+func answerSchema(approach: String?, confidence: String? = nil) -> GenerationSchema {
+    GenerationSchema(
+        type: GeneratedContent.self,
+        properties: [
+            .init(
+                name: "text",
+                description: answerGuide(approach: approach, confidence: confidence),
+                type: String.self)
+        ])
+}
 
 /// The `text` field of a (possibly partial) answer object, or nil if it has
 /// not started streaming yet.
@@ -638,11 +737,14 @@ func friendly(_ error: any Error) -> String {
 /// Stream one prompt as a guided `Answer`; emit token deltas of its `text`
 /// field; return the full text. Checks task cancellation between snapshots so a
 /// `cancel` request stops output fast.
-func stream(_ session: LanguageModelSession, _ prompt: String, options: GenerationOptions = GenerationOptions())
+func stream(
+    _ session: LanguageModelSession, _ prompt: String, schema: GenerationSchema,
+    options: GenerationOptions = GenerationOptions()
+)
     async throws -> String
 {
     var full = ""
-    for try await snapshot in session.streamResponse(to: prompt, schema: ANSWER_SCHEMA, options: options) {
+    for try await snapshot in session.streamResponse(to: prompt, schema: schema, options: options) {
         try Task.checkCancellation()
         // partially-generated `text` is nil until the field starts streaming
         guard let text = answerText(snapshot.content) else { continue }
@@ -695,12 +797,19 @@ func buildPrompt(_ messages: [Msg]) -> String {
 /// context overflowed and a fresh one was seeded (callers keep it for the
 /// conversation), or nil to keep using the same session.
 @discardableResult
-func executeTurn(session: LanguageModelSession, prompt: String, fallback: String)
+func executeTurn(session: LanguageModelSession, turn: PlannedTurn, fallback: String)
     async -> LanguageModelSession?
 {
     let start = Date()
+    let schema = answerSchema(approach: turn.approach, confidence: turn.confidence)
     do {
-        let full = try await stream(session, prompt)
+        var full = try await stream(session, turn.prompt, schema: schema)
+        // the host cites the planned page itself (browse turns tell the
+        // model not to) — exact title and page, never a mangled doc id
+        if let cite = turn.citation, !full.contains(cite) {
+            emit.line(["e": "token", "text": " \(cite)"])
+            full += " \(cite)"
+        }
         emit.line([
             "e": "done", "content": full,
             "ms": Int(Date().timeIntervalSince(start) * 1000),
@@ -712,10 +821,10 @@ func executeTurn(session: LanguageModelSession, prompt: String, fallback: String
         return nil
     } catch let e as LanguageModelSession.GenerationError {
         if case .exceededContextWindowSize = e {
-            // one retry: fresh session, bare question, no history
+            // one retry: fresh session, bare question, no history, default guide
             let retry = makeSession()
             do {
-                let full = try await stream(retry, fallback)
+                let full = try await stream(retry, fallback, schema: answerSchema(approach: nil))
                 emit.line(["e": "token", "text": full, "replace": true])
                 emit.line([
                     "e": "done", "content": full,
@@ -748,7 +857,7 @@ func runTurn() async {
     let plan = await planTurn(prompt)
     await executeTurn(
         session: session,
-        prompt: await plannedPrompt(prompt, plan, seen: seen),
+        turn: await plannedPrompt(prompt, plan, seen: seen),
         fallback: messages.last?.content ?? prompt)
 }
 
@@ -858,7 +967,7 @@ func runServe() async {
                         return
                     }
                     if let replacement = await executeTurn(
-                        session: session, prompt: await plannedPrompt(prompt, plan, seen: seen),
+                        session: session, turn: await plannedPrompt(prompt, plan, seen: seen),
                         fallback: last.content)
                     {
                         state.replace(conv, with: replacement)
@@ -917,6 +1026,7 @@ func runProbe(_ path: String) async {
     do {
         var content: String
         var contents: [String] = []
+        var toolTexts: [String] = []
         if let schemaSpec = fx["schema"] as? [String: Any] {
             let schema = try dynamicSchema(schemaSpec)
             let resp = try await session.respond(to: prompt, schema: schema, options: options)
@@ -930,14 +1040,22 @@ func runProbe(_ path: String) async {
             var transcript: [Msg] = []
             for (i, turn) in turns.enumerated() {
                 transcript.append(Msg(role: "user", content: turn))
-                var prompt = turn
+                var planned = PlannedTurn(prompt: turn)
                 if useTools {
-                    prompt = await plannedPrompt(
+                    planned = await plannedPrompt(
                         turn, await planTurn(buildPrompt(transcript)), seen: seen)
                 }
+                if let injected = planned.injected { toolTexts.append(injected) }
                 // guided generation, matching serve/turn mode
-                let resp = try await session.respond(to: prompt, schema: ANSWER_SCHEMA, options: options)
+                let resp = try await session.respond(
+                    to: planned.prompt,
+                    schema: answerSchema(
+                        approach: planned.approach, confidence: planned.confidence),
+                    options: options)
                 content = answerText(resp.content) ?? resp.content.jsonString
+                if let cite = planned.citation, !content.contains(cite) {
+                    content += " \(cite)"
+                }
                 contents.append(content)
                 transcript.append(Msg(role: "assistant", content: content))
                 if turns.count > 1 {
@@ -948,7 +1066,7 @@ func runProbe(_ path: String) async {
         emit.line([
             "e": "result", "id": id, "ok": true, "content": content, "contents": contents,
             "ms": Int(Date().timeIntervalSince(start) * 1000),
-            "tool_calls": recorder.calls,
+            "tool_calls": recorder.calls, "tool_texts": toolTexts,
         ])
     } catch {
         emit.line([

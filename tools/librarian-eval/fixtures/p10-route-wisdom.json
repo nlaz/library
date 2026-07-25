@@ -3,6 +3,7 @@
   "prompt": "give me some wisdom from the books that we have",
   "expect": [
     { "kind": "tools_include", "value": "sample_page" },
-    { "kind": "content_not_regex", "value": "(?i)^here is" }
+    { "kind": "content_not_regex", "value": "(?i)^here is" },
+    { "kind": "content_overlap_max", "value": 0.5 }
   ]
 }

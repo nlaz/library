@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use library_core::annots::{AnnotKind, AnnotRec, delete_annot, load_annots, save_annot};
 use library_core::notes::{
-    NewCard, QuoteAnchor, card_neighbors, create_card, load_cards, propose_thread, update_card,
+    AnchorKind, NewCard, QuoteAnchor, card_neighbors, create_card, load_cards, propose_thread,
+    update_card,
 };
 use library_core::{EMB_DIM, Emb, Library, open, search};
 
@@ -74,9 +75,12 @@ fn card_lifecycle_in_search() {
     input.evidence.push(QuoteAnchor {
         doc: "moxon".into(),
         page: 215,
-        w0: 10,
-        w1: 16,
-        text: "an hundred and twenty in the hour".into(),
+        kind: AnchorKind::Text {
+            w0: 10,
+            w1: 16,
+            text: "an hundred and twenty in the hour".into(),
+            boxes: vec![[0.1, 0.4, 0.5, 0.02]],
+        },
     });
     let card = create_card(&mut lib, &data, input, &embed).unwrap();
     assert_eq!((card.thread, card.addr.as_slice()), (1, &[1u32][..]));

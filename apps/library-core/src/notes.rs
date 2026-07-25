@@ -20,16 +20,59 @@ use serde::{Deserialize, Serialize};
 use crate::store::commit_chunks;
 use crate::{ChunkKey, ChunkRec, Emb, Library, Word, sidecar};
 
-/// A quoted passage: `w0..w1` (exclusive) word-index range into the page's
-/// OCR words, plus the text snapshot taken at quote time. The snapshot is
-/// what renders and searches — re-OCR can't silently move a quote.
+/// The shape of an evidence anchor on its page. Mirrors the mark
+/// geometry the reader draws: snapshots are taken at mark time, so a
+/// later re-OCR can never silently move or reword a mark.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AnchorKind {
+    /// Word-range mark: `w0..w1` (exclusive) into the page's OCR words,
+    /// plus text and per-line box snapshots.
+    Text {
+        w0: u32,
+        w1: u32,
+        text: String,
+        boxes: Vec<[f32; 4]>,
+    },
+    /// Dragged rectangle, normalized `[x, y, w, h]`. Carries no text.
+    Region { bbox: [f32; 4] },
+}
+
+/// A mark on a document page, kept as a card's evidence: where it lives
+/// and what it looks like. What renders on the page and what searches
+/// both come from the snapshot inside [`AnchorKind`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuoteAnchor {
     pub doc: String,
     pub page: u32,
-    pub w0: u32,
-    pub w1: u32,
-    pub text: String,
+    #[serde(flatten)]
+    pub kind: AnchorKind,
+}
+
+impl QuoteAnchor {
+    /// The quoted snapshot, when the anchor has one.
+    pub fn text(&self) -> Option<&str> {
+        match &self.kind {
+            AnchorKind::Text { text, .. } => Some(text),
+            AnchorKind::Region { .. } => None,
+        }
+    }
+
+    /// The page boxes the mark draws.
+    pub fn boxes(&self) -> Vec<[f32; 4]> {
+        match &self.kind {
+            AnchorKind::Text { boxes, .. } => boxes.clone(),
+            AnchorKind::Region { bbox } => vec![*bbox],
+        }
+    }
+
+    /// Vertical anchor for page-order sorting.
+    pub fn y(&self) -> f32 {
+        match &self.kind {
+            AnchorKind::Text { boxes, .. } => boxes.first().map_or(0.0, |b| b[1]),
+            AnchorKind::Region { bbox } => bbox[1],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,8 +288,10 @@ fn card_text(card: &CardRec) -> String {
         text.push_str(&card.body);
     }
     for q in &card.evidence {
-        text.push('\n');
-        text.push_str(&q.text);
+        if let Some(snap) = q.text() {
+            text.push('\n');
+            text.push_str(snap);
+        }
     }
     text
 }
@@ -577,9 +622,19 @@ mod tests {
         c.evidence.push(QuoteAnchor {
             doc: "moxon".into(),
             page: 215,
-            w0: 10,
-            w1: 24,
-            text: "an hundred and twenty in the hour".into(),
+            kind: AnchorKind::Text {
+                w0: 10,
+                w1: 24,
+                text: "an hundred and twenty in the hour".into(),
+                boxes: vec![[0.1, 0.2, 0.5, 0.02]],
+            },
+        });
+        c.evidence.push(QuoteAnchor {
+            doc: "moxon".into(),
+            page: 216,
+            kind: AnchorKind::Region {
+                bbox: [0.25, 0.1, 0.5, 0.25],
+            },
         });
         c.links.push(CardLink {
             to: "c2".into(),
@@ -588,6 +643,69 @@ mod tests {
         store_cards(&dir, &[c.clone()]).unwrap();
         assert_eq!(load_cards(&dir), vec![c]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn anchor_wire_shape_is_pinned() {
+        // the TS side builds and matches these exact shapes
+        let t = serde_json::to_value(QuoteAnchor {
+            doc: "moxon".into(),
+            page: 2,
+            kind: AnchorKind::Text {
+                w0: 10,
+                w1: 14,
+                text: "an hundred and twenty".into(),
+                boxes: vec![[0.1, 0.5, 0.5, 0.02]],
+            },
+        })
+        .unwrap();
+        assert_eq!(t["kind"], "text");
+        assert_eq!(t["w0"], 10);
+        assert_eq!(t["boxes"][0][1], 0.5);
+
+        let r = serde_json::to_value(QuoteAnchor {
+            doc: "moxon".into(),
+            page: 3,
+            kind: AnchorKind::Region {
+                bbox: [0.25, 0.125, 0.5, 0.25],
+            },
+        })
+        .unwrap();
+        assert_eq!(r["kind"], "region");
+        assert_eq!(r["bbox"][2], 0.5);
+        assert!(r.get("text").is_none());
+
+        let back: QuoteAnchor = serde_json::from_value(r).unwrap();
+        assert_eq!(back.text(), None);
+        assert_eq!(back.boxes(), vec![[0.25, 0.125, 0.5, 0.25]]);
+        assert_eq!(back.y(), 0.125);
+    }
+
+    #[test]
+    fn card_text_skips_region_anchors() {
+        let mut c = card("c1", 1, &[1]);
+        c.title = "presses ran fast".into();
+        c.evidence.push(QuoteAnchor {
+            doc: "moxon".into(),
+            page: 216,
+            kind: AnchorKind::Region {
+                bbox: [0.25, 0.1, 0.5, 0.25],
+            },
+        });
+        c.evidence.push(QuoteAnchor {
+            doc: "moxon".into(),
+            page: 215,
+            kind: AnchorKind::Text {
+                w0: 10,
+                w1: 24,
+                text: "an hundred and twenty in the hour".into(),
+                boxes: vec![],
+            },
+        });
+        assert_eq!(
+            card_text(&c),
+            "presses ran fast\nan hundred and twenty in the hour"
+        );
     }
 
     #[test]

@@ -692,11 +692,16 @@ fn check_expects(fx: &Value, result: &Value) -> Vec<(String, bool)> {
                     let arg = ex["arg"].as_str().unwrap_or("");
                     let want = norm(val.as_str().unwrap_or(""));
                     calls.iter().any(|c| {
+                        // numbers stringify so read_pages' from/to are matchable
+                        let got = match &c["args"][arg] {
+                            Value::String(s) => s.clone(),
+                            Value::Number(n) => n.to_string(),
+                            _ => String::new(),
+                        };
+                        let got = norm(&got);
                         c["name"] == tool
-                            && c["args"][arg].as_str().is_some_and(|got| {
-                                let got = norm(got);
-                                !got.is_empty() && (got.contains(&want) || want.contains(&got))
-                            })
+                            && !got.is_empty()
+                            && (got.contains(&want) || want.contains(&got))
                     })
                 }
                 "content_regex" | "content_not_regex" => {

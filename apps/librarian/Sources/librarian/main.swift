@@ -159,7 +159,8 @@ func searchCacheKey(_ toolName: String, _ query: String, _ collection: String) -
 /// Shared search plumbing: emit started/done tool events with hit chips,
 /// route to /api/search (text or figures — the `kind` param picks).
 func runSearch(
-    toolName: String, query: String, collection: String, kind: String, cache: ToolCache
+    toolName: String, query: String, collection: String, kind: String, cache: ToolCache,
+    spot: LastSpot
 ) async -> String {
     let key = searchCacheKey(toolName, query, collection)
     if let hit = cache.get(key) { return hit }
@@ -180,6 +181,9 @@ func runSearch(
     if let hits = obj?["hits"] as? [[String: Any]] {
         chips = hits.map { h in
             ["doc": h["doc"] ?? "", "title": h["title"] ?? NSNull(), "page": h["page"] ?? 0]
+        }
+        if let top = hits.first, let d = top["doc"] as? String, let p = top["page"] as? Int {
+            spot.set(doc: d, page: p)
         }
     }
     // the retrieval verdict the model is steered by (strong/weak/none, plus
@@ -210,6 +214,7 @@ struct SearchLibrary: Tool {
     let description =
         "Search the text of the library's scanned books (full-text + semantic). Returns matching passages with title, page, and snippet. Plain keywords work best."
     let cache: ToolCache
+    let spot: LastSpot
 
     var parameters: GenerationSchema {
         GenerationSchema(
@@ -223,7 +228,8 @@ struct SearchLibrary: Tool {
     func call(arguments: GeneratedContent) async throws -> String {
         let query = (try? arguments.value(String.self, forProperty: "query")) ?? ""
         let col = ((try? arguments.value(String?.self, forProperty: "collection")) ?? nil) ?? ""
-        return await runSearch(toolName: name, query: query, collection: col, kind: "", cache: cache)
+        return await runSearch(
+            toolName: name, query: query, collection: col, kind: "", cache: cache, spot: spot)
     }
 }
 
@@ -232,6 +238,7 @@ struct SearchFigures: Tool {
     let description =
         "Find pictures, photographs, diagrams, and maps in the books. Only for requests about images — for facts, recipes, or any text question, use search_library instead."
     let cache: ToolCache
+    let spot: LastSpot
 
     var parameters: GenerationSchema {
         GenerationSchema(
@@ -246,7 +253,8 @@ struct SearchFigures: Tool {
         let query = (try? arguments.value(String.self, forProperty: "query")) ?? ""
         let col = ((try? arguments.value(String?.self, forProperty: "collection")) ?? nil) ?? ""
         return await runSearch(
-            toolName: name, query: query, collection: col, kind: "images", cache: cache)
+            toolName: name, query: query, collection: col, kind: "images", cache: cache,
+            spot: spot)
     }
 }
 
@@ -271,13 +279,39 @@ final class SeenPages: @unchecked Sendable {
     }
 }
 
+/// The last page location the host handed the model this conversation —
+/// the referent for "read the next page". Host-side session state like
+/// SeenPages: updated deterministically wherever a location surfaces
+/// (search's top hit, a sampled page, an explicit read), never by the
+/// model. Last write wins; with several books in play the referent can
+/// drift, which the plan event makes observable.
+final class LastSpot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var doc: String?
+    private var page: Int?
+    func set(doc: String, page: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.doc = doc
+        self.page = page
+    }
+    func get() -> (doc: String, page: Int)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let doc, let page else { return nil }
+        return (doc, page)
+    }
+}
+
 /// The sample fetch, shared by the model-visible tool and the plan
 /// pre-pass (browse turns run it host-side — see plannedPrompt).
 /// The cache key ignores `avoid` on purpose: a same-turn re-call gets the
 /// same page back, while the next turn (cleared cache, grown avoid list)
 /// samples fresh. The recorder captures `avoid` so probe expects can tell
 /// turns apart.
-func fetchSample(collection col: String, seen: SeenPages, cache: ToolCache) async -> String {
+func fetchSample(collection col: String, seen: SeenPages, cache: ToolCache, spot: LastSpot) async
+    -> String
+{
     let key = "sample_page|\(col.lowercased())"
     if let hit = cache.get(key) { return hit }
     let avoid = seen.csv()
@@ -297,7 +331,10 @@ func fetchSample(collection col: String, seen: SeenPages, cache: ToolCache) asyn
             let page = obj["page"] ?? 0
             summary = "opened \(d) p.\(page)"
             chips = [["doc": d, "title": obj["title"] ?? NSNull(), "page": page]]
-            if let p = obj["page"] as? Int { seen.add("\(d):\(p)") }
+            if let p = obj["page"] as? Int {
+                seen.add("\(d):\(p)")
+                spot.set(doc: d, page: p)
+            }
         }
     }
     emit.line(["e": "tool", "name": "sample_page", "status": "done", "summary": summary, "hits": chips])
@@ -311,6 +348,7 @@ struct SamplePage: Tool {
         "Open one page of the library at random and return its text. Use when the user leaves the choice of material to you — open-ended, browsing, or inspiration asks with no specific topic to search for. Pass collection to browse one shelf."
     let seen: SeenPages
     let cache: ToolCache
+    let spot: LastSpot
 
     var parameters: GenerationSchema {
         GenerationSchema(
@@ -322,8 +360,38 @@ struct SamplePage: Tool {
 
     func call(arguments: GeneratedContent) async throws -> String {
         let col = ((try? arguments.value(String?.self, forProperty: "collection")) ?? nil) ?? ""
-        return await fetchSample(collection: col, seen: seen, cache: cache)
+        return await fetchSample(collection: col, seen: seen, cache: cache, spot: spot)
     }
+}
+
+/// The read fetch, shared by the model-visible tool and the plan pre-pass
+/// (read turns run the continuation host-side — see plannedPrompt).
+func fetchPages(doc: String, from: Int, to: Int, cache: ToolCache, spot: LastSpot) async -> String {
+    let key = "read_pages|\(doc.lowercased())|\(from)|\(to)"
+    if let hit = cache.get(key) { return hit }
+    recorder.record("read_pages", ["doc": doc, "from": from, "to": to])
+    emit.line([
+        "e": "tool", "name": "read_pages", "status": "started",
+        "args": ["doc": doc, "from": from, "to": to],
+    ])
+    let escaped = doc.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? doc
+    let body = await callTool(
+        "read_pages", ["doc": doc, "from": from, "to": to],
+        path: "/api/text/\(escaped)", query: ["from": String(from), "to": String(to)])
+    var summary = "pages \(from)-\(to)"
+    var chips: [[String: Any]] = []
+    if let obj = json(body) as? [String: Any] {
+        if let err = obj["error"] as? String {
+            summary = err
+        } else if let d = obj["doc"] as? String {
+            summary = "\(d) p.\(from)"
+            chips = [["doc": d, "title": obj["title"] ?? NSNull(), "page": from]]
+            spot.set(doc: d, page: from)
+        }
+    }
+    emit.line(["e": "tool", "name": "read_pages", "status": "done", "summary": summary, "hits": chips])
+    cache.put(key, body)
+    return body
 }
 
 struct ReadPages: Tool {
@@ -331,6 +399,7 @@ struct ReadPages: Tool {
     let description =
         "Read the full text of specific pages of a document, in reading order. Use to dig into a page another tool surfaced, or to keep reading nearby pages. Returns at most 2 pages per call."
     let cache: ToolCache
+    let spot: LastSpot
 
     var parameters: GenerationSchema {
         GenerationSchema(
@@ -346,30 +415,7 @@ struct ReadPages: Tool {
         let doc = (try? arguments.value(String.self, forProperty: "doc")) ?? ""
         let from = (try? arguments.value(Int.self, forProperty: "from")) ?? 1
         let to = ((try? arguments.value(Int?.self, forProperty: "to")) ?? nil) ?? from
-        let key = "read_pages|\(doc.lowercased())|\(from)|\(to)"
-        if let hit = cache.get(key) { return hit }
-        recorder.record(name, ["doc": doc, "from": from, "to": to])
-        emit.line([
-            "e": "tool", "name": name, "status": "started",
-            "args": ["doc": doc, "from": from, "to": to],
-        ])
-        let escaped = doc.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? doc
-        let body = await callTool(
-            name, ["doc": doc, "from": from, "to": to],
-            path: "/api/text/\(escaped)", query: ["from": String(from), "to": String(to)])
-        var summary = "pages \(from)-\(to)"
-        var chips: [[String: Any]] = []
-        if let obj = json(body) as? [String: Any] {
-            if let err = obj["error"] as? String {
-                summary = err
-            } else if let d = obj["doc"] as? String {
-                summary = "\(d) p.\(from)"
-                chips = [["doc": d, "title": obj["title"] ?? NSNull(), "page": from]]
-            }
-        }
-        emit.line(["e": "tool", "name": name, "status": "done", "summary": summary, "hits": chips])
-        cache.put(key, body)
-        return body
+        return await fetchPages(doc: doc, from: from, to: to, cache: cache, spot: spot)
     }
 }
 
@@ -452,19 +498,21 @@ let INSTRUCTIONS = """
     """
 
 /// Fresh tool instances per session/conversation. `seen` is the
-/// conversation's sample-page avoid list and `cache` its per-turn tool
-/// result cache — the caller holds both so the plan pre-pass (which runs
-/// first hops host-side) shares them with the model-visible tools.
-func defaultTools(seen: SeenPages, cache: ToolCache) -> [any Tool] {
+/// conversation's sample-page avoid list, `cache` its per-turn tool result
+/// cache, and `spot` its last-read location — the caller holds all three so
+/// the plan pre-pass (which runs first hops host-side) shares them with the
+/// model-visible tools.
+func defaultTools(seen: SeenPages, cache: ToolCache, spot: LastSpot) -> [any Tool] {
     [
-        SearchLibrary(cache: cache), SearchFigures(cache: cache),
-        SamplePage(seen: seen, cache: cache), ReadPages(cache: cache),
+        SearchLibrary(cache: cache, spot: spot), SearchFigures(cache: cache, spot: spot),
+        SamplePage(seen: seen, cache: cache, spot: spot),
+        ReadPages(cache: cache, spot: spot),
         LibraryOverview(cache: cache),
     ]
 }
 
 func makeSession(tools: [any Tool]? = nil) -> LanguageModelSession {
-    let tools = tools ?? defaultTools(seen: SeenPages(), cache: ToolCache())
+    let tools = tools ?? defaultTools(seen: SeenPages(), cache: ToolCache(), spot: LastSpot())
     // Permissive guardrails are deliberate: benign questions about this
     // corpus (butchering a chicken, curing meat, sharpening a knife, home
     // brewing, lighting a wood stove) trip AFM's default guardrail. The
@@ -506,13 +554,14 @@ let PLAN_INSTRUCTIONS = """
     picture of a dome" → figures. "tell me an interesting fact" → browse. \
     "give me some wisdom from the books" → browse. "an interesting fact \
     from the cookbooks" → browse. "what kinds of books do I have?" → \
-    overview. "hello!" → reply.
+    overview. "read me the page after that" → read. "keep reading" → \
+    read. "hello!" → reply.
     """
 
 let PLAN_SCHEMA: GenerationSchema = {
     let approach = DynamicGenerationSchema(
         name: "Approach",
-        anyOf: ["search", "figures", "browse", "overview", "reply"])
+        anyOf: ["search", "figures", "browse", "overview", "read", "reply"])
     var props: [DynamicGenerationSchema.Property] = [
         .init(
             name: "intent",
@@ -527,6 +576,8 @@ let PLAN_SCHEMA: GenerationSchema = {
                 browse: they want an interesting fact, wisdom, inspiration, a surprise, \
                 or another one — anything where the library picks the material. \
                 overview: they ask what the library contains. \
+                read: they want to read a specific page, keep reading, or see the \
+                next page of something already found. \
                 reply: no library material needed — a greeting or a question about you.
                 """,
             schema: approach),
@@ -535,6 +586,12 @@ let PLAN_SCHEMA: GenerationSchema = {
             description:
                 "For search only: the terms to search with — plain content words, not the user's sentence. Otherwise empty.",
             schema: DynamicGenerationSchema(type: String.self)),
+        .init(
+            name: "read_target",
+            description:
+                "For read only: which page relative to the one last discussed. Otherwise \"same page\".",
+            schema: DynamicGenerationSchema(
+                name: "ReadTarget", anyOf: ["same page", "next page", "previous page"])),
     ]
     // collection scoping is decode-constrained to the real shelf names
     if !COLLECTIONS.isEmpty {
@@ -555,6 +612,7 @@ struct Plan {
     let approach: String
     let query: String
     let collection: String
+    let readTarget: String
 }
 
 /// One schema-constrained call that shapes the turn before the tool loop
@@ -576,10 +634,12 @@ func planTurn(_ context: String) async -> Plan? {
         intent: (try? resp.content.value(String.self, forProperty: "intent")) ?? "",
         approach: (try? resp.content.value(String.self, forProperty: "approach")) ?? "",
         query: (try? resp.content.value(String.self, forProperty: "query")) ?? "",
-        collection: col == "any" ? "" : col)
+        collection: col == "any" ? "" : col,
+        readTarget: (try? resp.content.value(String.self, forProperty: "read_target")) ?? "")
     emit.line([
         "e": "plan", "intent": plan.intent, "approach": plan.approach,
         "query": plan.query, "collection": plan.collection,
+        "read_target": plan.readTarget,
     ])
     recorder.record("plan", ["approach": plan.approach, "query": plan.query])
     return plan
@@ -681,26 +741,44 @@ struct PlannedTurn {
 /// never searched; browse turns wandered into library_overview). The model
 /// still has every tool for follow-up hops (read_pages, another search);
 /// only the first, planned hop is guaranteed.
-func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages, cache: ToolCache) async
+/// Plain-text rendering of a read_pages result for prompt injection.
+func readTextForPrompt(_ body: String) -> String {
+    guard let obj = json(body) as? [String: Any] else { return body }
+    if let err = obj["error"] as? String { return err }
+    let title = obj["title"] as? String ?? obj["doc"] as? String ?? "?"
+    return "[\(title) p.\(obj["from"] ?? 0)] \(obj["text"] as? String ?? "")"
+}
+
+/// The planned search hop, shared by the "search" approach and the "read"
+/// fallback (a read with nothing located yet becomes a search).
+func plannedSearch(_ prompt: String, _ plan: Plan, cache: ToolCache, spot: LastSpot) async
+    -> PlannedTurn
+{
+    if plan.query.isEmpty {
+        return PlannedTurn(
+            prompt: "\(prompt)\n\nPlan: search the library first.",
+            approach: "search")
+    }
+    let body = await runSearch(
+        toolName: "search_library", query: plan.query,
+        collection: plan.collection, kind: "", cache: cache, spot: spot)
+    let flat = searchResultText(body, query: plan.query)
+    return PlannedTurn(
+        prompt: "\(prompt)\n\nLibrary search results for \"\(plan.query)\": \(flat)",
+        approach: "search",
+        confidence: (json(body) as? [String: Any])?["confidence"] as? String,
+        injected: flat)
+}
+
+func plannedPrompt(
+    _ prompt: String, _ plan: Plan?, seen: SeenPages, cache: ToolCache, spot: LastSpot
+) async
     -> PlannedTurn
 {
     guard let plan else { return PlannedTurn(prompt: prompt) }
     switch plan.approach {
     case "search":
-        if plan.query.isEmpty {
-            return PlannedTurn(
-                prompt: "\(prompt)\n\nPlan: search the library first.",
-                approach: plan.approach)
-        }
-        let body = await runSearch(
-            toolName: "search_library", query: plan.query,
-            collection: plan.collection, kind: "", cache: cache)
-        let flat = searchResultText(body, query: plan.query)
-        return PlannedTurn(
-            prompt: "\(prompt)\n\nLibrary search results for \"\(plan.query)\": \(flat)",
-            approach: plan.approach,
-            confidence: (json(body) as? [String: Any])?["confidence"] as? String,
-            injected: flat)
+        return await plannedSearch(prompt, plan, cache: cache, spot: spot)
     case "figures":
         if plan.query.isEmpty {
             return PlannedTurn(
@@ -709,15 +787,33 @@ func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages, cache: Tool
         }
         let body = await runSearch(
             toolName: "search_figures", query: plan.query,
-            collection: plan.collection, kind: "images", cache: cache)
+            collection: plan.collection, kind: "images", cache: cache, spot: spot)
         let flat = searchResultText(body, query: plan.query, figures: true)
         return PlannedTurn(
             prompt: "\(prompt)\n\nFigure search results for \"\(plan.query)\": \(flat)",
             approach: plan.approach,
             confidence: (json(body) as? [String: Any])?["confidence"] as? String,
             injected: flat)
+    case "read":
+        // continuation is resolved host-side from the conversation's last
+        // located page — the model never sees or computes page numbers
+        guard let here = spot.get() else {
+            return await plannedSearch(prompt, plan, cache: cache, spot: spot)
+        }
+        let page: Int
+        switch plan.readTarget {
+        case "next page": page = here.page + 1
+        case "previous page": page = max(1, here.page - 1)
+        default: page = here.page
+        }
+        let body = await fetchPages(doc: here.doc, from: page, to: page, cache: cache, spot: spot)
+        let flat = readTextForPrompt(body)
+        return PlannedTurn(
+            prompt: "\(prompt)\n\nThe page requested: \(flat)",
+            approach: plan.approach, injected: flat)
     case "browse":
-        let body = await fetchSample(collection: plan.collection, seen: seen, cache: cache)
+        let body = await fetchSample(
+            collection: plan.collection, seen: seen, cache: cache, spot: spot)
         let flat = sampleTextForPrompt(body)
         var citation: String? = nil
         if let obj = json(body) as? [String: Any], obj["error"] == nil {
@@ -960,12 +1056,13 @@ func runTurn() async {
     }
     let seen = SeenPages()
     let cache = ToolCache()
-    let session = makeSession(tools: defaultTools(seen: seen, cache: cache))
+    let spot = LastSpot()
+    let session = makeSession(tools: defaultTools(seen: seen, cache: cache, spot: spot))
     session.prewarm()  // main session warms while the plan pre-pass runs
     let plan = await planTurn(prompt)
     await executeTurn(
         session: session,
-        turn: await plannedPrompt(prompt, plan, seen: seen, cache: cache),
+        turn: await plannedPrompt(prompt, plan, seen: seen, cache: cache, spot: spot),
         fallback: messages.last?.content ?? prompt)
 }
 
@@ -988,14 +1085,16 @@ final class ServeState: @unchecked Sendable {
     private var sessions: [String: LanguageModelSession] = [:]
     private var seenPages: [String: SeenPages] = [:]
     private var toolCaches: [String: ToolCache] = [:]
+    private var lastSpots: [String: LastSpot] = [:]
     private var lastUsed: [String: Date] = [:]
     private var active: Task<Void, Never>?
 
-    /// Returns (session, seen, cache, isNew), evicting idle conversations
-    /// first. `seen` outlives session replacement (overflow retry) so
-    /// "another one" keeps walking new shelves across the whole
-    /// conversation; `cache` is cleared by the caller at each turn start.
-    func checkout(_ conv: String) -> (LanguageModelSession, SeenPages, ToolCache, Bool) {
+    /// Returns (session, seen, cache, spot, isNew), evicting idle
+    /// conversations first. `seen` and `spot` outlive session replacement
+    /// (overflow retry) so "another one" keeps walking new shelves and
+    /// "keep reading" keeps its place across the whole conversation;
+    /// `cache` is cleared by the caller at each turn start.
+    func checkout(_ conv: String) -> (LanguageModelSession, SeenPages, ToolCache, LastSpot, Bool) {
         lock.lock()
         defer { lock.unlock() }
         let now = Date()
@@ -1003,6 +1102,7 @@ final class ServeState: @unchecked Sendable {
             sessions.removeValue(forKey: k)
             seenPages.removeValue(forKey: k)
             toolCaches.removeValue(forKey: k)
+            lastSpots.removeValue(forKey: k)
             lastUsed.removeValue(forKey: k)
         }
         lastUsed[conv] = now
@@ -1010,10 +1110,12 @@ final class ServeState: @unchecked Sendable {
         seenPages[conv] = seen
         let cache = toolCaches[conv] ?? ToolCache()
         toolCaches[conv] = cache
-        if let s = sessions[conv] { return (s, seen, cache, false) }
-        let s = makeSession(tools: defaultTools(seen: seen, cache: cache))
+        let spot = lastSpots[conv] ?? LastSpot()
+        lastSpots[conv] = spot
+        if let s = sessions[conv] { return (s, seen, cache, spot, false) }
+        let s = makeSession(tools: defaultTools(seen: seen, cache: cache, spot: spot))
         sessions[conv] = s
-        return (s, seen, cache, true)
+        return (s, seen, cache, spot, true)
     }
 
     func replace(_ conv: String, with s: LanguageModelSession) {
@@ -1068,7 +1170,7 @@ func runServe() async {
                 }
                 // session transcripts carry history natively; only a brand-new
                 // (or evicted) conversation needs the folded-history rebuild
-                let (session, seen, cache, isNew) = state.checkout(conv)
+                let (session, seen, cache, spot, isNew) = state.checkout(conv)
                 let prompt = isNew ? buildPrompt(messages) : last.content
                 let task = Task {
                     cache.clear()  // per-turn: the planned hop must re-run fresh
@@ -1082,7 +1184,8 @@ func runServe() async {
                     }
                     if let replacement = await executeTurn(
                         session: session,
-                        turn: await plannedPrompt(prompt, plan, seen: seen, cache: cache),
+                        turn: await plannedPrompt(
+                            prompt, plan, seen: seen, cache: cache, spot: spot),
                         fallback: last.content)
                     {
                         state.replace(conv, with: replacement)
@@ -1128,14 +1231,16 @@ func runProbe(_ path: String) async {
 
     let seen = SeenPages()
     let cache = ToolCache()
+    let spot = LastSpot()
     let session: LanguageModelSession
     if let instructions = fx["instructions"] as? String {
         session = LanguageModelSession(
             model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
-            tools: useTools ? defaultTools(seen: seen, cache: cache) : [],
+            tools: useTools ? defaultTools(seen: seen, cache: cache, spot: spot) : [],
             instructions: instructions)
     } else {
-        session = makeSession(tools: useTools ? defaultTools(seen: seen, cache: cache) : [])
+        session = makeSession(
+            tools: useTools ? defaultTools(seen: seen, cache: cache, spot: spot) : [])
     }
 
     let start = Date()
@@ -1160,7 +1265,8 @@ func runProbe(_ path: String) async {
                 var planned = PlannedTurn(prompt: turn)
                 if useTools {
                     planned = await plannedPrompt(
-                        turn, await planTurn(buildPrompt(transcript)), seen: seen, cache: cache)
+                        turn, await planTurn(buildPrompt(transcript)), seen: seen, cache: cache,
+                        spot: spot)
                 }
                 if let injected = planned.injected { toolTexts.append(injected) }
                 // guided generation, matching serve/turn mode

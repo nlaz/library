@@ -1,0 +1,13 @@
+{
+  "id": "mt-read-next",
+  "turns": [
+    "is there a tandoori chicken recipe in the library?",
+    "now read me the page after that recipe"
+  ],
+  "expect": [
+    { "kind": "tools_include", "value": "read_pages" },
+    { "kind": "tool_arg", "tool": "read_pages", "arg": "doc", "value": "cookery" },
+    { "kind": "content_overlap_max", "value": 0.5 },
+    { "kind": "tools_unique" }
+  ]
+}

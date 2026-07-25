@@ -34,6 +34,15 @@ pub fn read_collections(data: &std::path::Path) -> Collections {
         .unwrap_or_default()
 }
 
+/// `data/titles.json`: doc id → display title. Missing or corrupt reads as
+/// empty — callers fall back to deriving a title from the id.
+pub fn read_titles(data: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    std::fs::read(data.join("titles.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
 #[derive(Serialize)]
 pub struct SnippetWord {
     pub t: String,

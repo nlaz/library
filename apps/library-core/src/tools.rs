@@ -99,10 +99,7 @@ fn query_coverage(query: &str, hits: &[Hit]) -> f32 {
 }
 
 fn read_titles(data: &Path) -> std::collections::BTreeMap<String, String> {
-    std::fs::read(data.join("titles.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    crate::wire::read_titles(data)
 }
 
 /// Human-readable title derived from a doc id, for docs missing from

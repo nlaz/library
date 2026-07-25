@@ -1,5 +1,6 @@
 target/
 .build/
+/dist/
 .DS_Store
 /data
 node_modules/

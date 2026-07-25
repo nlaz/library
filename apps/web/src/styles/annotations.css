@@ -180,6 +180,8 @@
   color: var(--bg);
 }
 
+/* the inset-input idiom (base.css §5), not --paper — the scanned-page
+   white would glare in dark mode */
 #mark-pop .mp-note {
   width: 100%;
   resize: vertical;
@@ -187,8 +189,9 @@
   font-size: var(--fs-ui);
   line-height: 1.5;
   color: var(--ink);
-  background: var(--paper);
-  border: 1px solid var(--line);
+  background: var(--well);
+  border: 1px solid;
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
   padding: var(--sp-1) var(--sp-2);
 }
 
@@ -196,19 +199,47 @@
   outline: 2px solid var(--hl-line);
 }
 
-/* where the card will file — same wording as the composer's place line */
-#mark-pop .mp-place {
-  margin-top: var(--sp-1);
-  font-size: var(--fs-meta);
-  color: var(--ink-dim);
-  min-height: 1.2em;
+/* cancel / comment: the quiet verb and the one solid primary */
+#mark-pop .mp-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
 }
 
-#mark-pop .mp-hint {
-  margin-top: var(--sp-1);
+#mark-pop .mp-foot button {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
+  font-weight: 500;
   letter-spacing: var(--track-label);
   text-transform: uppercase;
+  cursor: pointer;
+}
+
+#mark-pop .mp-cancel {
   color: var(--ink-faint);
+  background: none;
+  border: none;
+  padding: 3px 6px;
+}
+
+#mark-pop .mp-cancel:hover {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+#mark-pop .mp-comment {
+  color: var(--bg);
+  background: var(--ink);
+  border: none;
+  padding: 3px 10px;
+}
+
+#mark-pop .mp-comment:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#mark-pop .mp-comment:not(:disabled):active {
+  translate: 1px 1px;
 }

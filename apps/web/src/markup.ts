@@ -351,16 +351,22 @@ popover.innerHTML = `
       <button class="mp-file-away">file away</button>
     </span>
   </div>
-  <textarea class="mp-note" rows="3" placeholder="note — files as a card…"></textarea>
-  <div class="mp-hint">esc discards · ⌘⏎ files</div>
+  <textarea class="mp-note" rows="3" placeholder="note…"></textarea>
+  <div class="mp-foot">
+    <button class="mp-cancel">cancel</button>
+    <button class="mp-comment">comment</button>
+  </div>
 `;
 $reader.append(popover);
+const mpHead = popover.querySelector<HTMLElement>(".mp-head")!;
 const mpAddr = popover.querySelector<HTMLElement>(".mp-addr")!;
 const mpActions = popover.querySelector<HTMLElement>(".mp-actions")!;
 const mpOpen = popover.querySelector<HTMLButtonElement>(".mp-open")!;
 const mpFileAway = popover.querySelector<HTMLButtonElement>(".mp-file-away")!;
 const mpNote = popover.querySelector<HTMLTextAreaElement>(".mp-note")!;
-const mpHint = popover.querySelector<HTMLElement>(".mp-hint")!;
+const mpFoot = popover.querySelector<HTMLElement>(".mp-foot")!;
+const mpCancel = popover.querySelector<HTMLButtonElement>(".mp-cancel")!;
+const mpComment = popover.querySelector<HTMLButtonElement>(".mp-comment")!;
 
 type PopState =
   | { kind: "pending"; anchor: QuoteAnchor; layer: HTMLElement }
@@ -390,12 +396,14 @@ function fmtWhen(created: number): string {
     .toLowerCase();
 }
 
+/** A new mark is only the note field and its two verbs — the highlight
+ * above it is the header. */
 function openPendingPopover(anchor: QuoteAnchor, layer: HTMLElement, pageEl: HTMLElement) {
   pop = { kind: "pending", anchor, layer };
-  mpAddr.textContent = "new mark";
-  mpActions.hidden = true;
+  mpHead.hidden = true;
   mpNote.value = "";
-  mpHint.hidden = false;
+  mpFoot.hidden = false;
+  mpComment.disabled = true;
   placePopover(pageEl, anchorBoxes(anchor)[0]);
   mpNote.focus();
 }
@@ -411,10 +419,11 @@ export function openMarkPopover(cardId: string, scrollTo = false) {
     $scroll.scrollTo({ top: Math.max(y, 0) });
   }
   pop = { kind: "edit", cardId };
+  mpHead.hidden = false;
   mpAddr.textContent = fmtWhen(m.card.created);
   mpActions.hidden = false;
   mpNote.value = m.card.title;
-  mpHint.hidden = true;
+  mpFoot.hidden = true;
   placePopover(pageEl, anchorBoxes(m.anchor)[0]);
   mpNote.focus();
 }
@@ -516,9 +525,30 @@ mpFileAway.addEventListener("click", async () => {
 // reader hotkeys must not fire while writing a note
 mpNote.addEventListener("keydown", (e) => {
   e.stopPropagation();
-  if (e.key === "Escape") discardPopover();
-  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void closePopover();
+  if (e.key === "Escape") {
+    discardPopover();
+  } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    // browsers do nothing on meta+Enter in a textarea — insert the
+    // newline ourselves (shift+Enter keeps its native one)
+    e.preventDefault();
+    mpNote.setRangeText("\n", mpNote.selectionStart, mpNote.selectionEnd, "end");
+    mpNote.dispatchEvent(new Event("input"));
+  } else if (e.key === "Enter" && !e.shiftKey) {
+    // Enter files, like sending a comment
+    e.preventDefault();
+    void closePopover();
+  }
 });
+mpNote.addEventListener("input", () => {
+  mpComment.disabled = !mpNote.value.trim();
+});
+// the foot buttons: mousedown keeps focus in the textarea so the blur
+// handler below never races the click
+for (const b of [mpCancel, mpComment]) {
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+}
+mpCancel.addEventListener("click", () => discardPopover());
+mpComment.addEventListener("click", () => void closePopover());
 // wherever focus goes, the note is not lost — blur commits (clicks that
 // land outside the pages container never reach the close handler). The
 // action buttons live inside the popover, so their mousedown must not

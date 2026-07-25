@@ -156,6 +156,13 @@
   margin-bottom: var(--sp-2);
 }
 
+/* the display:flex above would beat the UA's [hidden] rule — pending
+   hides the head, edit hides the foot, and hidden must win */
+#mark-pop .mp-head[hidden],
+#mark-pop .mp-foot[hidden] {
+  display: none;
+}
+
 #mark-pop .mp-addr {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);

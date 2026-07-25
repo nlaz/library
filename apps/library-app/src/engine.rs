@@ -59,7 +59,7 @@ pub(crate) fn init_engine(app: AppHandle) {
     // brief commit windows (which include an HNSW checkpoint — tens of
     // seconds on a big library), so retry before declaring failure.
     let deadline = Instant::now() + Duration::from_secs(90);
-    let (lib, images) = loop {
+    let (mut lib, images) = loop {
         let opened = library_core::try_open(settings.data.join("library.db")).and_then(|lib| {
             library_core::try_open_images(settings.data.join("images.db"))
                 .map(|images| (lib, images))
@@ -89,6 +89,17 @@ pub(crate) fn init_engine(app: AppHandle) {
         }
     };
     println!("stores open in {:?}", t.elapsed());
+
+    // one-time: noted annotations become notebox cards; log-and-continue —
+    // a failed migration must not brick startup (no marker means the next
+    // launch retries)
+    match library_core::annots::migrate_annots_to_cards(&mut lib, &settings.data, &|s| {
+        ese::encode_single(s)
+    }) {
+        Ok(0) => {}
+        Ok(n) => println!("migrated {n} margin notes into cards"),
+        Err(e) => eprintln!("annotation migration skipped: {e}"),
+    }
 
     let engine = std::sync::Arc::new(Engine {
         lib: RwLock::new(lib),

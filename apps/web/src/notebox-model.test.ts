@@ -1,18 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-  backlinks,
-  compareCards,
-  displayAddr,
-  splitPoint,
-  threads,
-  wikiTokens,
-} from "./notebox-model";
+import { backlinks, splitPoint, timeline, wikiTokens } from "./notebox-model";
 import type { CardRec } from "./types";
 
 const card = (over: Partial<CardRec>): CardRec => ({
   id: "c0",
-  thread: 1,
-  addr: [1],
   title: "t",
   body: "",
   evidence: [],
@@ -24,46 +15,38 @@ const card = (over: Partial<CardRec>): CardRec => ({
   ...over,
 });
 
-describe("displayAddr", () => {
-  it("mirrors the Rust display rules", () => {
-    expect(displayAddr(21, [3])).toBe("21/3");
-    expect(displayAddr(21, [3, 1])).toBe("21/3a");
-    expect(displayAddr(21, [3, 1, 2])).toBe("21/3a2");
-    expect(displayAddr(1, [12, 26])).toBe("1/12z");
-    expect(displayAddr(1, [12, 27])).toBe("1/12aa");
-    expect(displayAddr(1, [12, 53])).toBe("1/12ba");
-  });
-});
-
-describe("compareCards", () => {
-  it("reads as a thread: branch directly after parent", () => {
-    const order = [
-      card({ id: "e", thread: 2, addr: [1] }),
-      card({ id: "b", thread: 1, addr: [3, 1] }),
-      card({ id: "d", thread: 1, addr: [4] }),
-      card({ id: "a", thread: 1, addr: [3] }),
-      card({ id: "c", thread: 1, addr: [3, 1, 1] }),
-      card({ id: "f", thread: 1, addr: [3, 2] }),
-    ]
-      .sort(compareCards)
-      .map((c) => c.id);
-    expect(order).toEqual(["a", "b", "c", "f", "d", "e"]);
-  });
-});
-
-describe("threads", () => {
-  it("groups, names by trunk, floats recent, drops all-filed", () => {
-    const rows = threads([
-      card({ id: "a", thread: 1, addr: [1], title: "first claim", modified: 10 }),
-      card({ id: "b", thread: 1, addr: [1, 1], title: "aside", modified: 50 }),
-      card({ id: "c", thread: 1, addr: [2], title: "second", modified: 20, filed: true }),
-      card({ id: "d", thread: 2, addr: [1], title: "other topic", modified: 30 }),
-      card({ id: "e", thread: 3, addr: [1], title: "gone", filed: true }),
+describe("timeline", () => {
+  it("reads newest-first by birth, edits don't reshuffle", () => {
+    const { live } = timeline([
+      card({ id: "a", created: 10, modified: 99 }), // edited late — stays put
+      card({ id: "b", created: 30 }),
+      card({ id: "c", created: 20 }),
     ]);
-    expect(rows.map((r) => r.thread)).toEqual([1, 2]); // 50 > 30
-    expect(rows[0].name).toBe("first claim");
-    expect(rows[0].cards.map((c) => c.id)).toEqual(["a", "b"]);
-    expect(rows[0].filed).toBe(1);
+    expect(live.map((c) => c.id)).toEqual(["b", "c", "a"]);
+  });
+
+  it("splits filed cards out, both halves ordered", () => {
+    const { live, filed } = timeline([
+      card({ id: "a", created: 10 }),
+      card({ id: "b", created: 30, filed: true }),
+      card({ id: "c", created: 20 }),
+      card({ id: "d", created: 5, filed: true }),
+    ]);
+    expect(live.map((c) => c.id)).toEqual(["c", "a"]);
+    expect(filed.map((c) => c.id)).toEqual(["b", "d"]);
+  });
+
+  it("breaks created ties on id so the order is total", () => {
+    const { live } = timeline([
+      card({ id: "x", created: 10 }),
+      card({ id: "y", created: 10 }),
+    ]);
+    expect(live.map((c) => c.id)).toEqual(["y", "x"]);
+    expect(
+      timeline([card({ id: "y", created: 10 }), card({ id: "x", created: 10 })]).live.map(
+        (c) => c.id,
+      ),
+    ).toEqual(["y", "x"]);
   });
 });
 

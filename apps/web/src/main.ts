@@ -24,7 +24,7 @@ import { isTauri, makeTransport } from "./transport";
 
 async function route() {
   const m = location.hash.match(/^#\/read\/([^?]+)(?:\?p=(\d+))?$/);
-  const nm = location.hash.match(/^#\/notes(?:\/(\d+))?(?:\?card=([^&]+))?$/);
+  const nm = location.hash.match(/^#\/notes(?:\?card=([^&]+))?$/);
   closeDrawer(); // drawer is per-doc; any navigation invalidates it
   if (m) {
     closeNotes();
@@ -33,7 +33,7 @@ async function route() {
     openReader(doc, await pagesOf(doc), m[2] ? Number(m[2]) : undefined, docTitle(doc));
   } else if (nm) {
     closeReader();
-    await openNotes(nm[1] ? Number(nm[1]) : null, nm[2] ? decodeURIComponent(nm[2]) : null);
+    await openNotes(nm[1] ? decodeURIComponent(nm[1]) : null);
   } else {
     closeReader();
     closeNotes();

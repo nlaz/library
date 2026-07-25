@@ -4,7 +4,7 @@
 // dozen 1600px JPEGs in the webview at once. Each visible page also gets a
 // transparent OCR text layer so scanned text can be selected and copied.
 
-import { attachAnnotLayer, scheduleAnnotTicks, setAnnotationsDoc } from "./annotations";
+import { attachMarkLayer, scheduleMarkTicks, setMarkupDoc } from "./markup";
 import { ocrUrl, pageImg } from "./assets";
 import { hlBoxes } from "./highlights";
 import type { OcrWord, WireHit } from "./types";
@@ -56,7 +56,9 @@ function buildPages(doc: string, pages: number) {
   tracker?.disconnect();
   ocrCache.clear();
   clearReaderHits(); // hits belong to the previous doc
-  void setAnnotationsDoc(doc); // marks load async and decorate as pages render
+  // marks load async and decorate as pages render; the word source hands
+  // the markup gesture our OCR cache (undefined = fetch still in flight)
+  void setMarkupDoc(doc, (p) => (ocrCache.has(p) ? ocrCache.get(p) : undefined));
   totalPages = pages;
 
   const els: HTMLElement[] = [];
@@ -83,12 +85,12 @@ function buildPages(doc: string, pages: number) {
               el.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
               fitTextLayer(el);
               scheduleTicks(); // page heights shifted — tick offsets moved
-              scheduleAnnotTicks();
+              scheduleMarkTicks();
             });
             el.append(img);
             attachTextLayer(el, doc, Number(el.dataset.page));
             attachHitLayer(el);
-            attachAnnotLayer(el);
+            attachMarkLayer(el);
           }
         } else {
           el.replaceChildren(); // out of range: give the memory back
@@ -321,7 +323,9 @@ function layoutTicks() {
 }
 
 let tickRaf = 0;
-function scheduleTicks() {
+/** Exported for the drawer: opening it narrows the pane, which moves
+ * every tick without firing a window resize. */
+export function scheduleTicks() {
   if (tickRaf || !hits.length) return;
   tickRaf = requestAnimationFrame(() => {
     tickRaf = 0;

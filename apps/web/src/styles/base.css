@@ -68,10 +68,15 @@ main {
 
 #reader-back,
 #reader-meta,
+#reader-pen,
 #viewer-read,
 #viewer-close,
 #search-prev,
 #search-next,
+#notes-back,
+#notes-new,
+#notes-toggle,
+#chat-toggle,
 .bmenu {
   border: 1px solid;
   border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
@@ -82,13 +87,29 @@ main {
 
 #reader-back:active,
 #reader-meta:active,
+#reader-pen:active,
 #viewer-read:active,
 #viewer-close:active,
 #search-prev:active,
 #search-next:active,
+#notes-back:active,
+#notes-new:active,
+#notes-toggle:active,
+#chat-toggle:active,
 .bmenu:active {
   border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
   transform: translate(1px, 1px);
+}
+
+/* header toggles share the small-caps mono face */
+#notes-toggle,
+#chat-toggle {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  padding: 4px 10px;
 }
 
 #q,

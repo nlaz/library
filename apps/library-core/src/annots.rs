@@ -1,22 +1,19 @@
-//! Annotations: user marks on document pages.
+//! Legacy annotations: the pre-card marks, kept only for migration.
 //!
-//! Two shapes, one record. A *text* mark anchors to a word-index range of
-//! the page's OCR words and snapshots both the text and the merged line
-//! boxes at creation time — the snapshot is what renders and searches, so
-//! a later re-OCR can never silently move or reword a mark. A *region*
-//! mark is a normalized bbox in the same 0..1 top-left space the OCR
-//! words and figure detections use.
-//!
-//! Source of truth is one sidecar per document, `data/annotations/
-//! <doc>.json`, mirroring the `status/<doc>.json` pattern (`doc` is
-//! always a sanitized real doc id, so it is filesystem-safe by
-//! construction). Marks with a note also mint a synthetic search chunk.
+//! Marks used to be their own record — per-document sidecars in
+//! `data/annotations/<doc>.json`, with noted marks minting `~annot/`
+//! search chunks. A mark is a notebox card now (its geometry rides in
+//! the card's evidence anchor), so this module retains just enough to
+//! read the old sidecars and migrate them: the wire types, the loaders,
+//! and [`migrate_annots_to_cards`]. The sidecar files themselves are
+//! never modified or deleted — they are the user's marginalia.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ChunkKey, ChunkRec, Emb, Library, Word, sidecar};
+use crate::notes::{self, CardRec};
+use crate::{Emb, Library, sidecar};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -83,58 +80,10 @@ pub fn store_annots(data: &Path, doc: &str, annots: &[AnnotRec]) -> std::io::Res
     sidecar::write_json_atomic(&path(data, doc), &annots)
 }
 
-// --- search integration ----------------------------------------------------
-
-/// Reserved search-namespace doc id for an annotation. Never
-/// filesystem-safe.
+/// Reserved search-namespace doc id an annotation used to index under;
+/// the migration retracts these. Never filesystem-safe.
 pub fn annot_doc(id: &str) -> String {
     format!("~annot/{id}")
-}
-
-fn annot_key(id: &str) -> ChunkKey {
-    ChunkKey {
-        doc: annot_doc(id),
-        page: 0,
-        idx: 0,
-    }
-}
-
-/// The searchable text of a mark: the margin note, plus the quoted
-/// snapshot for context. Only the *note* makes a mark searchable — the
-/// passage itself is already indexed under its real page, so a bare
-/// highlight minting a chunk would just duplicate that hit.
-fn annot_text(a: &AnnotRec) -> Option<String> {
-    if a.note.trim().is_empty() {
-        return None;
-    }
-    let mut text = a.note.clone();
-    if let AnnotKind::Text { text: snap, .. } = &a.kind
-        && !snap.is_empty()
-    {
-        text.push('\n');
-        text.push_str(snap);
-    }
-    Some(text)
-}
-
-/// One synthetic chunk per noted mark; zero-geometry words like cards.
-pub fn annot_chunk(a: &AnnotRec, embed: &dyn Fn(&str) -> Emb) -> Option<ChunkRec> {
-    let text = annot_text(a)?;
-    let words = text
-        .split_whitespace()
-        .map(|t| Word {
-            t: t.to_string(),
-            x: 0.0,
-            y: 0.0,
-            w: 0.0,
-            h: 0.0,
-        })
-        .collect();
-    Some(ChunkRec {
-        key: annot_key(&a.id),
-        words,
-        emb: embed(&text),
-    })
 }
 
 fn now() -> u64 {
@@ -144,63 +93,112 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Create or update a mark: sidecar write, then its search presence.
-/// An empty id mints one; a note-less mark retracts any prior chunk.
-pub fn save_annot(
+// --- migration to cards ----------------------------------------------------
+
+/// The annotation's page geometry as a card evidence anchor.
+fn anchor_of(a: &AnnotRec) -> notes::QuoteAnchor {
+    notes::QuoteAnchor {
+        doc: a.doc.clone(),
+        page: a.page,
+        kind: match &a.kind {
+            AnnotKind::Text {
+                w0,
+                w1,
+                text,
+                boxes,
+            } => notes::AnchorKind::Text {
+                w0: *w0,
+                w1: *w1,
+                text: text.clone(),
+                boxes: boxes.clone(),
+            },
+            AnnotKind::Region { bbox } => notes::AnchorKind::Region { bbox: *bbox },
+        },
+    }
+}
+
+/// One-time migration: every *noted* mark becomes a note card, minted
+/// doc by doc (sorted) in reading order — `load_annots` sorts by
+/// `(page, y)`, and cards.json array order preserves it — with birth
+/// stamps kept. Bare highlights are left behind (marks without notes no
+/// longer exist as a concept) and the sidecar files are never modified —
+/// only their `~annot/` search chunks retract. Idempotent via a marker
+/// file written only on success, so a failed run retries next launch.
+pub fn migrate_annots_to_cards(
     lib: &mut Library,
     data: &Path,
-    mut a: AnnotRec,
     embed: &dyn Fn(&str) -> Emb,
-) -> std::io::Result<AnnotRec> {
-    if a.id.is_empty() {
-        a.id = crate::notes::mint_id('a');
+) -> std::io::Result<usize> {
+    let marker = dir(data).join(".migrated-to-cards");
+    if marker.exists() {
+        return Ok(0);
     }
-    if a.created == 0 {
-        a.created = now();
-    }
-    let mut annots = load_annots(data, &a.doc);
-    match annots.iter_mut().find(|x| x.id == a.id) {
-        Some(slot) => *slot = a.clone(),
-        None => annots.push(a.clone()),
-    }
-    store_annots(data, &a.doc, &annots)?;
-    let doc = annot_doc(&a.id);
-    match annot_chunk(&a, embed) {
-        Some(chunk) => {
-            crate::store::commit_chunks(lib, &doc, &[chunk]);
-        }
-        None => {
-            crate::store::commit_chunks(lib, &doc, &[]);
-        }
-    }
-    Ok(a)
-}
-
-/// Every annotation across every doc — the id → record view wire shaping
-/// needs (annotation ids don't encode their doc). One small JSON per doc;
-/// a personal library has dozens, not thousands.
-pub fn load_all(data: &Path) -> Vec<AnnotRec> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir(data)) else {
-        return out;
+    // per-doc sidecars, in stable (sorted) order so thread numbering is
+    // deterministic
+    let mut docs: Vec<String> = match std::fs::read_dir(dir(data)) {
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                (p.extension().is_some_and(|x| x == "json"))
+                    .then(|| p.file_stem()?.to_str().map(String::from))
+                    .flatten()
+            })
+            .collect(),
+        Err(_) => Vec::new(), // fresh library: nothing to migrate
     };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().is_some_and(|x| x == "json")
-            && let Some(annots) = sidecar::read_json::<Vec<AnnotRec>>(&p)
-        {
-            out.extend(annots);
+    docs.sort();
+
+    let mut cards = notes::load_cards(data);
+    let mut minted: Vec<CardRec> = Vec::new();
+    let mut retract: Vec<String> = Vec::new();
+    for doc in &docs {
+        let annots = load_annots(data, doc);
+        retract.extend(annots.iter().map(|a| a.id.clone()));
+        let noted: Vec<&AnnotRec> = annots
+            .iter()
+            .filter(|a| !a.note.trim().is_empty())
+            .collect();
+        if noted.is_empty() {
+            continue;
+        }
+        for a in noted {
+            let card = CardRec {
+                id: notes::mint_id('c'),
+                title: a.note.clone(),
+                body: String::new(),
+                evidence: vec![anchor_of(a)],
+                links: Vec::new(),
+                created: a.created,
+                modified: a.created,
+                filed: false,
+                split_hinted: false,
+            };
+            cards.push(card.clone());
+            minted.push(card);
         }
     }
-    out
-}
 
-pub fn delete_annot(lib: &mut Library, data: &Path, doc: &str, id: &str) -> std::io::Result<()> {
-    let mut annots = load_annots(data, doc);
-    annots.retain(|a| a.id != id);
-    store_annots(data, doc, &annots)?;
-    crate::store::commit_chunks(lib, &annot_doc(id), &[]);
-    Ok(())
+    if !minted.is_empty() {
+        notes::store_cards(data, &cards)?;
+    }
+    for card in &minted {
+        crate::store::commit_chunks(
+            lib,
+            &notes::card_doc(&card.id),
+            &[notes::card_chunk(card, embed)],
+        );
+    }
+    for id in &retract {
+        crate::store::commit_chunks(lib, &annot_doc(id), &[]);
+    }
+
+    std::fs::create_dir_all(dir(data))?;
+    sidecar::write_json_atomic(
+        &marker,
+        &serde_json::json!({ "at": now(), "cards": minted.len() }),
+    )?;
+    Ok(minted.len())
 }
 
 #[cfg(test)]
@@ -266,8 +264,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_shape_is_pinned() {
-        // the TS side builds and matches these exact shapes
+    fn sidecar_shape_is_pinned() {
+        // the migration must keep reading what the old pen wrote
         let t = serde_json::to_value(text_mark("a1", 2, 0.5)).unwrap();
         assert_eq!(t["kind"], "text");
         assert_eq!(t["w0"], 10);

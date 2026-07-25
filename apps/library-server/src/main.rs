@@ -21,7 +21,7 @@ use axum::http::StatusCode;
 use axum::{
     Json, Router,
     extract::Path as UrlPath,
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
 };
 use clap::Parser;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
@@ -73,11 +73,6 @@ struct TextParams {
 #[derive(Deserialize)]
 struct NeighborParams {
     k: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct ProposeBody {
-    text: String,
 }
 
 /// Text-chunk embeddings come from ese's static model — free functions,
@@ -133,12 +128,21 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let t = Instant::now();
-    let lib = library_core::open(args.data.join("library.db"));
+    let mut lib = library_core::open(args.data.join("library.db"));
     let n = lib.rtx(|((_, vec), _)| vec.len());
     println!(
         "store open: {n} chunks, {:?} (incl. hnsw rebuild)",
         t.elapsed()
     );
+
+    // one-time: noted annotations become notebox cards; a failure must
+    // not brick startup (the marker is only written on success, so the
+    // next launch retries)
+    match library_core::annots::migrate_annots_to_cards(&mut lib, &args.data, &embed) {
+        Ok(0) => {}
+        Ok(n) => println!("migrated {n} margin notes into cards"),
+        Err(e) => eprintln!("annotation migration skipped: {e}"),
+    }
 
     let t = Instant::now();
     let images = library_core::open_images(args.data.join("images.db"));
@@ -396,54 +400,8 @@ async fn main() -> Result<()> {
                 }
             }
         }))
-        // --- marginalia: annotations + note-box cards (write-capable; the
-        // desktop build reaches the same core logic via Tauri commands) ----
-        .route("/api/annotations/{doc}", get({
-            let app = app.clone();
-            move |UrlPath(doc): UrlPath<String>| {
-                let app = app.clone();
-                async move {
-                    let out = tokio::task::spawn_blocking(move || {
-                        library_core::annots::load_annots(&app.data, &doc)
-                    })
-                    .await
-                    .expect("annotations task panicked");
-                    Json(out)
-                }
-            }
-        }))
-        .route("/api/annotations", post({
-            let app = app.clone();
-            move |Json(annot): Json<library_core::annots::AnnotRec>| {
-                let app = app.clone();
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        let mut lib = app.lib.write().expect("library lock poisoned");
-                        library_core::annots::save_annot(&mut lib, &app.data, annot, &embed)
-                            .map(Json)
-                            .map_err(bad)
-                    })
-                    .await
-                    .expect("save annotation task panicked")
-                }
-            }
-        }))
-        .route("/api/annotations/{doc}/{id}", delete({
-            let app = app.clone();
-            move |UrlPath((doc, id)): UrlPath<(String, String)>| {
-                let app = app.clone();
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        let mut lib = app.lib.write().expect("library lock poisoned");
-                        library_core::annots::delete_annot(&mut lib, &app.data, &doc, &id)
-                            .map(|()| StatusCode::NO_CONTENT)
-                            .map_err(bad)
-                    })
-                    .await
-                    .expect("delete annotation task panicked")
-                }
-            }
-        }))
+        // --- marginalia: note-box cards (write-capable; the desktop
+        // build reaches the same core logic via Tauri commands) -----------
         .route("/api/cards", get({
             let app = app.clone();
             move || {
@@ -502,21 +460,6 @@ async fn main() -> Result<()> {
                     })
                     .await
                     .expect("neighbors task panicked");
-                    Json(out)
-                }
-            }
-        }))
-        .route("/api/cards/propose_thread", post({
-            let app = app.clone();
-            move |Json(body): Json<ProposeBody>| {
-                let app = app.clone();
-                async move {
-                    let out = tokio::task::spawn_blocking(move || {
-                        let lib = app.lib.read().expect("library lock poisoned");
-                        library_core::notes::propose_thread(&lib, &app.data, &embed(&body.text))
-                    })
-                    .await
-                    .expect("propose thread task panicked");
                     Json(out)
                 }
             }

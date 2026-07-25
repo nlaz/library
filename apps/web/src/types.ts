@@ -92,8 +92,12 @@ export type AnnotRec = {
 export type LinkKind = "continues" | "relates";
 export type CardLink = { to: string; kind: LinkKind };
 
-/** A quoted passage: word range + snapshot, deep-linking into the reader. */
-export type QuoteAnchor = { doc: string; page: number; w0: number; w1: number; text: string };
+/** Mirror of the Rust QuoteAnchor wire shape (serde-flattened kind tag):
+ * a mark on a document page, kept as a card's evidence. */
+export type QuoteAnchor = { doc: string; page: number } & (
+  | { kind: "text"; w0: number; w1: number; text: string; boxes: Box[] }
+  | { kind: "region"; bbox: Box }
+);
 
 export type CardRec = {
   id: string;

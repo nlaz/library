@@ -255,7 +255,15 @@ tbNote.addEventListener("click", () => commitHighlight(true));
 async function quoteToCard() {
   if (!pending) return;
   const { page, w0, w1, words } = pending;
-  const anchor = { doc: currentDoc, page, w0, w1, text: selectionText(words) };
+  const anchor = {
+    doc: currentDoc,
+    page,
+    kind: "text" as const,
+    w0,
+    w1,
+    text: selectionText(words),
+    boxes: lineBoxes(words),
+  };
   hideToolbar();
   window.getSelection()?.removeAllRanges();
   let parent: { id: string; address: string; title: string } | null = null;

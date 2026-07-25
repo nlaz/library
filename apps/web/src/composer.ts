@@ -105,7 +105,7 @@ function renderEvidence(evs: QuoteAnchor[]) {
     chip.className = "cp-quote";
     const t = document.createElement("div");
     t.className = "cp-quote-text";
-    t.textContent = `“${q.text}”`;
+    t.textContent = q.kind === "text" ? `“${q.text}”` : "region";
     const src = document.createElement("button");
     src.className = "cp-quote-src";
     src.textContent = `${q.doc} · p.${q.page} ↗`;

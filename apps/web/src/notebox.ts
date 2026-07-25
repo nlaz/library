@@ -242,7 +242,10 @@ function cardEl(c: CardRec): HTMLElement {
   for (const q of c.evidence) {
     const ev = document.createElement("button");
     ev.className = "ncard-ev";
-    ev.textContent = `“${trunc(q.text, 90)}” — ${q.doc} · p.${q.page}`;
+    ev.textContent =
+      q.kind === "text"
+        ? `“${trunc(q.text, 90)}” — ${q.doc} · p.${q.page}`
+        : `region — ${q.doc} · p.${q.page}`;
     ev.addEventListener("click", (e) => {
       e.stopPropagation();
       location.hash = `#/read/${q.doc}?p=${q.page}`;

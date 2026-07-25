@@ -79,9 +79,8 @@ struct NeighborParams {
 struct AtlasParams {
     /// Force a rebuild even when the sidecar reads as fresh — the escape
     /// hatch for the fingerprint's blind spot (content changed, counts
-    /// identical).
-    #[serde(default)]
-    refresh: bool,
+    /// identical). Lenient: `1` and `true` both count (curl-friendly).
+    refresh: Option<String>,
 }
 
 /// Text-chunk embeddings come from ese's static model — free functions,
@@ -338,22 +337,40 @@ async fn main() -> Result<()> {
             move |axum::extract::Query(p): axum::extract::Query<AtlasParams>| {
                 let app = app.clone();
                 async move {
+                    let refresh = matches!(p.refresh.as_deref(), Some("1") | Some("true"));
                     let out = tokio::task::spawn_blocking(move || {
                         let fp = {
                             let lib = app.lib.read().expect("library lock poisoned");
                             library_core::atlas::fingerprint(&lib, &app.data)
                         };
-                        if !p.refresh
+                        if !refresh
                             && let Some(a) = library_core::atlas::load_fresh(&app.data, &fp)
                         {
-                            return serde_json::json!({"status": "ready", "atlas": a});
+                            // a manual rebuild may be running behind a still-
+                            // fresh sidecar; the flag keeps the client polling
+                            return serde_json::json!({
+                                "status": "ready",
+                                "rebuilding": library_core::atlas::building().is_some(),
+                                "atlas": a,
+                            });
                         }
                         if let Some(claim) = library_core::atlas::try_claim() {
                             let app = app.clone();
                             std::thread::spawn(move || {
+                                // same resolution as the chat sidecar; core
+                                // skips labeling if the binary is absent
+                                let librarian = PathBuf::from(
+                                    std::env::var("LIBRARIAN_BIN").unwrap_or_else(|_| {
+                                        "apps/librarian/.build/release/librarian".into()
+                                    }),
+                                );
                                 let lib = app.lib.read().expect("library lock poisoned");
-                                if let Err(e) = library_core::atlas::build(claim, &lib, &app.data)
-                                {
+                                if let Err(e) = library_core::atlas::build(
+                                    claim,
+                                    &lib,
+                                    &app.data,
+                                    Some(&librarian),
+                                ) {
                                     eprintln!("atlas build failed: {e:#}");
                                 }
                             });

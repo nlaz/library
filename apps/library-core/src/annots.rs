@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::notes::{self, CardRec};
 use crate::{ChunkKey, ChunkRec, Emb, Library, Word, sidecar};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -201,6 +202,120 @@ pub fn delete_annot(lib: &mut Library, data: &Path, doc: &str, id: &str) -> std:
     store_annots(data, doc, &annots)?;
     crate::store::commit_chunks(lib, &annot_doc(id), &[]);
     Ok(())
+}
+
+// --- migration to cards ----------------------------------------------------
+
+/// The annotation's page geometry as a card evidence anchor.
+fn anchor_of(a: &AnnotRec) -> notes::QuoteAnchor {
+    notes::QuoteAnchor {
+        doc: a.doc.clone(),
+        page: a.page,
+        kind: match &a.kind {
+            AnnotKind::Text {
+                w0,
+                w1,
+                text,
+                boxes,
+            } => notes::AnchorKind::Text {
+                w0: *w0,
+                w1: *w1,
+                text: text.clone(),
+                boxes: boxes.clone(),
+            },
+            AnnotKind::Region { bbox } => notes::AnchorKind::Region { bbox: *bbox },
+        },
+    }
+}
+
+/// One-time migration: every *noted* mark becomes a notebox card — one
+/// fresh thread per source doc, trunk cards in reading order, birth
+/// stamps preserved. Placement is deliberately not embedding-proposed:
+/// against a near-empty card box a proposal would file old marks by
+/// accident, and one "margin notes on this doc" thread per doc is
+/// predictable and reviewable. Bare highlights are left behind (marks
+/// without notes no longer exist as a concept) and the sidecar files
+/// are never modified — only their `~annot/` search chunks retract.
+/// Idempotent via a marker file written only on success, so a failed
+/// run retries next launch.
+pub fn migrate_annots_to_cards(
+    lib: &mut Library,
+    data: &Path,
+    embed: &dyn Fn(&str) -> Emb,
+) -> std::io::Result<usize> {
+    let marker = dir(data).join(".migrated-to-cards");
+    if marker.exists() {
+        return Ok(0);
+    }
+    // per-doc sidecars, in stable (sorted) order so thread numbering is
+    // deterministic
+    let mut docs: Vec<String> = match std::fs::read_dir(dir(data)) {
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                (p.extension().is_some_and(|x| x == "json"))
+                    .then(|| p.file_stem()?.to_str().map(String::from))
+                    .flatten()
+            })
+            .collect(),
+        Err(_) => Vec::new(), // fresh library: nothing to migrate
+    };
+    docs.sort();
+
+    let mut cards = notes::load_cards(data);
+    let mut minted: Vec<CardRec> = Vec::new();
+    let mut retract: Vec<String> = Vec::new();
+    for doc in &docs {
+        let annots = load_annots(data, doc);
+        retract.extend(annots.iter().map(|a| a.id.clone()));
+        let noted: Vec<&AnnotRec> = annots
+            .iter()
+            .filter(|a| !a.note.trim().is_empty())
+            .collect();
+        if noted.is_empty() {
+            continue;
+        }
+        let thread = notes::next_thread(&cards);
+        for a in noted {
+            let card = CardRec {
+                id: notes::mint_id('c'),
+                thread,
+                addr: notes::mint_trunk(&cards, thread),
+                title: a.note.clone(),
+                body: String::new(),
+                evidence: vec![anchor_of(a)],
+                links: Vec::new(),
+                created: a.created,
+                modified: a.created,
+                filed: false,
+                split_hinted: false,
+            };
+            cards.push(card.clone());
+            minted.push(card);
+        }
+    }
+
+    if !minted.is_empty() {
+        notes::store_cards(data, &cards)?;
+    }
+    for card in &minted {
+        crate::store::commit_chunks(
+            lib,
+            &notes::card_doc(&card.id),
+            &[notes::card_chunk(card, embed)],
+        );
+    }
+    for id in &retract {
+        crate::store::commit_chunks(lib, &annot_doc(id), &[]);
+    }
+
+    std::fs::create_dir_all(dir(data))?;
+    sidecar::write_json_atomic(
+        &marker,
+        &serde_json::json!({ "at": now(), "cards": minted.len() }),
+    )?;
+    Ok(minted.len())
 }
 
 #[cfg(test)]

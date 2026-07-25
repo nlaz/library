@@ -211,6 +211,92 @@ fn annotation_notes_are_the_searchable_part() {
 }
 
 #[test]
+fn migration_moves_noted_marks_into_cards() {
+    use library_core::annots::migrate_annots_to_cards;
+
+    let (mut lib, data) = fixture("annot-migrate");
+
+    // seed through the old pen: two noted marks + a bare highlight on
+    // "moxon", one noted mark on "fournier" — all indexed under ~annot/
+    let mk = |page: u32, y: f32, note: &str| AnnotRec {
+        id: String::new(),
+        doc: String::new(),
+        page,
+        kind: AnnotKind::Text {
+            w0: 5,
+            w1: 9,
+            text: "rubs and dresses the same".into(),
+            boxes: vec![[0.1, y, 0.5, 0.02]],
+        },
+        note: note.into(),
+        created: 7,
+    };
+    let mut late = mk(9, 0.3, "plantin built the hinge");
+    late.doc = "moxon".into();
+    let mut early = mk(2, 0.5, "compare the day-book");
+    early.doc = "moxon".into();
+    let mut bare = mk(4, 0.1, "");
+    bare.doc = "moxon".into();
+    let mut other = mk(1, 0.1, "fournier measured the foot");
+    other.doc = "fournier".into();
+    // saved out of reading order on purpose
+    for a in [late.clone(), early.clone(), bare.clone(), other.clone()] {
+        save_annot(&mut lib, &data, a, &embed).unwrap();
+    }
+    assert_eq!(lexical_docs(&lib, "plantin").len(), 1);
+    let sidecar_bytes = std::fs::read(data.join("annotations").join("moxon.json")).unwrap();
+
+    let n = migrate_annots_to_cards(&mut lib, &data, &embed).unwrap();
+    assert_eq!(n, 3);
+
+    // one fresh thread per doc, trunk cards in reading order, stamps kept
+    let cards = load_cards(&data);
+    assert_eq!(cards.len(), 3);
+    let by_doc = |d: &str| -> Vec<&library_core::notes::CardRec> {
+        cards
+            .iter()
+            .filter(|c| c.evidence.iter().any(|q| q.doc == d))
+            .collect()
+    };
+    let moxon = by_doc("moxon");
+    let fournier = by_doc("fournier");
+    assert_eq!(moxon.len(), 2);
+    assert_eq!(fournier.len(), 1);
+    assert_ne!(moxon[0].thread, fournier[0].thread);
+    assert_eq!(moxon[0].thread, moxon[1].thread);
+    let titles: Vec<&str> = moxon.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        vec!["compare the day-book", "plantin built the hinge"]
+    );
+    assert_eq!(
+        (moxon[0].addr.as_slice(), moxon[1].addr.as_slice()),
+        (&[1u32][..], &[2u32][..])
+    );
+    assert!(cards.iter().all(|c| c.created == 7));
+
+    // notes findable under ~card/, the ~annot/ namespace is empty
+    let hits = lexical_docs(&lib, "plantin");
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].starts_with("~card/"));
+    assert!(
+        lexical_docs(&lib, "compare")
+            .iter()
+            .all(|d| d.starts_with("~card/"))
+    );
+
+    // the sidecar files were left byte-for-byte alone
+    assert_eq!(
+        std::fs::read(data.join("annotations").join("moxon.json")).unwrap(),
+        sidecar_bytes
+    );
+
+    // second run is a no-op
+    assert_eq!(migrate_annots_to_cards(&mut lib, &data, &embed).unwrap(), 0);
+    assert_eq!(load_cards(&data).len(), 3);
+}
+
+#[test]
 fn neighbors_and_proposals_stay_in_the_card_namespace() {
     let (mut lib, data) = fixture("neighbors");
 

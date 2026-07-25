@@ -133,12 +133,21 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let t = Instant::now();
-    let lib = library_core::open(args.data.join("library.db"));
+    let mut lib = library_core::open(args.data.join("library.db"));
     let n = lib.rtx(|((_, vec), _)| vec.len());
     println!(
         "store open: {n} chunks, {:?} (incl. hnsw rebuild)",
         t.elapsed()
     );
+
+    // one-time: noted annotations become notebox cards; a failure must
+    // not brick startup (the marker is only written on success, so the
+    // next launch retries)
+    match library_core::annots::migrate_annots_to_cards(&mut lib, &args.data, &embed) {
+        Ok(0) => {}
+        Ok(n) => println!("migrated {n} margin notes into cards"),
+        Err(e) => eprintln!("annotation migration skipped: {e}"),
+    }
 
     let t = Instant::now();
     let images = library_core::open_images(args.data.join("images.db"));

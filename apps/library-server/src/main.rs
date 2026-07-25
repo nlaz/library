@@ -75,6 +75,15 @@ struct NeighborParams {
     k: Option<usize>,
 }
 
+#[derive(Deserialize)]
+struct AtlasParams {
+    /// Force a rebuild even when the sidecar reads as fresh — the escape
+    /// hatch for the fingerprint's blind spot (content changed, counts
+    /// identical).
+    #[serde(default)]
+    refresh: bool,
+}
+
 /// Text-chunk embeddings come from ese's static model — free functions,
 /// no loaded object (unlike CLIP).
 fn embed(s: &str) -> library_core::Emb {
@@ -317,6 +326,44 @@ async fn main() -> Result<()> {
                     })
                     .await
                     .expect("perf ingest task panicked");
+                    Json(out)
+                }
+            }
+        }))
+        // hidden corpus-atlas view: the cached themes/throughlines sidecar.
+        // Stale or missing kicks ONE background build (the claim is the
+        // process-wide guard) and reports "building"; the client polls.
+        .route("/api/atlas", get({
+            let app = app.clone();
+            move |axum::extract::Query(p): axum::extract::Query<AtlasParams>| {
+                let app = app.clone();
+                async move {
+                    let out = tokio::task::spawn_blocking(move || {
+                        let fp = {
+                            let lib = app.lib.read().expect("library lock poisoned");
+                            library_core::atlas::fingerprint(&lib, &app.data)
+                        };
+                        if !p.refresh
+                            && let Some(a) = library_core::atlas::load_fresh(&app.data, &fp)
+                        {
+                            return serde_json::json!({"status": "ready", "atlas": a});
+                        }
+                        if let Some(claim) = library_core::atlas::try_claim() {
+                            let app = app.clone();
+                            std::thread::spawn(move || {
+                                let lib = app.lib.read().expect("library lock poisoned");
+                                if let Err(e) = library_core::atlas::build(claim, &lib, &app.data)
+                                {
+                                    eprintln!("atlas build failed: {e:#}");
+                                }
+                            });
+                        }
+                        let (since, stage) =
+                            library_core::atlas::building().unwrap_or((0, "starting"));
+                        serde_json::json!({"status": "building", "since": since, "stage": stage})
+                    })
+                    .await
+                    .expect("atlas task panicked");
                     Json(out)
                 }
             }

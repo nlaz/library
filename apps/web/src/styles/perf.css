@@ -13,17 +13,22 @@
   font-family: var(--font-mono);
   font-size: var(--fs-mono);
   color: var(--ink);
-  padding: var(--sp-4);
+  /* no top padding: the head is full-bleed and sticks at 0, so nothing can
+     scroll through a gap above it */
+  padding: 0 var(--sp-4) var(--sp-4);
 }
 
 #perf-head {
   position: sticky;
-  top: calc(-1 * var(--sp-4));
+  top: 0;
   z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
   background: var(--surface);
-  border: 1px solid var(--line-strong);
-  padding: var(--sp-2) var(--sp-3);
-  margin-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--line-strong);
+  margin: 0 calc(-1 * var(--sp-4)) var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
   font-size: var(--fs-meta);
   line-height: 1.6;
   word-break: break-word;
@@ -36,17 +41,71 @@
   background: var(--well);
 }
 
-.perf-section {
-  margin-bottom: var(--sp-5);
+/* the tab rail lives inside the sticky head, so it stays reachable while a
+   thousand-row ingest table scrolls — and a screenshot always shows which
+   tab it was taken on */
+#perf-tabs {
+  display: flex;
+  gap: var(--sp-1);
 }
 
-.perf-section h2 {
-  font-size: var(--fs-micro);
-  font-weight: 500;
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
+#perf-tabs button {
+  font: inherit;
+  background: none;
+  border: 1px solid transparent;
   color: var(--ink-dim);
-  margin: 0 0 var(--sp-2);
+  padding: 2px var(--sp-2);
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  cursor: pointer;
+}
+
+/* same active idiom as the sortable ingest headers below */
+#perf-tabs button.on {
+  background: var(--hl-wash);
+  outline: 1px solid var(--hl-line);
+  color: var(--ink);
+}
+
+#perf-tabs .n {
+  color: var(--ink-faint);
+  font-size: var(--fs-micro);
+  margin-left: 6px;
+}
+
+/* grouped constants: the group label is the readability layer, the raw
+   constant names stay literal so a screenshot still carries them */
+#perf-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--sp-3);
+  font-size: var(--fs-micro);
+}
+
+#perf-facts .fact i {
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  color: var(--ink-faint);
+  margin-right: var(--sp-1);
+}
+
+#perf-facts .fact + .fact::before {
+  content: "·";
+  color: var(--line-strong);
+  margin-right: var(--sp-3);
+}
+
+#perf-head [data-term] {
+  font-weight: inherit;
+  border-bottom: 1px dotted var(--line-strong);
+  cursor: help;
+}
+
+#perf-head [data-term]:hover,
+#perf-head [data-term]:focus-visible {
+  background: var(--hl-wash);
+  outline: none;
 }
 
 #perf table {
@@ -202,9 +261,128 @@
   text-transform: uppercase;
 }
 
-#perf .perf-totals {
+#perf .perf-note {
   color: var(--ink-dim);
   font-size: var(--fs-meta);
   margin-bottom: var(--sp-2);
   word-break: break-word;
+}
+
+/* source filter over the shared search ring (ui vs. the agent's tool calls) */
+#perf .perf-chips {
+  display: flex;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-2);
+}
+
+#perf .perf-chips button {
+  font: inherit;
+  font-size: var(--fs-micro);
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+  padding: 1px var(--sp-2);
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  cursor: pointer;
+}
+
+#perf .perf-chips button.on {
+  background: var(--hl-wash);
+  outline: 1px solid var(--hl-line);
+  color: var(--ink);
+}
+
+#perf .perf-chips .n {
+  color: var(--ink-faint);
+  margin-left: 5px;
+}
+
+/* term popover: fixed, because the head is sticky and #perf scrolls under it */
+#perf-pop {
+  position: fixed;
+  z-index: 16;
+  max-width: 46ch;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  box-shadow: 2px 2px 0 var(--line-strong);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+#perf-pop .pop-head {
+  font-weight: 500;
+  margin-bottom: var(--sp-1);
+}
+
+#perf-pop .pop-range,
+#perf-pop .pop-live {
+  color: var(--ink-dim);
+  font-size: var(--fs-micro);
+  margin-top: var(--sp-1);
+}
+
+#perf-pop .pop-live {
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-1);
+}
+
+#perf-pop .pop-live i {
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  color: var(--ink-faint);
+  margin-right: var(--sp-1);
+}
+
+/* --- agent tab ----------------------------------------------------------- */
+
+/* tool names run long (library_overview is 16 chars) */
+#perf .waterfall.wide {
+  max-width: 780px;
+}
+
+#perf .waterfall.wide .bar-label {
+  flex: 0 0 16ch;
+}
+
+/* a tool call that never returned: runs to the end of the turn, dithered so
+   it doesn't read as a measured duration */
+#perf .bar.open {
+  background: var(--well);
+  background-image: var(--dither-25);
+}
+
+#perf td.k {
+  color: var(--ink-dim);
+}
+
+#perf button.jump {
+  font: inherit;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+  cursor: pointer;
+  padding: 0 3px;
+  margin-left: var(--sp-1);
+}
+
+#perf button.jump:hover {
+  background: var(--hl-wash);
+  color: var(--ink);
+}
+
+/* capped and self-scrolling: a long answer must not bury the rest of the
+   view (same reasoning as the tr.detail padding above) */
+#perf .agent-answer {
+  white-space: pre-wrap;
+  max-height: 14em;
+  overflow: auto;
+  background: var(--well);
+  border: 1px solid var(--line);
+  padding: var(--sp-2);
+  font-size: var(--fs-meta);
+  margin-top: var(--sp-1);
 }

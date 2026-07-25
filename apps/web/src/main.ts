@@ -10,7 +10,7 @@ import { closeDrawer, initDrawer } from "./drawer";
 import { docTitle, getDocList, prettify, setDocList } from "./format";
 import { getCol, loadCollections, renderHome, setCol } from "./home";
 import { wireDesktop } from "./ingest-ui";
-import { perfOpen, togglePerf } from "./perf";
+import { dismissPerfPopover, perfOpen, setPerfTab, togglePerf } from "./perf";
 import { closeReader, openReader, readerDoc, readerOpen } from "./reader";
 import { initSearch, sendQuery, sentDoc, showSearch } from "./search";
 import { desktop, setDesktop, setTransport, transport } from "./state";
@@ -67,7 +67,16 @@ window.addEventListener(
     } else if (e.key === "Escape" && perfOpen()) {
       e.preventDefault();
       e.stopPropagation();
-      togglePerf();
+      // innermost layer first: a term popover closes before the view does
+      if (!dismissPerfPopover()) togglePerf();
+    } else if (perfOpen() && !e.metaKey && !e.ctrlKey && !e.altKey && "123".includes(e.key)) {
+      // this handler outranks inputs' stopPropagation, so it must not steal
+      // digits from someone typing
+      const t = (e.target as HTMLElement | null)?.tagName;
+      if (t === "INPUT" || t === "TEXTAREA") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setPerfTab((["search", "ingest", "agent"] as const)[Number(e.key) - 1]);
     }
   },
   true,

@@ -80,15 +80,25 @@
       </form>
     </aside>
     <section id="perf" hidden aria-label="Performance">
-      <div id="perf-head"></div>
-      <section class="perf-section">
-        <h2>search</h2>
-        <div id="perf-search-body"></div>
-      </section>
-      <section class="perf-section">
-        <h2>ingest</h2>
-        <div id="perf-ingest-body"></div>
-      </section>
+      <div id="perf-head">
+        <div id="perf-id"></div>
+        <nav id="perf-tabs" role="tablist" aria-label="Perf sections">
+          <button data-tab="search" role="tab" aria-selected="true" class="on" aria-controls="perf-search-body">
+            search<span class="n"></span>
+          </button>
+          <button data-tab="ingest" role="tab" aria-selected="false" aria-controls="perf-ingest-body">
+            ingest<span class="n"></span>
+          </button>
+          <button data-tab="agent" role="tab" aria-selected="false" aria-controls="perf-agent-body">
+            agent<span class="n"></span>
+          </button>
+        </nav>
+        <div id="perf-facts"></div>
+      </div>
+      <div id="perf-search-body" class="perf-pane" role="tabpanel"></div>
+      <div id="perf-ingest-body" class="perf-pane" role="tabpanel" hidden></div>
+      <div id="perf-agent-body" class="perf-pane" role="tabpanel" hidden></div>
+      <div id="perf-pop" hidden></div>
     </section>
     <div id="toast" hidden></div>
     <script type="module" src="/src/main.ts"></script>

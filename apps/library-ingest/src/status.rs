@@ -100,13 +100,11 @@ fn path(data: &Path, doc: &str) -> PathBuf {
 }
 
 /// Serialize `v` as pretty JSON via tmp + rename, so concurrent readers
-/// never see a torn file.
+/// never see a torn file. Delegates to the core helper (shared with cards
+/// and annotations), keeping the anyhow context ingest callers expect.
 pub fn write_json_atomic<T: Serialize>(path: &Path, v: &T) -> Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(v)?)
-        .with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    library_core::sidecar::write_json_atomic(path, v)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 pub fn read(data: &Path, doc: &str) -> Option<DocStatus> {

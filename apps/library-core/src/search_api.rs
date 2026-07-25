@@ -106,6 +106,9 @@ pub fn answer(
         text_prov = t.prov;
         ranker = t.ranker;
         rel_killed = t.rel_killed;
+        // note-box cards and annotation notes ranked through the normal
+        // text path; strip their page-scan assumptions before the wire
+        wire::decorate_reserved_hits(&mut text_hits, data);
     }
     if let Some(i) = img {
         if i.embedded {

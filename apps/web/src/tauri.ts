@@ -7,7 +7,18 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import type { Transport } from "./transport";
-import type { Collections, DocInfo, IngestEvent, QueryMsg, WireResponse } from "./types";
+import type {
+  AnnotRec,
+  CardRec,
+  Collections,
+  DocInfo,
+  IngestEvent,
+  NeighborCard,
+  NewCard,
+  QueryMsg,
+  ThreadProposal,
+  WireResponse,
+} from "./types";
 
 export class TauriTransport implements Transport {
   private cb: (msg: WireResponse) => void = () => {};
@@ -130,6 +141,40 @@ export async function chatTurn(
 /** Cancel the active chat turn (the sidecar stops between snapshots). */
 export function chatCancel(): void {
   invoke("chat_cancel").catch(() => {});
+}
+
+// --- marginalia: annotations + note-box cards -------------------------------
+
+export function listAnnotations(doc: string): Promise<AnnotRec[]> {
+  return invoke<AnnotRec[]>("list_annotations", { doc });
+}
+
+export function saveAnnotation(annot: AnnotRec): Promise<AnnotRec> {
+  return invoke<AnnotRec>("save_annotation", { annot });
+}
+
+export function deleteAnnotation(doc: string, id: string): Promise<void> {
+  return invoke("delete_annotation", { doc, id });
+}
+
+export function listCards(): Promise<CardRec[]> {
+  return invoke<CardRec[]>("list_cards");
+}
+
+export function createCard(input: NewCard): Promise<CardRec> {
+  return invoke<CardRec>("create_card", { input });
+}
+
+export function updateCard(card: CardRec): Promise<CardRec> {
+  return invoke<CardRec>("update_card", { card });
+}
+
+export function proposeThread(text: string): Promise<ThreadProposal | null> {
+  return invoke<ThreadProposal | null>("propose_thread", { text });
+}
+
+export function cardNeighbors(id: string, k?: number): Promise<NeighborCard[]> {
+  return invoke<NeighborCard[]>("card_neighbors", { id, k });
 }
 
 export function onIngestProgress(cb: (e: IngestEvent) => void): void {

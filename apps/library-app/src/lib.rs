@@ -17,6 +17,7 @@ mod commands;
 mod docs;
 mod engine;
 mod ingest;
+mod marginalia;
 mod serve;
 mod settings;
 
@@ -95,6 +96,14 @@ pub fn run() {
             settings::set_settings,
             chat::chat_turn,
             chat::chat_cancel,
+            marginalia::list_annotations,
+            marginalia::save_annotation,
+            marginalia::delete_annotation,
+            marginalia::list_cards,
+            marginalia::create_card,
+            marginalia::update_card,
+            marginalia::propose_thread,
+            marginalia::card_neighbors,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

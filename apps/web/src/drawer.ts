@@ -3,7 +3,14 @@
 // sources and (desktop only) the write commands via initDrawer — the web
 // build passes edit: null and gets a read-only panel.
 
-import type { Collections, DocStatus } from "./types";
+import {
+  annotations,
+  annotationsDoc,
+  onAnnotationsChanged,
+  openPopover,
+  removeAnnotation,
+} from "./annotations";
+import type { AnnotRec, Collections, DocStatus } from "./types";
 
 /** The facts the drawer shows — DocInfo minus `processing` (the web
  * endpoint doesn't carry it, and the drawer doesn't need it). */
@@ -41,6 +48,10 @@ export function initDrawer(o: Opts) {
     if (!doc) return;
     if (openFor === doc) closeDrawer();
     else openDrawer(doc);
+  });
+  // keep the marginalia section live while the drawer is open
+  onAnnotationsChanged(() => {
+    if (openFor && openFor === annotationsDoc()) openDrawer(openFor);
   });
 }
 
@@ -88,8 +99,52 @@ function renderDrawer(d: DrawerDoc, cols: Collections) {
   rows.push(row("pages", text(d.pages ? `${d.pages} pp.` : "—")));
   const s = d.status;
   rows.push(row("status", text(s ? s.state + (s.error ? ` — ${s.error}` : "") : "ready")));
+  if (d.id === annotationsDoc()) rows.push(row("marginalia", marginaliaList()));
 
   $drawer.replaceChildren(...rows);
+}
+
+/** Every mark in the open doc, page order (annotations() is pre-sorted);
+ * click jumps the scroll to the mark and opens its margin card. */
+function marginaliaList(): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "mnotes";
+  const marks = annotations();
+  if (!marks.length) {
+    const none = document.createElement("span");
+    none.className = "dnone";
+    none.textContent = "none yet — select text, or press r";
+    el.append(none);
+    return el;
+  }
+  for (const a of marks) el.append(marginaliaRow(a));
+  return el;
+}
+
+function marginaliaRow(a: AnnotRec): HTMLElement {
+  const r = document.createElement("div");
+  r.className = "mrow";
+  const loc = document.createElement("span");
+  loc.className = "mloc";
+  loc.textContent = `p.${a.page}${a.kind === "region" ? " · region" : ""}`;
+  const t = document.createElement("span");
+  t.className = "mtext";
+  t.textContent = a.note || (a.kind === "text" ? `“${a.text}”` : "—");
+  const del = document.createElement("button");
+  del.className = "mdel";
+  del.title = "Remove mark";
+  del.textContent = "✕";
+  del.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    try {
+      await removeAnnotation(a.id);
+    } catch (err) {
+      opts?.onError(`remove mark: ${err}`);
+    }
+  });
+  r.append(loc, t, del);
+  r.addEventListener("click", () => openPopover(a.id, true));
+  return r;
 }
 
 function titleInput(d: DrawerDoc, initial: string): HTMLElement {

@@ -12,6 +12,14 @@ pub struct ChunkKey {
     pub idx: u32,
 }
 
+/// Synthetic docs (note-box cards, annotation notes) live under reserved
+/// `~`-prefixed ids. `doc_id` sanitizes `~` out of every real id, so the
+/// namespaces can never collide — but reserved ids contain `/` and must
+/// never reach a filesystem path join.
+pub fn is_reserved(doc: &str) -> bool {
+    doc.starts_with('~')
+}
+
 /// One OCR'd word with its normalized bounding box (top-left origin, 0..1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Word {

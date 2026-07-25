@@ -4,6 +4,7 @@
 // dozen 1600px JPEGs in the webview at once. Each visible page also gets a
 // transparent OCR text layer so scanned text can be selected and copied.
 
+import { attachAnnotLayer, scheduleAnnotTicks, setAnnotationsDoc } from "./annotations";
 import { ocrUrl, pageImg } from "./assets";
 import { hlBoxes } from "./highlights";
 import type { OcrWord, WireHit } from "./types";
@@ -55,6 +56,7 @@ function buildPages(doc: string, pages: number) {
   tracker?.disconnect();
   ocrCache.clear();
   clearReaderHits(); // hits belong to the previous doc
+  void setAnnotationsDoc(doc); // marks load async and decorate as pages render
   totalPages = pages;
 
   const els: HTMLElement[] = [];
@@ -81,10 +83,12 @@ function buildPages(doc: string, pages: number) {
               el.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
               fitTextLayer(el);
               scheduleTicks(); // page heights shifted — tick offsets moved
+              scheduleAnnotTicks();
             });
             el.append(img);
             attachTextLayer(el, doc, Number(el.dataset.page));
             attachHitLayer(el);
+            attachAnnotLayer(el);
           }
         } else {
           el.replaceChildren(); // out of range: give the memory back

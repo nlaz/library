@@ -132,17 +132,3 @@ changes go in their own commit so review diffs stay readable.
   cache.
 - For representative `ese` bench numbers, use
   `RUSTFLAGS="-Ctarget-cpu=native" cargo bench -p ese`.
-
-## CI
-
-`.github/workflows/ci.yml`, three jobs:
-
-- **rust-linux** — fmt check, clippy, tests for `fold`/`anny`/`ese`/
-  `library-core`, ese golden vectors, `cargo check` of the examples.
-- **rust-macos** — clippy + tests for the `library-*` app crates
-  (creates an empty `apps/web/dist` first for tauri-build).
-- **web** — `npm ci`, typecheck, vitest, vite build.
-
-Reproduce any job locally with the commands above. The ese model download
-is cached in CI keyed on `ese/build.rs`; the first run after changing that
-file re-downloads.

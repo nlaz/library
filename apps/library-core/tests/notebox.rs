@@ -1,6 +1,6 @@
 //! Cards and annotations as search citizens: save → findable, edit →
 //! stale terms retracted, filed/deleted → gone, plus the embedding
-//! neighborhood used by the thread rail. Hand-built embeddings — the
+//! neighborhood used by the related rail. Hand-built embeddings — the
 //! bucket is the first word of the text, so same-topic fixtures are
 //! exact neighbors and everything is deterministic.
 
@@ -8,8 +8,7 @@ use std::path::PathBuf;
 
 use library_core::annots::{AnnotKind, AnnotRec, annot_doc, store_annots};
 use library_core::notes::{
-    AnchorKind, NewCard, QuoteAnchor, card_neighbors, create_card, load_cards, propose_thread,
-    update_card,
+    AnchorKind, NewCard, QuoteAnchor, card_neighbors, create_card, load_cards, update_card,
 };
 use library_core::{ChunkKey, ChunkRec, EMB_DIM, Emb, Library, Word, open, search};
 
@@ -62,8 +61,6 @@ fn new_card(title: &str) -> NewCard {
         body: String::new(),
         evidence: vec![],
         links: vec![],
-        parent: None,
-        thread: None,
     }
 }
 
@@ -109,20 +106,19 @@ fn card_lifecycle_in_search() {
         },
     });
     let card = create_card(&mut lib, &data, input, &embed).unwrap();
-    assert_eq!((card.thread, card.addr.as_slice()), (1, &[1u32][..]));
 
     // findable by claim AND by quoted evidence, under the reserved doc
     let doc = format!("~card/{}", card.id);
     assert_eq!(lexical_docs(&lib, "boast"), vec![doc.clone()]);
     assert_eq!(lexical_docs(&lib, "hundred"), vec![doc.clone()]);
 
-    // edit: stale terms retracted, identity and address immutable
+    // edit: stale terms retracted, identity immutable
     let mut edit = card.clone();
     edit.title = "casting speed is a ceiling".into();
-    edit.addr = vec![9, 9];
-    edit.thread = 42;
+    edit.created = 999_999;
     let saved = update_card(&mut lib, &data, edit, &embed).unwrap();
-    assert_eq!((saved.thread, saved.addr.as_slice()), (1, &[1u32][..]));
+    assert_eq!(saved.id, card.id);
+    assert_eq!(saved.created, card.created, "created stamp is immutable");
     assert!(lexical_docs(&lib, "boast").is_empty());
     assert_eq!(lexical_docs(&lib, "ceiling"), vec![doc.clone()]);
 
@@ -144,29 +140,24 @@ fn card_lifecycle_in_search() {
 }
 
 #[test]
-fn card_births_follow_parent_and_thread() {
+fn card_births_append_to_the_timeline() {
     let (mut lib, data) = fixture("card-birth");
-    let trunk = create_card(&mut lib, &data, new_card("gears one"), &embed).unwrap();
-    // explicit thread append
-    let mut t = new_card("gears two");
-    t.thread = Some(trunk.thread);
-    let second = create_card(&mut lib, &data, t, &embed).unwrap();
-    assert_eq!(second.addr, vec![2]);
-    // branch under the first
-    let mut b = new_card("gears aside");
-    b.parent = Some(trunk.id.clone());
-    let branch = create_card(&mut lib, &data, b, &embed).unwrap();
+    let first = create_card(&mut lib, &data, new_card("gears one"), &embed).unwrap();
+    let second = create_card(&mut lib, &data, new_card("gears two"), &embed).unwrap();
+    let third = create_card(&mut lib, &data, new_card("cooking stock"), &embed).unwrap();
+
+    // fresh unique ids, appended in birth order
+    let ids: Vec<String> = load_cards(&data).into_iter().map(|c| c.id).collect();
+    assert_eq!(ids, vec![first.id, second.id, third.id]);
     assert_eq!(
-        (branch.thread, branch.addr.as_slice()),
-        (trunk.thread, &[1u32, 1][..])
+        ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        3
     );
-    // no context = fresh thread
-    let fresh = create_card(&mut lib, &data, new_card("cooking stock"), &embed).unwrap();
-    assert_eq!((fresh.thread, fresh.addr.as_slice()), (2, &[1u32][..]));
-    // unknown parent is an input error
-    let mut bad = new_card("orphan");
-    bad.parent = Some("c000000000000".into());
-    assert!(create_card(&mut lib, &data, bad, &embed).is_err());
+
+    // editing an unknown card is an input error
+    let mut ghost = create_card(&mut lib, &data, new_card("gears ghost"), &embed).unwrap();
+    ghost.id = "c000000000000".into();
+    assert!(update_card(&mut lib, &data, ghost, &embed).is_err());
 }
 
 #[test]
@@ -211,29 +202,24 @@ fn migration_moves_noted_marks_into_cards() {
     let n = migrate_annots_to_cards(&mut lib, &data, &embed).unwrap();
     assert_eq!(n, 3);
 
-    // one fresh thread per doc, trunk cards in reading order, stamps kept
+    // noted marks only, reading order within each doc, stamps kept
     let cards = load_cards(&data);
     assert_eq!(cards.len(), 3);
-    let by_doc = |d: &str| -> Vec<&library_core::notes::CardRec> {
-        cards
-            .iter()
-            .filter(|c| c.evidence.iter().any(|q| q.doc == d))
-            .collect()
-    };
-    let moxon = by_doc("moxon");
-    let fournier = by_doc("fournier");
-    assert_eq!(moxon.len(), 2);
-    assert_eq!(fournier.len(), 1);
-    assert_ne!(moxon[0].thread, fournier[0].thread);
-    assert_eq!(moxon[0].thread, moxon[1].thread);
-    let titles: Vec<&str> = moxon.iter().map(|c| c.title.as_str()).collect();
+    let moxon_titles: Vec<&str> = cards
+        .iter()
+        .filter(|c| c.evidence.iter().any(|q| q.doc == "moxon"))
+        .map(|c| c.title.as_str())
+        .collect();
     assert_eq!(
-        titles,
+        moxon_titles,
         vec!["compare the day-book", "plantin built the hinge"]
     );
     assert_eq!(
-        (moxon[0].addr.as_slice(), moxon[1].addr.as_slice()),
-        (&[1u32][..], &[2u32][..])
+        cards
+            .iter()
+            .filter(|c| c.evidence.iter().any(|q| q.doc == "fournier"))
+            .count(),
+        1
     );
     assert!(cards.iter().all(|c| c.created == 7));
 
@@ -259,15 +245,12 @@ fn migration_moves_noted_marks_into_cards() {
 }
 
 #[test]
-fn neighbors_and_proposals_stay_in_the_card_namespace() {
+fn neighbors_stay_in_the_card_namespace() {
     let (mut lib, data) = fixture("neighbors");
 
     let a = create_card(&mut lib, &data, new_card("gears mesh finely"), &embed).unwrap();
-    let mut in_thread = new_card("gears wear down");
-    in_thread.thread = Some(a.thread);
-    let b = create_card(&mut lib, &data, in_thread, &embed).unwrap();
+    let b = create_card(&mut lib, &data, new_card("gears wear down"), &embed).unwrap();
     let mut linked = new_card("gears sing");
-    linked.thread = Some(a.thread);
     linked.links.push(library_core::notes::CardLink {
         to: a.id.clone(),
         kind: library_core::notes::LinkKind::Relates,
@@ -287,13 +270,7 @@ fn neighbors_and_proposals_stay_in_the_card_namespace() {
     );
     assert!(!ids.contains(&a.id.as_str()), "self excluded");
     assert!(!ids.contains(&c.id.as_str()), "linked (incoming) excluded");
-    assert!(n.iter().all(|x| !x.id.is_empty() && !x.address.is_empty()));
-
-    // proposal files the new text after its nearest card
-    let p = propose_thread(&lib, &data, &embed("gears everywhere")).unwrap();
-    assert_eq!(p.thread, a.thread);
-    assert!([a.id.as_str(), b.id.as_str(), c.id.as_str()].contains(&p.parent.as_str()));
-    assert!(p.address.starts_with(&format!("{}/", a.thread)));
+    assert!(n.iter().all(|x| !x.id.is_empty() && !x.title.is_empty()));
 
     // filed cards have no neighborhood
     let mut filed = load_cards(&data)

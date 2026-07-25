@@ -40,16 +40,11 @@ pub struct SnippetWord {
     pub m: bool,
 }
 
-/// Note-box context on a `kind: "card"` hit.
+/// Note context on a `kind: "card"` hit.
 #[derive(Serialize)]
 pub struct CardMeta {
     pub id: String,
-    /// Display address, e.g. `21/3a`.
-    pub address: String,
     pub title: String,
-    pub thread: u32,
-    /// `21 · <thread name>` for the result card's locator line.
-    pub breadcrumb: String,
     /// Where the card's first mark lives — the *real* doc and page (the
     /// hit's own doc is the reserved namespace id), so a mark-card hit
     /// can jump into the reader. Absent when the card cites nothing.
@@ -272,19 +267,10 @@ pub fn decorate_reserved_hits(hits: &mut [WireHit], data: &std::path::Path) {
             h.boxes.clear();
             h.crop = [0.0, 0.0, 1.0, 1.0];
             if let Some(c) = cards.iter().find(|c| c.id == id) {
-                let name = cards
-                    .iter()
-                    .filter(|t| t.thread == c.thread && t.addr.len() == 1)
-                    .min_by_key(|t| t.addr[0])
-                    .map(|t| t.title.as_str())
-                    .unwrap_or(c.title.as_str());
                 let mark = c.evidence.first();
                 h.card = Some(CardMeta {
                     id: c.id.clone(),
-                    address: crate::notes::display_addr(c.thread, &c.addr),
                     title: c.title.clone(),
-                    thread: c.thread,
-                    breadcrumb: format!("{} · {}", c.thread, name),
                     doc: mark.map(|q| q.doc.clone()),
                     page: mark.map(|q| q.page),
                 });

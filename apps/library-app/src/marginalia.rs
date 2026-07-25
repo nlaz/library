@@ -5,7 +5,7 @@
 //! running between saves. Handlers return errors — a poisoned write
 //! lock would outlive any panic here.
 
-use library_core::notes::{self, CardRec, NeighborCard, NewCard, ThreadProposal};
+use library_core::notes::{self, CardRec, NeighborCard, NewCard};
 use tauri::State;
 
 use crate::engine::{AppState, engine};
@@ -50,21 +50,6 @@ pub(crate) async fn update_card(
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub(crate) async fn propose_thread(
-    state: State<'_, AppState>,
-    text: String,
-) -> Result<Option<ThreadProposal>, String> {
-    let eng = engine(&state)?;
-    let data = state.settings.data.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let lib = eng.lib.read().expect("library lock poisoned");
-        notes::propose_thread(&lib, &data, &embed(&text))
-    })
-    .await
-    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

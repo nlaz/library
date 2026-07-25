@@ -75,11 +75,6 @@ struct NeighborParams {
     k: Option<usize>,
 }
 
-#[derive(Deserialize)]
-struct ProposeBody {
-    text: String,
-}
-
 /// Text-chunk embeddings come from ese's static model — free functions,
 /// no loaded object (unlike CLIP).
 fn embed(s: &str) -> library_core::Emb {
@@ -465,21 +460,6 @@ async fn main() -> Result<()> {
                     })
                     .await
                     .expect("neighbors task panicked");
-                    Json(out)
-                }
-            }
-        }))
-        .route("/api/cards/propose_thread", post({
-            let app = app.clone();
-            move |Json(body): Json<ProposeBody>| {
-                let app = app.clone();
-                async move {
-                    let out = tokio::task::spawn_blocking(move || {
-                        let lib = app.lib.read().expect("library lock poisoned");
-                        library_core::notes::propose_thread(&lib, &app.data, &embed(&body.text))
-                    })
-                    .await
-                    .expect("propose thread task panicked");
                     Json(out)
                 }
             }

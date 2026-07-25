@@ -117,16 +117,13 @@ fn anchor_of(a: &AnnotRec) -> notes::QuoteAnchor {
     }
 }
 
-/// One-time migration: every *noted* mark becomes a notebox card — one
-/// fresh thread per source doc, trunk cards in reading order, birth
-/// stamps preserved. Placement is deliberately not embedding-proposed:
-/// against a near-empty card box a proposal would file old marks by
-/// accident, and one "margin notes on this doc" thread per doc is
-/// predictable and reviewable. Bare highlights are left behind (marks
-/// without notes no longer exist as a concept) and the sidecar files
-/// are never modified — only their `~annot/` search chunks retract.
-/// Idempotent via a marker file written only on success, so a failed
-/// run retries next launch.
+/// One-time migration: every *noted* mark becomes a note card, minted
+/// doc by doc (sorted) in reading order — `load_annots` sorts by
+/// `(page, y)`, and cards.json array order preserves it — with birth
+/// stamps kept. Bare highlights are left behind (marks without notes no
+/// longer exist as a concept) and the sidecar files are never modified —
+/// only their `~annot/` search chunks retract. Idempotent via a marker
+/// file written only on success, so a failed run retries next launch.
 pub fn migrate_annots_to_cards(
     lib: &mut Library,
     data: &Path,
@@ -165,12 +162,9 @@ pub fn migrate_annots_to_cards(
         if noted.is_empty() {
             continue;
         }
-        let thread = notes::next_thread(&cards);
         for a in noted {
             let card = CardRec {
                 id: notes::mint_id('c'),
-                thread,
-                addr: notes::mint_trunk(&cards, thread),
                 title: a.note.clone(),
                 body: String::new(),
                 evidence: vec![anchor_of(a)],

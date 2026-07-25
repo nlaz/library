@@ -84,8 +84,6 @@ fn reserved_hits_are_shaped_and_scoped() {
             body: String::new(),
             evidence: vec![],
             links: vec![],
-            parent: None,
-            thread: None,
         },
         &embed,
     )
@@ -105,8 +103,6 @@ fn reserved_hits_are_shaped_and_scoped() {
                 },
             }],
             links: vec![],
-            parent: None,
-            thread: None,
         },
         &embed,
     )
@@ -131,9 +127,7 @@ fn reserved_hits_are_shaped_and_scoped() {
     assert!(c.boxes.is_empty(), "zero-geometry boxes stripped");
     let meta = c.card.as_ref().expect("card meta");
     assert_eq!(meta.id, card.id);
-    assert_eq!(meta.address, "1/1");
-    assert_eq!(meta.thread, 1);
-    assert_eq!(meta.breadcrumb, "1 · escapement is the governor");
+    assert_eq!(meta.title, "escapement is the governor");
     assert!(!c.snippet.is_empty(), "snippet built from card words");
     assert!(
         meta.doc.is_none() && meta.page.is_none(),
@@ -157,6 +151,10 @@ fn reserved_hits_are_shaped_and_scoped() {
     let cj = serde_json::to_value(c).expect("json");
     assert!(cj.get("card").is_some());
     assert!(cj["card"].get("doc").is_none(), "absent, not null");
+    // the threads layer is gone from the wire — pin the keys out
+    for dead in ["address", "thread", "breadcrumb"] {
+        assert!(cj["card"].get(dead).is_none(), "{dead} retired from wire");
+    }
     let mj = serde_json::to_value(m).expect("json");
     assert_eq!(mj["card"]["doc"], "moxon");
     assert_eq!(mj["card"]["page"], 12);

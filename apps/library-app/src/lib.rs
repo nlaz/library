@@ -99,7 +99,6 @@ pub fn run() {
             marginalia::list_cards,
             marginalia::create_card,
             marginalia::update_card,
-            marginalia::propose_thread,
             marginalia::card_neighbors,
         ])
         .run(tauri::generate_context!())

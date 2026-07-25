@@ -20,6 +20,24 @@ fn default_width() -> u32 {
     1600
 }
 
+/// Default data dir: the repo's ./data in dev builds, the per-user app-data
+/// dir (~/Library/Application Support/computer.flower.library/data) in
+/// release bundles — a downloaded .app must never inherit the build
+/// machine's repo path.
+fn default_data(app: &AppHandle) -> PathBuf {
+    pick_default_data(cfg!(debug_assertions), app.path().app_data_dir().ok())
+}
+
+fn pick_default_data(dev: bool, app_data: Option<PathBuf>) -> PathBuf {
+    if dev {
+        dev_root().join("data")
+    } else {
+        app_data
+            .map(|d| d.join("data"))
+            .unwrap_or_else(|| dev_root().join("data"))
+    }
+}
+
 pub(crate) fn load_settings(app: &AppHandle) -> Settings {
     let file = app
         .path()
@@ -32,12 +50,14 @@ pub(crate) fn load_settings(app: &AppHandle) -> Settings {
         .and_then(|b| serde_json::from_slice(&b).ok());
 
     let mut s = saved.unwrap_or_else(|| Settings {
-        data: dev_root().join("data"),
+        data: default_data(app),
         width: default_width(),
     });
     if let Ok(data) = std::env::var("LIBRARY_DATA") {
         s.data = PathBuf::from(data);
     }
+    // first run: the dir must exist before the stores open
+    let _ = std::fs::create_dir_all(&s.data);
     s
 }
 
@@ -87,6 +107,24 @@ mod tests {
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.data, s.data);
         assert_eq!(back.width, s.width);
+    }
+
+    #[test]
+    fn dev_default_data_is_repo_data() {
+        let d = pick_default_data(true, Some(PathBuf::from("/ignored")));
+        assert_eq!(d, dev_root().join("data"));
+    }
+
+    #[test]
+    fn release_default_data_is_app_data_dir() {
+        let d = pick_default_data(false, Some(PathBuf::from("/app/support")));
+        assert_eq!(d, PathBuf::from("/app/support/data"));
+    }
+
+    #[test]
+    fn release_default_data_falls_back_without_app_data_dir() {
+        let d = pick_default_data(false, None);
+        assert_eq!(d, dev_root().join("data"));
     }
 
     #[test]

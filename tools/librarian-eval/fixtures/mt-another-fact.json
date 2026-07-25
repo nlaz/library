@@ -11,6 +11,8 @@
     { "kind": "all_content_not_regex", "value": "\\\\n" },
     { "kind": "all_content_not_regex", "value": "(?i)^here is an(other)? interesting" },
     { "kind": "content_overlap_max", "value": 0.5 },
-    { "kind": "tools_unique" }
+    { "kind": "tools_unique" },
+    { "kind": "tools_exclude", "value": "library_overview" },
+    { "kind": "all_content_not_regex", "value": "\\[Title p\\.N\\]" }
   ]
 }

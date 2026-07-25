@@ -654,6 +654,8 @@ fn probe(filter: Option<&str>) -> Result<()> {
 ///       tool text, as a fraction of the answer, must stay below value)
 ///   {"kind":"tools_unique"}  (no tool ran twice with the same args — cache
 ///       hits are not recorded, so a duplicate here means the dedup regressed)
+///   {"kind":"tools_exclude","value":"library_overview"}  (the tool must NOT
+///       have run — catches wandering off the planned hop)
 fn check_expects(fx: &Value, result: &Value) -> Vec<(String, bool)> {
     let Some(expects) = fx.get("expect").and_then(|e| e.as_array()) else {
         return Vec::new();
@@ -676,6 +678,7 @@ fn check_expects(fx: &Value, result: &Value) -> Vec<(String, bool)> {
             let val = &ex["value"];
             let pass = match kind {
                 "tools_include" => calls.iter().any(|c| c["name"] == *val),
+                "tools_exclude" => !calls.iter().any(|c| c["name"] == *val),
                 "tools_order" => {
                     let want: Vec<&str> = val
                         .as_array()

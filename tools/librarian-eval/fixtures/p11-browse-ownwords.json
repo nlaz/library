@@ -4,6 +4,8 @@
   "expect": [
     { "kind": "tools_include", "value": "sample_page" },
     { "kind": "content_overlap_max", "value": 0.5 },
-    { "kind": "content_not_regex", "value": "(?i)^here is" }
+    { "kind": "content_not_regex", "value": "(?i)^here is" },
+    { "kind": "tools_exclude", "value": "library_overview" },
+    { "kind": "content_not_regex", "value": "\\[Title p\\.N\\]" }
   ]
 }

@@ -494,7 +494,8 @@ let INSTRUCTIONS = """
     text; answer from it when it suffices. If a tool returns an error, \
     relay it honestly — never guess at a page's contents. Quote only short \
     clean phrases. Call books by their "title" from tool results — never \
-    show raw document ids. Cite every claim as [Title p.N]. Be concise.
+    show raw document ids. Cite every claim in square brackets: the book's \
+    title, a space, then p. and the page number. Be concise.
     """
 
 /// Fresh tool instances per session/conversation. `seen` is the
@@ -847,8 +848,9 @@ let ANSWER_GUIDE = """
     Your answer to the user, in your own words. Begin directly with the \
     substance — never open with an announcement such as "Here is an \
     interesting fact". Refer to every book by its "title" from the tool \
-    results, never by a raw document id, and cite each claim inline as \
-    [Title p.N]. Be concise.
+    results, never by a raw document id, and cite each claim inline in \
+    square brackets: the book's title, a space, then p. and the page \
+    number. Be concise.
     """
 
 /// Per-approach guide for the final answer's `text` field. The schema
@@ -919,6 +921,14 @@ func answerSchema(approach: String?, confidence: String? = nil) -> GenerationSch
 /// not started streaming yet.
 func answerText(_ content: GeneratedContent) -> String? {
     try? content.value(String.self, forProperty: "text")
+}
+
+/// Deterministic backstop for the one placeholder the model has echoed from
+/// older instruction wordings: the literal never belongs in an answer, even
+/// though the wording that taught it is gone.
+func stripTemplateLeak(_ s: String) -> String {
+    s.replacingOccurrences(of: "[Title p.N]", with: "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 func friendly(_ error: any Error) -> String {
@@ -1006,7 +1016,7 @@ func executeTurn(session: LanguageModelSession, turn: PlannedTurn, fallback: Str
     let start = Date()
     let schema = answerSchema(approach: turn.approach, confidence: turn.confidence)
     do {
-        var full = try await stream(session, turn.prompt, schema: schema)
+        var full = stripTemplateLeak(try await stream(session, turn.prompt, schema: schema))
         // the host cites the planned page itself (browse turns tell the
         // model not to) — exact title and page, never a mangled doc id
         if let cite = turn.citation, !full.contains(cite) {
@@ -1027,7 +1037,8 @@ func executeTurn(session: LanguageModelSession, turn: PlannedTurn, fallback: Str
             // one retry: fresh session, bare question, no history, default guide
             let retry = makeSession()
             do {
-                let full = try await stream(retry, fallback, schema: answerSchema(approach: nil))
+                let full = stripTemplateLeak(
+                    try await stream(retry, fallback, schema: answerSchema(approach: nil)))
                 emit.line(["e": "token", "text": full, "replace": true])
                 emit.line([
                     "e": "done", "content": full,
@@ -1275,7 +1286,7 @@ func runProbe(_ path: String) async {
                     schema: answerSchema(
                         approach: planned.approach, confidence: planned.confidence),
                     options: options)
-                content = answerText(resp.content) ?? resp.content.jsonString
+                content = stripTemplateLeak(answerText(resp.content) ?? resp.content.jsonString)
                 if let cite = planned.citation, !content.contains(cite) {
                     content += " \(cite)"
                 }

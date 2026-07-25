@@ -314,6 +314,8 @@ export type AtlasTheme = {
   id: number;
   size: number;
   ndocs: number;
+  /** Local-model label; absent when the librarian probe was unavailable. */
+  title?: string;
   terms: string[];
   top: AtlasPassage[];
 };
@@ -330,5 +332,5 @@ export type Atlas = {
 };
 /** Envelope from /api/atlas (web) and the `atlas` command (desktop). */
 export type AtlasResponse =
-  | { status: "ready"; atlas: Atlas }
+  | { status: "ready"; atlas: Atlas; rebuilding?: boolean }
   | { status: "building"; since: number; stage: string };

@@ -5,6 +5,11 @@
 // a trail of passages hopping book to book — plus exemplar quotes. Trail
 // steps and quotes deep-link into the reader.
 //
+// The viewport is locked: the cloud is always fitted whole (per-axis
+// stretch — PCA axes are abstract, so filling the frame is free spread).
+// Theme titles come from the librarian sidecar at build time; the
+// distinctive terms render as badges either way.
+//
 // Data comes whole from the hosts' atlas endpoint (web: /api/atlas,
 // desktop: the `atlas` command). While the sidecar is being built the view
 // polls and shows the build stage; once ready it renders from the cached
@@ -28,20 +33,19 @@ const $panel = document.getElementById("atlas-panel")!;
 const ctx = $map.getContext("2d")!;
 
 const POLL_MS = 2000;
-const PAD = 48;
+const PAD = 40;
 const HIT_RADIUS = 12;
+const DOT_R = 2.5;
 
 let atlas: Atlas | null = null;
 let sel = -1; // selected theme id
-let view: View = { s: 1, tx: 0, ty: 0 };
-let fitScale = 1; // the fit-to-stage scale, the zoom clamp's reference
+let view: View = { sx: 1, sy: 1, tx: 0, ty: 0 };
 let hover: number | null = null;
 let pollTimer = 0;
-let drag: { px: number; py: number; tx: number; ty: number } | null = null;
 
 async function fetchAtlas(refresh?: boolean): Promise<AtlasResponse> {
   if (isTauri() && desktop) return desktop.atlas(refresh);
-  const q = refresh ? "?refresh=1" : "";
+  const q = refresh ? "?refresh=true" : "";
   const r = await fetch(`/api/atlas${q}`);
   if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
   return r.json();
@@ -97,7 +101,13 @@ async function load(refresh: boolean) {
   atlas = resp.atlas;
   $status.textContent =
     `${atlas.points.length.toLocaleString()} passages · ${atlas.themes.length} themes · ` +
-    `built in ${(atlas.build_ms / 1000).toFixed(1)}s`;
+    `built in ${(atlas.build_ms / 1000).toFixed(1)}s` +
+    (resp.rebuilding ? " · rebuilding…" : "");
+  // a manual rebuild runs behind the still-fresh sidecar: keep polling
+  // until the new build lands (built_ms changes)
+  if (resp.rebuilding && atlasOpen()) {
+    pollTimer = window.setTimeout(() => void load(false), POLL_MS);
+  }
   if (first) {
     if (!atlas.themes.some((t) => t.id === sel)) sel = -1;
     renderRail();
@@ -110,7 +120,6 @@ async function load(refresh: boolean) {
 function refit() {
   if (!atlas) return;
   view = fitView(atlas.points, $stage.clientWidth, $stage.clientHeight, PAD);
-  fitScale = view.s;
 }
 
 function select(id: number) {
@@ -124,6 +133,14 @@ function select(id: number) {
 
 // --- rail + panel ----------------------------------------------------------
 
+const badges = (terms: string[], n: number) =>
+  `<span class="a-badges">${terms
+    .slice(0, n)
+    .map((t) => `<span class="a-badge">${esc(t)}</span>`)
+    .join("")}</span>`;
+
+const themeTitle = (t: AtlasTheme) => t.title ?? t.terms.slice(0, 2).join(" · ");
+
 function renderRail() {
   if (!atlas) return;
   const themes = [...atlas.themes].sort((a, b) => b.ndocs - a.ndocs || b.size - a.size);
@@ -132,7 +149,8 @@ function renderRail() {
     themes
       .map(
         (t) => `<button data-theme="${t.id}" class="${t.id === sel ? "on" : ""}">
-          <span class="a-terms">${esc(t.terms.slice(0, 4).join(" · "))}</span>
+          <span class="a-title">${esc(themeTitle(t))}</span>
+          ${badges(t.terms, 3)}
           <span class="a-count">${t.size} passages · ${t.ndocs} books</span>
         </button>`,
       )
@@ -173,7 +191,8 @@ function renderPanel() {
     )
     .join("");
   $panel.innerHTML = `
-    <div class="a-terms">${esc(theme.terms.join(" · "))}</div>
+    <div class="a-title a-panel-title">${esc(themeTitle(theme))}</div>
+    ${badges(theme.terms, 9)}
     <div class="a-count">${theme.size} passages · ${theme.ndocs} books</div>
     <div class="a-sect">throughline — one passage per book</div>
     ${steps}
@@ -216,15 +235,13 @@ function draw() {
   ctx.clearRect(0, 0, w, h);
   const ink = css("--ink");
   const hl = css("--hl");
-  const r = Math.max(1.5, 2 * Math.sqrt(view.s / fitScale));
   for (const p of atlas.points) {
     const [x, y] = toScreen(view, p.x, p.y);
-    if (x < -4 || y < -4 || x > w + 4 || y > h + 4) continue;
     const lit = sel >= 0 && p.c === sel;
-    ctx.globalAlpha = sel >= 0 ? (lit ? 0.95 : 0.07) : 0.18 + 0.55 * Math.min(1, p.e / 8);
+    ctx.globalAlpha = sel >= 0 ? (lit ? 0.95 : 0.07) : 0.25 + 0.6 * Math.min(1, p.e / 8);
     ctx.fillStyle = lit ? hl : ink;
     ctx.beginPath();
-    ctx.arc(x, y, lit ? r + 1 : r, 0, 6.2832);
+    ctx.arc(x, y, lit ? DOT_R + 1 : DOT_R, 0, 6.2832);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -267,21 +284,9 @@ function drawTrail(ink: string) {
   });
 }
 
-// --- map interaction: hover, pan, zoom -------------------------------------
-
-$map.addEventListener("pointerdown", (e) => {
-  drag = { px: e.clientX, py: e.clientY, tx: view.tx, ty: view.ty };
-  $map.setPointerCapture(e.pointerId);
-});
+// --- map interaction: hover + click (viewport is locked, no pan/zoom) ------
 
 $map.addEventListener("pointermove", (e) => {
-  if (drag) {
-    view.tx = drag.tx + (e.clientX - drag.px);
-    view.ty = drag.ty + (e.clientY - drag.py);
-    $tip.hidden = true;
-    draw();
-    return;
-  }
   if (!atlas) return;
   const rect = $map.getBoundingClientRect();
   const mx = e.clientX - rect.left;
@@ -311,35 +316,10 @@ $map.addEventListener("pointermove", (e) => {
   $tip.style.top = `${Math.min(my + 12, $stage.clientHeight - th - 8)}px`;
 });
 
-$map.addEventListener("pointerup", () => {
-  drag = null;
-});
-
 $map.addEventListener("pointerleave", () => {
   hover = null;
   $tip.hidden = true;
 });
-
-$map.addEventListener(
-  "wheel",
-  (e) => {
-    e.preventDefault();
-    if (!atlas) return;
-    const rect = $map.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    const s2 = Math.min(
-      fitScale * 20,
-      Math.max(fitScale * 0.5, view.s * Math.exp(-e.deltaY * 0.0016)),
-    );
-    const g = s2 / view.s;
-    view.tx = mx - g * (mx - view.tx);
-    view.ty = my - g * (my - view.ty);
-    view.s = s2;
-    draw();
-  },
-  { passive: false },
-);
 
 // map click: a dot in a theme selects that theme; empty space deselects
 $map.addEventListener("click", (e) => {
@@ -353,7 +333,7 @@ $map.addEventListener("click", (e) => {
 // --- environment: resize, theme flips --------------------------------------
 
 new ResizeObserver(() => {
-  // fires on open too (the section unhides); refit keeps the cloud centered
+  // fires on open too (the section unhides); refit keeps the cloud whole
   if (atlasOpen()) {
     refit();
     draw();

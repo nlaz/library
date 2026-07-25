@@ -3,14 +3,16 @@
 
 import type { Atlas, AtlasPoint, AtlasTrail } from "./types";
 
-/** Uniform scale + translate: screen = (x * s + tx, y * s + ty). */
-export type View = { s: number; tx: number; ty: number };
+/** Per-axis scale + translate: screen = (x * sx + tx, y * sy + ty). */
+export type View = { sx: number; sy: number; tx: number; ty: number };
 
-/** Fit the point cloud into w×h with `pad` px margins, preserving aspect
- * ratio and centering. A degenerate cloud (one point, or all coincident)
- * lands centered at scale 1. */
+/** Fit the point cloud into w×h with `pad` px margins. Axes scale
+ * independently — PCA axes are abstract, so stretching to fill the frame
+ * costs nothing and spreads the clusters as far as the viewport allows.
+ * The viewport is locked: every dot is always inside the view. A
+ * degenerate axis (all values equal) lands centered. */
 export function fitView(pts: { x: number; y: number }[], w: number, h: number, pad: number): View {
-  if (pts.length === 0) return { s: 1, tx: w / 2, ty: h / 2 };
+  if (pts.length === 0) return { sx: 1, sy: 1, tx: w / 2, ty: h / 2 };
   let x0 = Infinity;
   let x1 = -Infinity;
   let y0 = Infinity;
@@ -21,18 +23,18 @@ export function fitView(pts: { x: number; y: number }[], w: number, h: number, p
     if (p.y < y0) y0 = p.y;
     if (p.y > y1) y1 = p.y;
   }
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const s = dx === 0 && dy === 0 ? 1 : Math.min((w - 2 * pad) / (dx || 1e-9), (h - 2 * pad) / (dy || 1e-9));
+  const sx = x1 === x0 ? 1 : (w - 2 * pad) / (x1 - x0);
+  const sy = y1 === y0 ? 1 : (h - 2 * pad) / (y1 - y0);
   return {
-    s,
-    tx: w / 2 - s * (x0 + dx / 2),
-    ty: h / 2 - s * (y0 + dy / 2),
+    sx,
+    sy,
+    tx: w / 2 - sx * (x0 + (x1 - x0) / 2),
+    ty: h / 2 - sy * (y0 + (y1 - y0) / 2),
   };
 }
 
 export function toScreen(v: View, x: number, y: number): [number, number] {
-  return [x * v.s + v.tx, y * v.s + v.ty];
+  return [x * v.sx + v.tx, y * v.sy + v.ty];
 }
 
 /** Index of the point nearest (px, py) within `rMax` px, honoring an
@@ -51,8 +53,8 @@ export function hitTest(
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
     if (filter && !filter(p)) continue;
-    const sx = p.x * v.s + v.tx - px;
-    const sy = p.y * v.s + v.ty - py;
+    const sx = p.x * v.sx + v.tx - px;
+    const sy = p.y * v.sy + v.ty - py;
     const d2 = sx * sx + sy * sy;
     if (d2 < bd) {
       bd = d2;

@@ -86,8 +86,33 @@
   color: var(--ink);
   background: none;
   border: 1px solid transparent;
-  padding: var(--sp-1) var(--sp-2);
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
   cursor: pointer;
+}
+
+.a-title {
+  display: block;
+  font-size: var(--fs-mono);
+}
+
+.a-panel-title {
+  font-weight: 500;
+}
+
+.a-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 3px 0;
+}
+
+.a-badge {
+  border: 1px solid var(--line);
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--ink-dim);
+  background: var(--surface);
 }
 
 #atlas-rail button:hover {
@@ -99,12 +124,10 @@
   border-color: var(--line-strong);
 }
 
-#atlas-rail .a-terms {
-  display: block;
-}
-
 #atlas-rail .a-count {
   display: block;
+  font-size: 10px;
+  color: var(--ink-faint);
 }
 
 /* --- map stage ------------------------------------------------------------ */
@@ -121,7 +144,6 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  cursor: crosshair;
 }
 
 #atlas-note {
@@ -159,10 +181,6 @@
   line-height: 1.55;
 }
 
-#atlas-panel .a-terms {
-  font-size: var(--fs-mono);
-}
-
 .a-count {
   color: var(--ink-dim);
 }
@@ -172,8 +190,8 @@
   letter-spacing: var(--track-label);
   color: var(--ink-dim);
   border-bottom: 1px solid var(--line);
-  margin: var(--sp-3) 0 var(--sp-2);
-  padding-bottom: 2px;
+  margin: var(--sp-4) 0 var(--sp-2);
+  padding-bottom: 3px;
 }
 
 .a-step,
@@ -182,7 +200,7 @@
   color: inherit;
   text-decoration: none;
   padding: var(--sp-1) var(--sp-2);
-  margin: 0 calc(-1 * var(--sp-2));
+  margin: 0 calc(-1 * var(--sp-2)) var(--sp-2);
   position: relative;
 }
 
@@ -193,7 +211,8 @@
 
 .a-step .a-n {
   position: absolute;
-  left: calc(-1 * var(--sp-1));
+  left: var(--sp-1);
+  top: var(--sp-1);
   color: var(--ink-dim);
 }
 
@@ -207,18 +226,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  margin-bottom: 2px;
 }
 
 #atlas q,
 #atlas-tip q {
   quotes: "\201C" "\201D";
   display: block;
+  line-height: 1.5;
 }
 
 .a-sim {
   display: block;
   color: var(--ink-faint);
   font-size: 10px;
+  margin-top: 2px;
 }
 
 .a-none {

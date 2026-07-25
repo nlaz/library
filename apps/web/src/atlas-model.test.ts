@@ -14,18 +14,19 @@ const pt = (x: number, y: number, extra: Partial<AtlasPoint> = {}): AtlasPoint =
 });
 
 describe("fitView", () => {
-  it("centers and preserves aspect ratio", () => {
-    // a 2×1 cloud in a square viewport: x is the binding axis
+  it("stretches each axis to fill the padded frame, centered", () => {
     const pts = [pt(0, 0), pt(2, 1)];
     const v = fitView(pts, 100, 100, 10);
-    expect(v.s).toBeCloseTo(40); // (100 - 20) / 2
     const [x0, y0] = toScreen(v, 0, 0);
     const [x1, y1] = toScreen(v, 2, 1);
+    // every dot inside the padding — the viewport is locked
+    expect(x0).toBeCloseTo(10);
+    expect(x1).toBeCloseTo(90);
+    expect(y0).toBeCloseTo(10);
+    expect(y1).toBeCloseTo(90);
     // centered: margins equal on each axis
     expect(x0).toBeCloseTo(100 - x1);
     expect(y0).toBeCloseTo(100 - y1);
-    // aspect preserved: 2:1 stays 2:1
-    expect((x1 - x0) / (y1 - y0)).toBeCloseTo(2);
   });
 
   it("handles a degenerate single-point cloud", () => {
@@ -37,13 +38,13 @@ describe("fitView", () => {
 
   it("handles an empty cloud", () => {
     const v = fitView([], 100, 80, 10);
-    expect(v).toEqual({ s: 1, tx: 50, ty: 40 });
+    expect(v).toEqual({ sx: 1, sy: 1, tx: 50, ty: 40 });
   });
 });
 
 describe("hitTest", () => {
   const pts = [pt(0, 0), pt(10, 0), pt(0, 10)];
-  const v = { s: 1, tx: 0, ty: 0 };
+  const v = { sx: 1, sy: 1, tx: 0, ty: 0 };
 
   it("picks the nearest point inside the radius", () => {
     expect(hitTest(pts, v, 9, 1, 5)).toBe(1);

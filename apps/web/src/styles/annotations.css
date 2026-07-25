@@ -125,6 +125,8 @@
   pointer-events: none; /* drag over text without native selection */
 }
 
+/* bezel from base.css §4; markup mode inverts it — state by inversion,
+   never hue */
 #reader-pen {
   font-family: var(--font-mono);
   padding: 4px 10px;
@@ -133,6 +135,7 @@
 #reader-pen.active {
   background: var(--ink);
   color: var(--bg);
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
 }
 
 /* the margin card: a pending mark asks for its note, an existing mark

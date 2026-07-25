@@ -142,15 +142,31 @@ func runSearch(toolName: String, query: String, collection: String, kind: String
         path: "/api/search", query: params)
     // surface hit chips to the UI even when the model's citations are sloppy
     var chips: [[String: Any]] = []
-    if let obj = json(body) as? [String: Any], let hits = obj["hits"] as? [[String: Any]] {
+    let obj = json(body) as? [String: Any]
+    if let hits = obj?["hits"] as? [[String: Any]] {
         chips = hits.map { h in
             ["doc": h["doc"] ?? "", "title": h["title"] ?? NSNull(), "page": h["page"] ?? 0]
         }
     }
-    emit.line([
-        "e": "tool", "name": toolName, "status": "done",
-        "summary": "\(chips.count) hits", "hits": chips,
-    ])
+    // the retrieval verdict the model is steered by (strong/weak/none, plus
+    // the numbers behind it) rides along to the perf view — otherwise "why
+    // did it hedge?" is unanswerable from the outside. Figure search has no
+    // confidence: it goes through a different tool with a spread cutoff.
+    var done: [String: Any] = [
+        "e": "tool", "name": toolName, "status": "done", "hits": chips,
+    ]
+    var summary = "\(chips.count) hits"
+    if let conf = obj?["confidence"] as? String {
+        done["confidence"] = conf
+        if conf != "strong" { summary += " · \(conf)" }
+    }
+    if let cov = obj?["coverage"] as? Double { done["coverage"] = cov }
+    if let bm25 = obj?["top_bm25"] as? Double { done["top_bm25"] = bm25 }
+    // ts_ms of this search's record in the host's perf ring, for cross-link
+    if let ts = obj?["perf_ts"] as? UInt64 { done["perf_ts"] = ts }
+    else if let ts = obj?["perf_ts"] as? Int { done["perf_ts"] = ts }
+    done["summary"] = summary
+    emit.line(done)
     return body
 }
 
@@ -399,6 +415,17 @@ func makeSession(tools: [any Tool]? = nil) -> LanguageModelSession {
         model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
         tools: tools,
         instructions: INSTRUCTIONS)
+}
+
+/// What the perf view shows as the model identity. AFM exposes no version
+/// string, so this reports the guardrail mode and availability instead —
+/// which is what actually varies run to run.
+func modelLabel() -> String {
+    switch SystemLanguageModel.default.availability {
+    case .available: return "AFM permissive · available"
+    case .unavailable(let reason): return "AFM permissive · unavailable (\(reason))"
+    @unknown default: return "AFM permissive"
+    }
 }
 
 // MARK: - Plan pre-pass (structured reasoning via guided generation)
@@ -677,6 +704,7 @@ func executeTurn(session: LanguageModelSession, prompt: String, fallback: String
         emit.line([
             "e": "done", "content": full,
             "ms": Int(Date().timeIntervalSince(start) * 1000),
+            "model": modelLabel(),
         ])
         return nil
     } catch is CancellationError {
@@ -689,7 +717,11 @@ func executeTurn(session: LanguageModelSession, prompt: String, fallback: String
             do {
                 let full = try await stream(retry, fallback)
                 emit.line(["e": "token", "text": full, "replace": true])
-                emit.line(["e": "done", "content": full, "ms": Int(Date().timeIntervalSince(start) * 1000)])
+                emit.line([
+                    "e": "done", "content": full,
+                    "ms": Int(Date().timeIntervalSince(start) * 1000),
+                    "model": modelLabel(),
+                ])
             } catch {
                 emit.line(["e": "error", "message": friendly(error)])
             }

@@ -63,14 +63,13 @@ fn fixture(name: &str) -> (Library, PathBuf) {
 
     let docs = ["alpha", "beta", "gamma", "delta", "delta-2"];
     for d in docs {
-        std::fs::write(data.join("text").join(format!("{d}.md")), format!("# {d}\n"))
-            .expect("stub markdown");
+        std::fs::write(
+            data.join("text").join(format!("{d}.md")),
+            format!("# {d}\n"),
+        )
+        .expect("stub markdown");
     }
-    std::fs::write(
-        data.join("titles.json"),
-        r#"{"alpha": "Alpha Book"}"#,
-    )
-    .expect("titles");
+    std::fs::write(data.join("titles.json"), r#"{"alpha": "Alpha Book"}"#).expect("titles");
     std::fs::write(
         data.join("collections.json"),
         r#"{"shelf": ["alpha", "beta"]}"#,
@@ -114,7 +113,13 @@ fn fixture(name: &str) -> (Library, PathBuf) {
         }
     }
     // reserved synthetic doc: indexed, but must never surface in the atlas
-    chunks.push(chunk("~card/1", 0, 0, "a note card about gears", cluster_emb(99)));
+    chunks.push(chunk(
+        "~card/1",
+        0,
+        0,
+        "a note card about gears",
+        cluster_emb(99),
+    ));
 
     lib.wtx(|tx| {
         for c in &chunks {
@@ -192,5 +197,8 @@ fn atlas_builds_themes_trails_and_fresh_sidecar() {
     });
     let fp2 = atlas::fingerprint(&lib, &data);
     assert_ne!(fp, fp2);
-    assert!(atlas::load_fresh(&data, &fp2).is_none(), "stale after commit");
+    assert!(
+        atlas::load_fresh(&data, &fp2).is_none(),
+        "stale after commit"
+    );
 }

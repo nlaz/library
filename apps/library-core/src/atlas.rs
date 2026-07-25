@@ -336,8 +336,9 @@ pub fn build(claim: BuildClaim, lib: &Library, data: &Path) -> io::Result<Atlas>
             terms,
             top,
         });
-        if let Some(t) = trail(ci as i32, members, &cent, &embs, &knn, &comm_of, &metas, &doc_base)
-        {
+        if let Some(t) = trail(
+            ci as i32, members, &cent, &embs, &knn, &comm_of, &metas, &doc_base,
+        ) {
             trails.push(t);
         }
     }
@@ -449,10 +450,7 @@ fn label_propagation(adj: &[Vec<(u32, f32)>]) -> Vec<u32> {
             for &(j, s) in &adj[i] {
                 *votes.entry(label[j as usize]).or_insert(0.0) += s;
             }
-            let max = votes
-                .values()
-                .cloned()
-                .fold(f32::MIN, f32::max);
+            let max = votes.values().cloned().fold(f32::MIN, f32::max);
             if votes.get(&label[i]).copied().unwrap_or(f32::MIN) >= max {
                 continue; // stability: current label ties for the max
             }
@@ -500,12 +498,11 @@ fn kept_communities(labels: &[u32], metas: &[ChunkMeta]) -> Vec<(u32, Vec<u32>)>
 
 const STOPWORDS: &[&str] = &[
     "the", "and", "for", "with", "that", "this", "are", "was", "were", "not", "you", "your",
-    "from", "have", "has", "had", "but", "its", "can", "will", "all", "one", "two", "into",
-    "when", "then", "them", "they", "their", "there", "which", "what", "who", "how", "why",
-    "also", "more", "some", "such", "than", "these", "those", "each", "other", "may", "should",
-    "would", "could", "about", "over", "under", "out", "off", "our", "his", "her", "she", "him",
-    "been", "being", "does", "did", "just", "only", "very", "much", "many", "most", "any", "per",
-    "page", "chapter",
+    "from", "have", "has", "had", "but", "its", "can", "will", "all", "one", "two", "into", "when",
+    "then", "them", "they", "their", "there", "which", "what", "who", "how", "why", "also", "more",
+    "some", "such", "than", "these", "those", "each", "other", "may", "should", "would", "could",
+    "about", "over", "under", "out", "off", "our", "his", "her", "she", "him", "been", "being",
+    "does", "did", "just", "only", "very", "much", "many", "most", "any", "per", "page", "chapter",
 ];
 
 /// Atlas-private tokenizer (see module docs: intentionally independent of
@@ -613,7 +610,10 @@ fn base_id(id: &str) -> &str {
 /// (high-entropy seeds pick generic catalog listings), then follow nearest
 /// neighbors under three rules — every step reaches a work the trail hasn't
 /// visited, never a near-verbatim repeat, in-theme neighbors preferred.
-#[expect(clippy::too_many_arguments, reason = "internal stage over the build's shared slices")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal stage over the build's shared slices"
+)]
 fn trail(
     theme: i32,
     members: &[u32],
@@ -843,8 +843,17 @@ mod tests {
             vec![], // dead end: trail stops
             vec![],
         ];
-        let t = trail(0, &[0, 2, 3, 4], &dir(0), &embs, &knn, &comm_of, &metas, &doc_base)
-            .expect("trail long enough");
+        let t = trail(
+            0,
+            &[0, 2, 3, 4],
+            &dir(0),
+            &embs,
+            &knn,
+            &comm_of,
+            &metas,
+            &doc_base,
+        )
+        .expect("trail long enough");
         let docs: Vec<u32> = t.steps.iter().map(|s| s.d).collect();
         assert_eq!(docs, vec![0, 2, 3, 4]);
         let sims: Vec<f32> = t.steps.iter().map(|s| s.sim).collect();

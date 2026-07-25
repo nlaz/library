@@ -10,6 +10,7 @@
 // in this turn's tool events.
 
 import { startTurn } from "./agent-log";
+import { placeToolRow } from "./chat-place";
 import type { ChatChip as Chip, ChatEvent } from "./types";
 
 type Opts = {
@@ -146,7 +147,7 @@ async function send(q: string) {
         follow();
         break;
       case "tool":
-        toolRow(ev);
+        toolRow(ev, a.el);
         follow();
         break;
       case "done":
@@ -272,23 +273,25 @@ function resolveDoc(ref: string): Chip | null {
   return null;
 }
 
-/** started: activity line; done: replace it, then chips for the hits. */
+/** started: activity line; done: replace it, then chips for the hits.
+ * `anchor` is the streaming assistant row (if any): tool rows insert above
+ * it so late tool activity never lands below the answer. */
 let pendingTool: HTMLElement | null = null;
 
-function toolRow(ev: Extract<ChatEvent, { e: "tool" }>) {
+function toolRow(ev: Extract<ChatEvent, { e: "tool" }>, anchor: HTMLElement | null) {
   if (ev.status === "started") {
     pendingTool = document.createElement("div");
     pendingTool.className = "cmsg tool";
     const q = ev.args?.query ?? ev.args?.doc ?? "";
     pendingTool.textContent =
       ev.name === "read_pages" ? `reading ${q} p.${ev.args?.from}…` : `searching ${q ? `"${q}"` : ""}…`;
-    $log.append(pendingTool);
+    placeToolRow($log, pendingTool, anchor);
     return;
   }
   const r = pendingTool ?? document.createElement("div");
   if (!pendingTool) {
     r.className = "cmsg tool";
-    $log.append(r);
+    placeToolRow($log, r, anchor);
   }
   pendingTool = null;
   r.textContent = ev.summary ?? ev.name;

@@ -163,3 +163,94 @@ export type IngestEvent = {
   total: number;
   message: string;
 };
+
+// --- librarian chat ---------------------------------------------------------
+
+/** A doc/page the model actually saw, straight out of a tool result. */
+export type ChatChip = { doc: string; title: string | null; page: number };
+
+/** Sidecar NDJSON events, relayed verbatim by both hosts (web: SSE frames;
+ * desktop: `chat:event`). The chat panel ignores members it has no use for,
+ * so adding one here is non-breaking — `plan` in particular has been arriving
+ * unread since the routing pre-pass landed. */
+export type ChatEvent =
+  | { e: "token"; text: string; replace?: boolean }
+  | { e: "plan"; intent: string; approach: string; query: string; collection: string }
+  | {
+      e: "tool";
+      name: string;
+      status: "started" | "done";
+      args?: Record<string, unknown>;
+      summary?: string;
+      hits?: ChatChip[];
+      /** Retrieval quality from search_tool; absent on non-search tools. */
+      confidence?: string;
+      coverage?: number;
+      top_bm25?: number;
+      note?: string;
+      /** ts_ms of this call's record in the perf search ring, for cross-link. */
+      perf_ts?: number;
+    }
+  | { e: "done"; content: string; ms: number; model?: string }
+  | { e: "cancelled" }
+  | { e: "error"; message: string };
+
+// --- agent provenance (client-side ring; see agent-log.ts) -----------------
+
+/** One tool call, timed from event arrival in this tab. */
+export type AgentTool = {
+  name: string;
+  args: Record<string, unknown>;
+  /** ms after turn start when `started` arrived. */
+  at_ms: number;
+  /** started→done; null = never completed (turn ended mid-call). */
+  ms: number | null;
+  summary: string | null;
+  hits: number;
+  /** Distinct docs the call surfaced, in first-seen order. */
+  docs: string[];
+  chips: ChatChip[];
+  confidence?: string;
+  coverage?: number;
+  top_bm25?: number;
+  perf_ts?: number;
+};
+
+/** The schema-constrained routing pre-pass that precedes every turn. */
+export type AgentPlan = {
+  intent: string;
+  approach: string;
+  query: string;
+  collection: string;
+  /** turn start → plan event. */
+  ms: number;
+};
+
+/** One chat turn as the perf view sees it. The sidecar keeps no ring of its
+ * own, so every duration here is measured at event arrival in the browser. */
+export type AgentTurn = {
+  /** Monotonic; the expand key. */
+  id: number;
+  /** Date.now() at submit — directly comparable to SearchRecord.ts_ms. */
+  ts_ms: number;
+  prompt: string;
+  conv: string;
+  transport: "sse" | "tauri";
+  outcome: "streaming" | "done" | "cancelled" | "error";
+  error: string | null;
+  plan: AgentPlan | null;
+  tools: AgentTool[];
+  /** submit → first token event. */
+  ttft_ms: number | null;
+  /** Token *events*, not model tokens: one delta can carry several. */
+  deltas: number;
+  chars: number;
+  /** first token → last token. */
+  stream_ms: number | null;
+  /** submit → terminal event. */
+  total_ms: number | null;
+  /** done.ms — the model turn alone, excluding plan and host tool work. */
+  sidecar_ms: number | null;
+  model: string | null;
+  content: string;
+};

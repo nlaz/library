@@ -323,7 +323,9 @@ function layoutTicks() {
 }
 
 let tickRaf = 0;
-function scheduleTicks() {
+/** Exported for the drawer: opening it narrows the pane, which moves
+ * every tick without firing a window resize. */
+export function scheduleTicks() {
   if (tickRaf || !hits.length) return;
   tickRaf = requestAnimationFrame(() => {
     tickRaf = 0;

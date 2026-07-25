@@ -11,7 +11,9 @@ import {
   onMarksChanged,
   onMarkupEnter,
   openMarkPopover,
+  scheduleMarkTicks,
 } from "./markup";
+import { scheduleTicks } from "./reader";
 import type { Collections, DocStatus } from "./types";
 
 /** The facts the drawer shows — DocInfo minus `processing` (the web
@@ -39,9 +41,16 @@ type Opts = {
 };
 
 const $drawer = document.getElementById("reader-drawer")!;
+const $readerBody = document.getElementById("reader-body")!;
 const $toggle = document.getElementById("reader-meta")!;
 let opts: Opts | null = null;
 let openFor = ""; // doc id the drawer is showing; "" = closed
+
+/** The pane's width changed under the ticks — no resize event fires. */
+function reflowTicks() {
+  scheduleTicks();
+  scheduleMarkTicks();
+}
 
 export function initDrawer(o: Opts) {
   opts = o;
@@ -63,6 +72,10 @@ export function initDrawer(o: Opts) {
 
 export function closeDrawer() {
   $drawer.hidden = true;
+  if ($readerBody.classList.contains("drawer-open")) {
+    $readerBody.classList.remove("drawer-open");
+    reflowTicks();
+  }
   openFor = "";
 }
 
@@ -70,6 +83,10 @@ async function openDrawer(doc: string) {
   if (!opts) return;
   openFor = doc;
   $drawer.hidden = false;
+  if (!$readerBody.classList.contains("drawer-open")) {
+    $readerBody.classList.add("drawer-open");
+    reflowTicks();
+  }
   $drawer.replaceChildren();
   const [d, cols] = await Promise.all([opts.getDoc(doc), opts.getCollections()]);
   if (openFor !== doc) return; // closed or switched mid-fetch

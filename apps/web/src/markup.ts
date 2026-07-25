@@ -373,14 +373,17 @@ type PopState =
   | { kind: "edit"; cardId: string };
 let pop: PopState | null = null;
 
-/** Anchor the popover beside a mark's first box, clamped to the reader. */
+/** Anchor the popover beside a mark's first box, clamped to the reading
+ * pane — the scroll pane's right edge, not the reader's, so it never
+ * floats over an open drawer. */
 function placePopover(pageEl: HTMLElement, box: Box) {
   const pr = pageEl.getBoundingClientRect();
   const host = $reader.getBoundingClientRect();
+  const paneRight = $scroll.getBoundingClientRect().right - host.left;
   popover.hidden = false;
   const left = Math.min(
     pr.left - host.left + box[0] * pr.width,
-    host.width - popover.offsetWidth - 12,
+    paneRight - popover.offsetWidth - 12,
   );
   const top = Math.min(
     pr.top - host.top + box[1] * pr.height + box[3] * pr.height + 8,

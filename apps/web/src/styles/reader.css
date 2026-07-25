@@ -51,6 +51,7 @@
 
 /* positioning context for the scroll pane, the tick strip and the drawer */
 #reader-body {
+  --drawer-w: min(300px, 80vw);
   position: relative;
   flex: 1;
   min-height: 0;
@@ -62,8 +63,20 @@
   overflow-y: auto;
 }
 
+/* an open drawer narrows the reading pane — it must never cover the
+   page or bury the tick rails */
+#reader-body.drawer-open #reader-scroll {
+  right: var(--drawer-w);
+}
+
+#reader-body.drawer-open #reader-ticks,
+#reader-body.drawer-open #reader-aticks {
+  right: var(--drawer-w);
+}
+
+/* % not vw: the column tracks the (possibly narrowed) scroll pane */
 #reader-pages {
-  width: min(860px, 94vw);
+  width: min(860px, 94%);
   margin: 0 auto;
   padding: 18px 0 60px;
   display: flex;
@@ -154,13 +167,13 @@
   outline: 1px solid var(--hl-line);
 }
 
-/* metadata drawer: an inset panel over the page column, never a reflow */
+/* metadata drawer: an inset panel; .drawer-open cedes it the pane's edge */
 #reader-drawer {
   position: absolute;
   top: 0;
   right: 0;
   bottom: 0;
-  width: min(300px, 80vw);
+  width: var(--drawer-w);
   z-index: 2;
   background: var(--surface);
   border-left: 1px solid var(--line-strong);

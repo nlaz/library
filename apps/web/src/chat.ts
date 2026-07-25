@@ -10,6 +10,7 @@
 // in this turn's tool events.
 
 import { startTurn } from "./agent-log";
+import { pageImg } from "./assets";
 import { placeToolRow } from "./chat-place";
 import type { ChatChip as Chip, ChatEvent } from "./types";
 
@@ -296,12 +297,15 @@ function toolRow(ev: Extract<ChatEvent, { e: "tool" }>, anchor: HTMLElement | nu
   pendingTool = null;
   r.textContent = ev.summary ?? ev.name;
   const seen = new Set<string>();
+  // "show me a picture" should show one: figure hits render as page
+  // thumbnails (the agent's hits are page-level — no crop geometry)
+  const thumbs = ev.name === "search_figures" ? MAX_FIGURE_THUMBS : 0;
   for (const hit of ev.hits ?? []) {
     turnDocs.set(hit.doc, hit);
     const key = `${hit.doc}|${hit.page}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    r.append(chip(hit));
+    r.append(seen.size <= thumbs ? thumb(hit) : chip(hit));
   }
 }
 
@@ -311,6 +315,24 @@ function chip(hit: Chip): HTMLElement {
   b.textContent = `${hit.title ?? opts.prettify(hit.doc)} · p.${hit.page}`;
   b.title = hit.doc;
   // the panel overlays the reader (higher z-index), so it stays open
+  b.addEventListener("click", () => {
+    location.hash = `#/read/${encodeURIComponent(hit.doc)}?p=${hit.page}`;
+  });
+  return b;
+}
+
+const MAX_FIGURE_THUMBS = 3;
+
+/** A figure hit as a clickable page thumbnail — same navigation as chip(). */
+function thumb(hit: Chip): HTMLElement {
+  const b = document.createElement("button");
+  b.className = "cthumb";
+  b.title = `${hit.title ?? opts.prettify(hit.doc)} · p.${hit.page}`;
+  const img = document.createElement("img");
+  img.src = pageImg(hit.doc, hit.page);
+  img.loading = "lazy";
+  img.alt = b.title;
+  b.append(img);
   b.addEventListener("click", () => {
     location.hash = `#/read/${encodeURIComponent(hit.doc)}?p=${hit.page}`;
   });

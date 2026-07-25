@@ -172,6 +172,32 @@
   transform: translate(1px, 1px);
 }
 
+/* figure hits render as page thumbnails; same bevel + navigation as .cchip */
+.cthumb {
+  display: inline-block;
+  margin: 3px 4px 0 0;
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  background: var(--surface);
+  cursor: pointer;
+  padding: 2px;
+}
+
+.cthumb img {
+  display: block;
+  max-height: 96px;
+  max-width: 100%;
+}
+
+.cthumb:hover {
+  background: var(--hl-wash);
+}
+
+.cthumb:active {
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  transform: translate(1px, 1px);
+}
+
 #chat-form {
   border-top: 1px solid var(--line);
   padding: var(--sp-2);

@@ -1,0 +1,9 @@
+{
+  "id": "p2-weak-live",
+  "prompt": "do I have anything about quantum entanglement?",
+  "expect": [
+    { "kind": "tools_include", "value": "search_library" },
+    { "kind": "content_regex", "value": "(?i)may not|might not|does ?n.t (seem|appear)|no(t|thing).{0,24}(cover|about|on this)" },
+    { "kind": "content_overlap_max", "value": 0.5 }
+  ]
+}

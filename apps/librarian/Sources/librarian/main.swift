@@ -586,17 +586,46 @@ func planTurn(_ context: String) async -> Plan? {
 }
 
 /// Plain-text rendering of a search result for prompt injection (raw JSON
-/// braces in the prompt broke the guided answer decode).
-func searchResultText(_ body: String) -> String {
+/// braces in the prompt broke the guided answer decode). The rendering is
+/// confidence-gated host-side because the prose honesty rule alone was
+/// ignored (e2e: a weak "quantum entanglement" search got answered
+/// confidently from Clean Code's method-entanglement pages): the top hit's
+/// full page text is confabulation fuel when retrieval is off-target, so
+/// it only rides along on strong hits; weak results lead with an explicit
+/// hedge; none results carry the miss and nothing else.
+func searchResultText(_ body: String, query: String = "", figures: Bool = false) -> String {
     guard let obj = json(body) as? [String: Any] else { return body }
+    if figures {
+        // figure confidence is a fixed placeholder, not a retrieval verdict —
+        // no hedge; and no page text: the figure is shown, never described
+        var parts: [String] = []
+        if let note = obj["note"] as? String { parts.append(note) }
+        for h in (obj["hits"] as? [[String: Any]]) ?? [] {
+            let title = h["title"] as? String ?? h["doc"] as? String ?? "?"
+            parts.append("[\(title) p.\(h["page"] ?? 0)]")
+        }
+        return parts.joined(separator: " ")
+    }
+    let conf = obj["confidence"] as? String
+    if conf == "none" {
+        return query.isEmpty
+            ? "The library has nothing matching this search."
+            : "The library has nothing matching \"\(query)\"."
+    }
     var parts: [String] = []
-    if let conf = obj["confidence"] as? String { parts.append("Confidence: \(conf).") }
+    if conf == "weak" {
+        parts.append("Search confidence is WEAK — the library may not cover this.")
+    } else if let conf {
+        parts.append("Confidence: \(conf).")
+    }
     if let note = obj["note"] as? String { parts.append(note) }
     for h in (obj["hits"] as? [[String: Any]]) ?? [] {
         let title = h["title"] as? String ?? h["doc"] as? String ?? "?"
         parts.append("[\(title) p.\(h["page"] ?? 0)] \(h["snippet"] as? String ?? "")")
     }
-    if let thp = obj["top_hit_page"] as? [String: Any], let text = thp["text"] as? String {
+    if conf == "strong", let thp = obj["top_hit_page"] as? [String: Any],
+        let text = thp["text"] as? String
+    {
         if let note = thp["note"] as? String { parts.append(note) }
         parts.append("Full text of the top hit's page: \(text)")
     }
@@ -666,7 +695,7 @@ func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages, cache: Tool
         let body = await runSearch(
             toolName: "search_library", query: plan.query,
             collection: plan.collection, kind: "", cache: cache)
-        let flat = searchResultText(body)
+        let flat = searchResultText(body, query: plan.query)
         return PlannedTurn(
             prompt: "\(prompt)\n\nLibrary search results for \"\(plan.query)\": \(flat)",
             approach: plan.approach,
@@ -681,7 +710,7 @@ func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages, cache: Tool
         let body = await runSearch(
             toolName: "search_figures", query: plan.query,
             collection: plan.collection, kind: "images", cache: cache)
-        let flat = searchResultText(body)
+        let flat = searchResultText(body, query: plan.query, figures: true)
         return PlannedTurn(
             prompt: "\(prompt)\n\nFigure search results for \"\(plan.query)\": \(flat)",
             approach: plan.approach,
@@ -754,7 +783,25 @@ func answerGuide(approach: String?, confidence: String?) -> String {
             the book's title, a space, then p. and the page number.
             """
     default:
-        return ANSWER_GUIDE
+        // the search hop's retrieval verdict shapes the answer at decode
+        // time — the prose "say plainly the library may not cover it" rule
+        // was ignored on live weak hits
+        switch confidence {
+        case "weak":
+            return """
+                Open by saying the library may not cover this, then briefly \
+                mention the closest passages found, each cited in square \
+                brackets by book title and page. Never present them as a \
+                confident answer.
+                """
+        case "none":
+            return """
+                A brief statement that the library does not appear to cover \
+                this. Do not invent an answer and do not cite any book.
+                """
+        default:
+            return ANSWER_GUIDE
+        }
     }
 }
 

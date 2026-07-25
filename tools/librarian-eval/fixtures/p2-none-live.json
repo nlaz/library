@@ -1,0 +1,8 @@
+{
+  "id": "p2-none-live",
+  "prompt": "what do my books say about cryptocurrency blockchain?",
+  "expect": [
+    { "kind": "content_regex", "value": "(?i)may not|might not|does ?n.t (seem|appear)|no(t|thing).{0,24}(cover|about|match|on this)" },
+    { "kind": "content_not_regex", "value": "\\[.+ p\\.\\s*\\d+\\]" }
+  ]
+}

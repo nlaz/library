@@ -17,6 +17,13 @@
   color: var(--ink);
 }
 
+/* the author display beats the UA [hidden] rule — restate it, or the
+   layer paints forever and ⌘/ can never close it (same bug class as the
+   popover rows) */
+#atlas[hidden] {
+  display: none;
+}
+
 #atlas-head {
   display: flex;
   align-items: baseline;

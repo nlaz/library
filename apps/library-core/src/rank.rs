@@ -1,4 +1,5 @@
-//! Hybrid search: lexical + semantic fused with RRF, plus MMR diversity.
+//! Hybrid search: lexical + semantic fused by normalized-score blend, plus
+//! MMR diversity.
 
 use fold::pipeline::Scored;
 use fold::stream::Readable;
@@ -23,8 +24,9 @@ pub struct Hit {
     #[serde(default)]
     pub bm25: f32,
     /// 0-based rank in the lexical (BM25) list; `None` = semantic-only —
-    /// exactly the hits that take the `rel = 1.0` default above and so
-    /// bypass the [`MIN_REL`] cutoff.
+    /// exactly the hits that take the `rel = 1.0` default above. (The
+    /// [`MIN_REL`] cutoff exempts every semantic-list member, not just
+    /// these — see its doc.)
     #[serde(default)]
     pub lex_rank: Option<u32>,
     /// 0-based rank in the semantic (HNSW) list; `None` = lexical-only.
@@ -51,23 +53,36 @@ pub struct RankerStats {
     pub lex_search_us: u64,
     /// µs: HNSW vector search (0 when the query has no embedding).
     pub vec_search_us: u64,
-    /// µs: RRF fusion + MMR re-rank + hit resolution (primary-table
+    /// µs: score fusion + MMR re-rank + hit resolution (primary-table
     /// point-reads).
     pub fuse_us: u64,
 }
 
 /// Hits scoring below this fraction of the query's top BM25 hit are noise;
 /// the paginated result stream ends here. Tuning knob — the perf view's
-/// provenance table is the place to eyeball rel distributions.
+/// provenance table is the place to eyeball rel distributions. Callers
+/// apply it only to hits *without* semantic-list membership: the semantic
+/// list is count-bounded (HNSW K), so its members are never a noise tail,
+/// and gating them on weak *lexical* evidence would rank them below
+/// semantic-only hits that carry none at all.
 pub const MIN_REL: f32 = 0.25;
 
+/// Lexical share of the fused score: `w·lex_rel + (1−w)·sem_rel`, each
+/// component normalized to its own per-query top. Chosen by the
+/// tools/retrieval-eval fusion sweep (2026-07): 0.5 is the only setting
+/// that beats rank-only RRF on every metric across the paraphrase,
+/// known-item, and GooAQ question workloads — lower favors paraphrase but
+/// regresses known-item recall, higher the reverse.
+pub(crate) const FUSE_LEX_WEIGHT: f32 = 0.5;
+
 /// How deep to fetch from the lexical ranker regardless of `k`. Pinning the
-/// depth pins the lexical list — and therefore the RRF input and the final
-/// order — so paginated slices of the same query tile without drift (a
-/// growing fetch would add RRF terms to dual-membership keys and shift
-/// ranks between page requests). Also caps stable pagination depth at
-/// ~LEX_FETCH lexical + TOP_K semantic hits. BM25 cost is limit-independent
-/// (full postings scan, truncate at end), so the extra depth is nearly free.
+/// depth pins the lexical list — and therefore the fusion input and the
+/// final order — so paginated slices of the same query tile without drift
+/// (a growing fetch would change the top-hit normalization and membership
+/// and shift ranks between page requests). Also caps stable pagination
+/// depth at ~LEX_FETCH lexical + TOP_K semantic hits. BM25 cost is
+/// limit-independent (full postings scan, truncate at end), so the extra
+/// depth is nearly free.
 pub const LEX_FETCH: usize = 512;
 
 /// Nearest real terms substituted per unknown query word.
@@ -159,20 +174,27 @@ pub(crate) fn mmr_rerank(
     out
 }
 
-/// Reciprocal rank fusion: score(k) = sum over lists of 1/(60 + rank).
-pub(crate) fn rrf(lists: &[Vec<ChunkKey>]) -> Vec<(f32, ChunkKey)> {
+/// Score-aware fusion: `FUSE_LEX_WEIGHT·lex + (1−FUSE_LEX_WEIGHT)·sem`,
+/// where both inputs are already normalized to their per-query top (lex is
+/// `Hit::rel`, sem is similarity / top similarity). Replaced rank-only RRF,
+/// whose fixed 1/(60+rank) votes let incidental word overlap outvote a
+/// confident semantic #1 (and vice versa): a doc mediocre in both lists
+/// could beat one excellent in one. Blending confidence instead of rank
+/// improved every workload in the retrieval-eval fusion sweep.
+pub(crate) fn fuse(lex: &[(ChunkKey, f32)], sem: &[(ChunkKey, f32)]) -> Vec<(f32, ChunkKey)> {
     let mut scores: FxHashMap<&ChunkKey, f32> = FxHashMap::default();
-    for list in lists {
-        for (rank, key) in list.iter().enumerate() {
-            *scores.entry(key).or_insert(0.0) += 1.0 / (60.0 + rank as f32);
-        }
+    for (key, rel) in lex {
+        *scores.entry(key).or_insert(0.0) += FUSE_LEX_WEIGHT * rel;
+    }
+    for (key, sim) in sem {
+        *scores.entry(key).or_insert(0.0) += (1.0 - FUSE_LEX_WEIGHT) * sim;
     }
     let mut out: Vec<(f32, ChunkKey)> = scores.into_iter().map(|(k, s)| (s, k.clone())).collect();
     out.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     out
 }
 
-/// Lexical + optional semantic, RRF-fused, metadata resolved via `resolve`
+/// Lexical + optional semantic, score-fused, metadata resolved via `resolve`
 /// (see below) — all under the one snapshot `r` was taken from. `filter`,
 /// when set, restricts every ranker to the given doc ids *inside* the
 /// search (filtering after truncation would starve results).
@@ -245,7 +267,7 @@ pub fn search<R: Readable>(
     // joined query inside Bm25 is a no-op
     let expanded = toks.join(" ");
 
-    // give RRF headroom beyond the final k (and keep the list pinned — see LEX_FETCH)
+    // give fusion headroom beyond the final k (and keep the list pinned — see LEX_FETCH)
     let fetch = k.max(LEX_FETCH);
     let t = std::time::Instant::now();
     let scored = match filter {
@@ -282,13 +304,28 @@ pub fn search<R: Readable>(
         .enumerate()
         .map(|(i, h)| (h.val.clone(), (i as u32, h.score)))
         .collect();
-    let semantic: Vec<ChunkKey> = sem_scored.into_iter().map(|h| h.val).collect();
     st.vec_search_us = t.elapsed().as_micros() as u64;
     st.lex_n = lexical.len();
-    st.sem_n = semantic.len();
+    st.sem_n = sem_scored.len();
 
     let t = std::time::Instant::now();
-    let fused = rrf(&[lexical, semantic]);
+    // fusion inputs: each list normalized to its own top. Lexical reuses
+    // the rel map; semantic converts cosine distance to similarity (HNSW
+    // returns distance, best first) and normalizes by the top hit's.
+    let lex_list: Vec<(ChunkKey, f32)> = lexical
+        .iter()
+        .map(|k| (k.clone(), rel.get(k).map_or(1.0, |&(r, _)| r)))
+        .collect();
+    let top_sim = sem_scored.first().map_or(0.0, |h| 1.0 - h.score);
+    let sem_list: Vec<(ChunkKey, f32)> = sem_scored
+        .into_iter()
+        .map(|h| {
+            let sim = (1.0 - h.score).max(0.0);
+            let norm = if top_sim > 0.0 { sim / top_sim } else { 0.0 };
+            (h.val, norm)
+        })
+        .collect();
+    let fused = fuse(&lex_list, &sem_list);
     // diversity: demote near-duplicates (same book/edition) among the top
     // hits. Full queries only — the per-keystroke path can't afford the
     // embedding reads, and doc-scoped browser-find must keep full coverage.
@@ -355,28 +392,50 @@ mod fuzzy_mmr_tests {
     }
 
     #[test]
-    fn rrf_fuses_by_reciprocal_rank() {
+    fn fuse_blends_normalized_scores() {
         let (a, b, c) = (key("a"), key("b"), key("c"));
-        // b is mid-rank in both lists and must beat the two single-list tops
-        let fused = rrf(&[vec![a.clone(), b.clone()], vec![b.clone(), c.clone()]]);
+        // b is strong in both lists and must beat the two single-list tops
+        let fused = fuse(
+            &[(a.clone(), 1.0), (b.clone(), 0.9)],
+            &[(b.clone(), 1.0), (c.clone(), 0.8)],
+        );
         let order: Vec<&str> = fused.iter().map(|(_, k)| k.doc.as_str()).collect();
         assert_eq!(order, vec!["b", "a", "c"]);
-        assert!((fused[0].0 - (1.0 / 61.0 + 1.0 / 60.0)).abs() < 1e-6);
-        assert!((fused[1].0 - 1.0 / 60.0).abs() < 1e-6);
+        assert!((fused[0].0 - (0.5 * 0.9 + 0.5 * 1.0)).abs() < 1e-6);
+        assert!((fused[1].0 - 0.5).abs() < 1e-6);
     }
 
     #[test]
-    fn rrf_single_list_and_empty() {
-        assert!(rrf(&[]).is_empty());
-        assert!(rrf(&[vec![], vec![]]).is_empty());
-        let order: Vec<String> = rrf(&[vec![key("a"), key("b"), key("c")]])
+    fn fuse_single_list_and_empty() {
+        assert!(fuse(&[], &[]).is_empty());
+        let order: Vec<String> = fuse(&[(key("a"), 1.0), (key("b"), 0.7), (key("c"), 0.2)], &[])
             .into_iter()
             .map(|(_, k)| k.doc)
             .collect();
         assert_eq!(order, vec!["a", "b", "c"]); // single list: order preserved
         // equal scores tie-break on key order for determinism
-        let tied = rrf(&[vec![key("b")], vec![key("a")]]);
+        let tied = fuse(&[(key("b"), 1.0)], &[(key("a"), 1.0)]);
         assert_eq!(tied[0].1.doc, "a");
+    }
+
+    #[test]
+    fn fuse_confidence_outvotes_incidental_overlap() {
+        // the regression the fusion sweep fixed: under rank-only RRF a doc
+        // ranked #2 in both lists (2·1/62) beat a doc that was semantic #1
+        // but lexically deep (1/60 + 1/76) — dual mediocre membership
+        // outvoted single-list excellence even when the mediocre doc's
+        // *scores* were weak. Score-aware fusion keeps the vote
+        // proportional to evidence strength.
+        let (gold, mediocre) = (key("gold"), key("mediocre"));
+        let fused = fuse(
+            // gold: near-zero lexical evidence, deep in the list
+            &[(mediocre.clone(), 0.3), (gold.clone(), 0.08)],
+            // gold: semantic top at full confidence
+            &[(gold.clone(), 1.0), (mediocre.clone(), 0.3)],
+        );
+        assert_eq!(fused[0].1.doc, "gold");
+        // 0.5·0.08 + 0.5·1.0 = 0.54 vs 0.5·0.3 + 0.5·0.3 = 0.3
+        assert!((fused[0].0 - 0.54).abs() < 1e-6);
     }
 
     #[test]

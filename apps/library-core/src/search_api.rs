@@ -221,9 +221,12 @@ fn text_track(lib: &Library, q: &Query, member: Option<&FxHashSet<String>>) -> T
     let mut rel_killed = 0usize;
     if q.doc.is_empty() {
         // degradation cutoff, every page — doc-scoped find is exempt
-        // (browser-find coverage must not lose hits)
+        // (browser-find coverage must not lose hits). Semantic-list members
+        // are exempt too: the HNSW list is count-bounded, and gating them
+        // on weak *lexical* evidence would drop hits that rank below
+        // semantic-only ones carrying none at all (see MIN_REL).
         let before = found.len();
-        found.retain(|h| h.rel >= MIN_REL);
+        found.retain(|h| h.rel >= MIN_REL || h.sem_rank.is_some());
         rel_killed = before - found.len();
     }
     // the search's internal phases, reported instead of one opaque span

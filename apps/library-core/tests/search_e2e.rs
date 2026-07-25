@@ -138,8 +138,11 @@ fn mmr_demotes_near_duplicate_full_path() {
     let order = |hits: &[library_core::Hit]| -> Vec<String> {
         hits.iter().map(|h| h.key.doc.clone()).collect()
     };
-    // fused relevance order: the two near-duplicates lead
-    assert_eq!(order(&plain)[..2], ["watchmaking-a", "watchmaking-b"]);
+    // fused relevance order: the two near-duplicates lead (which twin is
+    // first is BM25 length normalization's call, not this test's concern)
+    let mut lead = order(&plain)[..2].to_vec();
+    lead.sort();
+    assert_eq!(lead, ["watchmaking-a", "watchmaking-b"]);
     let diverse = run(
         &lib,
         "gear train ratio",
@@ -150,11 +153,12 @@ fn mmr_demotes_near_duplicate_full_path() {
         true,
     );
     // MMR keeps the best duplicate, promotes the novel chunk over the twin
-    assert_eq!(order(&diverse)[0], "watchmaking-a");
+    assert_eq!(order(&diverse)[0], order(&plain)[0]);
     let pos =
         |hits: &[library_core::Hit], doc: &str| hits.iter().position(|h| h.key.doc == doc).unwrap();
+    let trailing_twin = &order(&plain)[1];
     assert!(
-        pos(&diverse, "watchmaking-c") < pos(&diverse, "watchmaking-b"),
+        pos(&diverse, "watchmaking-c") < pos(&diverse, trailing_twin),
         "novel chunk must outrank the near-duplicate under MMR: {:?}",
         order(&diverse)
     );

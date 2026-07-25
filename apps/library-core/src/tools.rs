@@ -294,7 +294,8 @@ pub fn search_tool<R: fold::stream::Readable>(
 
     let t = Instant::now();
     let fetched = hits.len();
-    hits.retain(|h| h.rel >= MIN_REL);
+    // semantic-list members bypass the lexical-evidence gate (see MIN_REL)
+    hits.retain(|h| h.rel >= MIN_REL || h.sem_rank.is_some());
     let rel_killed = fetched - hits.len();
     let keep = {
         let keys: Vec<(&str, u32)> = hits

@@ -137,7 +137,7 @@ fn atlas_builds_themes_trails_and_fresh_sidecar() {
     assert!(atlas::load_fresh(&data, &fp).is_none(), "no sidecar yet");
 
     let claim = atlas::try_claim().expect("no concurrent build in tests");
-    let built = atlas::build(claim, &lib, &data).expect("build succeeds");
+    let built = atlas::build(claim, &lib, &data, None).expect("build succeeds");
 
     // themes: the cluster spans 4 works (5 docs), 40 chunks ≥ threshold
     let theme = built

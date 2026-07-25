@@ -96,6 +96,10 @@ pub struct Theme {
     pub id: i32,
     pub size: u32,
     pub ndocs: u32,
+    /// Short label from the local model (librarian probe); absent when the
+    /// sidecar binary is unavailable or the probe failed — terms stand in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Distinctive terms, most distinctive first.
     pub terms: Vec<String>,
     /// Exemplar passages: nearest the theme centroid, distinct docs.
@@ -232,10 +236,17 @@ struct ChunkMeta {
 }
 
 /// Full pipeline: snapshot chunks, k-NN via the HNSW index, cluster, term,
-/// trail, project, sample, write the sidecar. Holds host read locks only
-/// through `lib`'s own short transactions; the claim is consumed and
-/// released on return or unwind.
-pub fn build(claim: BuildClaim, lib: &Library, data: &Path) -> io::Result<Atlas> {
+/// trail, project, sample, label (when a librarian sidecar binary is
+/// given), write the sidecar. Holds host read locks only through `lib`'s
+/// own short transactions; the claim is consumed and released on return or
+/// unwind. Labeling happens *before* the write so the sidecar always lands
+/// fully labeled — the "building" status covers the probe calls too.
+pub fn build(
+    claim: BuildClaim,
+    lib: &Library,
+    data: &Path,
+    librarian: Option<&Path>,
+) -> io::Result<Atlas> {
     let t0 = std::time::Instant::now();
 
     claim.stage("loading");
@@ -335,6 +346,7 @@ pub fn build(claim: BuildClaim, lib: &Library, data: &Path) -> io::Result<Atlas>
             id: ci as i32,
             size: members.len() as u32,
             ndocs: docs.len() as u32,
+            title: None,
             terms,
             top,
         });
@@ -348,6 +360,11 @@ pub fn build(claim: BuildClaim, lib: &Library, data: &Path) -> io::Result<Atlas>
     claim.stage("projecting");
     let (mean, pc1, pc2) = pca2(&embs);
     let points = sample_points(&metas, &embs, &entropy, &comm_of, &mean, &pc1, &pc2);
+
+    if let Some(bin) = librarian.filter(|b| b.exists()) {
+        claim.stage("labeling");
+        label_themes(bin, &mut themes);
+    }
 
     claim.stage("writing");
     let docs = doc_ids
@@ -374,6 +391,93 @@ pub fn build(claim: BuildClaim, lib: &Library, data: &Path) -> io::Result<Atlas>
     };
     sidecar::write_json_atomic_compact(&sidecar_path(data), &atlas)?;
     Ok(atlas)
+}
+
+// ---------------------------------------------------------------------------
+// theme labeling via the librarian sidecar (best-effort)
+// ---------------------------------------------------------------------------
+
+/// One schema-constrained `librarian probe` per theme. Any failure —
+/// missing binary, model refusal, junk output — leaves `title` as `None`
+/// and the terms carry the UI instead. Sequential on purpose: one AFM
+/// session at a time keeps memory pressure flat during a background build.
+fn label_themes(bin: &Path, themes: &mut [Theme]) {
+    for theme in themes.iter_mut() {
+        match probe_title(bin, theme) {
+            Ok(t) => theme.title = t,
+            Err(e) => eprintln!("atlas: label probe failed for theme {}: {e}", theme.id),
+        }
+    }
+}
+
+fn probe_title(bin: &Path, theme: &Theme) -> io::Result<Option<String>> {
+    let passages = theme
+        .top
+        .iter()
+        .take(3)
+        .enumerate()
+        .map(|(i, p)| format!("Passage {}: “{}”", i + 1, p.s))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = format!(
+        "Passages from {} different books share one topic.\nKeywords: {}.\n{passages}\nName the shared topic.",
+        theme.ndocs,
+        theme.terms.join(", "),
+    );
+    let fixture = serde_json::json!({
+        "id": format!("theme-{}", theme.id),
+        "prompt": prompt,
+        "instructions": "You label groups of related passages from a personal \
+            library. Answer with a short, plain noun phrase — 2 to 4 words, \
+            no punctuation, no explanation.",
+        "tools": false,
+        "temperature": 0.2,
+        "schema": {
+            "name": "theme_label",
+            "properties": [{
+                "name": "title",
+                "type": "string",
+                "description": "2-4 word noun phrase naming the shared topic"
+            }]
+        }
+    });
+    let path = std::env::temp_dir().join(format!(
+        "atlas-label-{}-{}.json",
+        std::process::id(),
+        theme.id
+    ));
+    std::fs::write(&path, serde_json::to_vec(&fixture)?)?;
+    let out = std::process::Command::new(bin)
+        .arg("probe")
+        .arg(&path)
+        .output();
+    let _ = std::fs::remove_file(&path);
+    let stdout_bytes = out?.stdout;
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v["e"] == "result"
+            && v["ok"] == true
+            && let Some(content) = v["content"].as_str()
+            && let Ok(obj) = serde_json::from_str::<serde_json::Value>(content)
+            && let Some(t) = obj["title"].as_str()
+        {
+            return Ok(sanitize_title(t));
+        }
+    }
+    Ok(None)
+}
+
+/// Trim wrapper punctuation and whitespace; reject empties and runaway
+/// sentences the schema should have prevented.
+fn sanitize_title(t: &str) -> Option<String> {
+    let t = t
+        .trim()
+        .trim_matches(|c: char| "\"“”.:;,".contains(c))
+        .trim();
+    (!t.is_empty() && t.chars().count() <= 48).then(|| t.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -932,6 +1036,17 @@ mod tests {
         assert!(p1a[0].abs() > 0.99, "pc1 should align with dim 0");
         assert!(p2a[1].abs() > 0.99, "pc2 should align with dim 1");
         assert!(dot(&p1a, &p2a).abs() < 1e-4);
+    }
+
+    #[test]
+    fn sanitize_title_trims_wrappers_and_rejects_junk() {
+        assert_eq!(
+            sanitize_title("  “Bread and ovens.”  "),
+            Some("Bread and ovens".to_string())
+        );
+        assert_eq!(sanitize_title("\"\""), None);
+        assert_eq!(sanitize_title("   "), None);
+        assert_eq!(sanitize_title(&"x".repeat(60)), None);
     }
 
     #[test]

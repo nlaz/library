@@ -3,146 +3,192 @@
 The Library is an on-device search engine and chat agent for a personal
 collection of scanned PDFs — books, catalogs, papers. It reads your
 documents, indexes them for combined keyword and meaning-based search, and
-answers questions about them with a local model. Nothing leaves the machine:
-no cloud, no accounts, no API keys.
+answers questions about them with a local model. Nothing leaves the
+machine: no cloud, no accounts, no API keys.
 
-It is built on three reusable Rust crates — `fold`, `ese`, and `anny` — that
-are useful on their own for building fast, incremental, searchable data
-stores.
+It is built on three reusable Rust crates — `fold`, `ese`, and `anny` —
+that are useful on their own for building fast, incremental, searchable
+data stores.
 
-## The idea
+## The big idea
 
-Most search systems treat indexing and querying as separate worlds: you
-write your data somewhere, then a job comes along later and builds indexes
-out of it. That gap is where the bugs live. Indexes drift out of sync with
-the data, deletes leave debris behind, and "reindex everything" becomes a
-routine operation instead of an emergency.
+Most systems index in two steps: write the data, then run a job later that
+builds indexes from it. The gap between those steps is where bugs live —
+indexes drift, deletes leave debris, and "reindex everything" becomes
+routine maintenance.
 
-The Library takes the opposite position: **do as much work as possible as
-early as possible, so that reads are cheap.** Writing a document *is*
-indexing it. A single write pushes through a statically-composed dataflow
-graph and lands in every index — keyword, vector, manifest, dictionary — as
-one atomic transaction. There is no reindex job, and no code path that could
-leave two indexes disagreeing about what exists.
+Here, **writing a document is indexing it**. A single write fans out
+through a dataflow graph and lands in every index as one atomic
+transaction:
 
-Scanned books are the hard version of this problem, and they shape every
-decision below. There is often no text layer, so the words must be
-recovered by OCR and carry pixel coordinates back to the page so hits can be
-highlighted. The OCR is noisy, so queries have to survive misspellings on
-both sides. And in a catalog or a cookbook the pictures carry as much
-meaning as the prose, so figures are indexed as first-class objects rather
-than skipped.
+```
+                          one write transaction
+                       ┌──▶ keyword index      (find the word you typed)
+   document ─▶ chunks ─┼──▶ vector index       (find the idea you meant)
+                       ├──▶ manifest           (what exists, where)
+                       └──▶ term dictionary    (typeahead & spell-fix)
+
+              all four update together, or none of them do
+```
+
+There is no reindex job, and no code path that could leave two indexes
+disagreeing about what exists.
+
+Scanned books are the hard version of this problem, and they shape
+everything below:
+
+- There is often **no text layer**, so words are recovered by OCR and must
+  carry their pixel coordinates back to the page, so a search hit can
+  highlight the actual words on the scan.
+- The OCR is **noisy**, so queries have to survive misspellings — in the
+  corpus *and* in what you type.
+- In a catalog or a cookbook, **pictures carry as much meaning as prose**,
+  so figures are indexed as searchable objects, not skipped.
 
 ## What it is built on
 
 ### ese — text embeddings with no model
 
-`ese` turns a string into a vector, and it does it without running a model.
+An *embedding* turns text into a vector so that similar meanings land near
+each other. Normally that takes a neural network: hundreds of megabytes of
+weights, a warm-up, a forward pass per input.
 
-A conventional embedding model loads hundreds of megabytes of weights and
-runs a transformer forward pass per input. `ese` starts from a *static*
-embedding model — one where the entire model is a single lookup table from
-token to vector — and compiles that table directly into the binary. At build
-time the weights are downloaded, quantized down to one byte per value,
-truncated to a shorter vector, and flattened together with the tokenizer
-into a perfect hash function. Encoding a string is then: normalize it, split
-it into word pieces, look up each piece, and average.
+`ese` skips the network. It starts from a *static* embedding model — one
+where the entire model is a lookup table from token to vector — and bakes
+that table into the binary at build time, quantized to one byte per value:
 
-The consequences matter more than the speed. There is no model to load, so
-search works the instant the store opens rather than after a warm-up. There
-is no runtime, no GPU, and no state — which makes embedding a **pure
-function**, and that is what lets it run *inside* the indexing pipeline
-rather than as a separate step before it. And because the table is quantized
-to single bytes, it is small enough to stay resident in cache, which is what
-actually determines throughput here — this is a memory problem, not an
-arithmetic one.
+```
+   "aluminum extrusion"
+         │  normalize, split into word pieces
+         ▼
+   [alum] [##inum] [extrusion]
+         │  perfect-hash lookup, one table row each
+         ▼
+   ┌─ static table, baked into the binary ─┐
+   │  token ─▶ 512 bytes                   │
+   └───────────────────────────────────────┘
+         │  average the rows
+         ▼
+   one 512-dimension vector        (~1 µs; no model load, no GPU)
+```
+
+Because there is nothing to load and no state, embedding is a **pure
+function** — which is what lets it run *inside* the indexing pipeline
+rather than as a separate stage before it. And the quantized table is
+small enough to stay resident in CPU cache, which is what actually
+determines throughput here.
 
 ### anny — approximate nearest neighbours
 
-`anny` is a hierarchical navigable small world (HNSW) index: a layered
-proximity graph you descend greedily to find the vectors nearest a query.
+Once every chunk is a vector, "what's similar to my query?" becomes "which
+stored vectors are nearest this one?" `anny` answers that with an HNSW
+index — a layered graph where each vector links to its near neighbours,
+and a query walks greedily from a start point toward wherever is closest.
 
-Two design choices distinguish it. First, every tuning parameter is a
-compile-time constant, so the entire configuration of an index lives in its
-type. A graph built for 512-dimensional vectors under cosine distance is a
-different type from one built for 128 dimensions under L2, and mixing them
-is a compile error rather than a runtime surprise. Second, queries allocate
-nothing: the search frontier is a fixed-size array on the stack, and the
-"have I seen this node" set is a buffer reused across queries and cleared by
-bumping a counter instead of being rewritten.
+Two design choices are worth knowing:
 
-The feature that matters most for a library that changes is deletion. Most
-vector indexes only pretend to delete — they mark a node dead and filter it
-out at query time, so the graph slowly fills with tombstones and recall
-degrades as the collection churns. `anny` removes the node for real and
-repairs the hole, cross-linking the neighbours that were relying on it so
-the graph stays navigable. Deleting a document actually deletes it.
+**Configuration lives in the type.** Dimensions, distance metric, and
+tuning parameters are compile-time constants, so an index built for
+512-dim cosine distance is a *different Rust type* from one built for
+128-dim L2. Mixing them is a compile error, not a runtime surprise. Queries
+also allocate nothing — fixed-size stack arrays, buffers reused across
+calls.
 
-Filtered search is handled with similar care. The obvious approach — run a
-normal search and throw away results that fail the filter — starves: you ask
-for twenty hits within one document and get back three, because the other
-seventeen belonged to other documents. Filtering inside the walk has the
-opposite failure: excluded nodes are often the only path to the included
-ones, so refusing to traverse them disconnects the graph. `anny` routes
-*through* excluded nodes while collecting only the allowed ones.
+**Deletion is real.** Most vector indexes only pretend to delete:
+
+```
+   tombstone delete (typical)          repair delete (anny)
+
+        a ─── x̶ ─── b                      a ───── b
+              │                             \     /
+              c                              \   /
+                                               c
+   x is marked dead but still            x is unlinked; its neighbours
+   routed through and filtered           are cross-linked so the graph
+   out at query time — recall            stays navigable — recall holds
+   rots as tombstones pile up            as the collection churns
+```
+
+Filtered search ("only hits from this document") gets similar care. The
+obvious approaches both fail: filtering *after* the search starves — ask
+for twenty hits, get three back — and refusing to *visit* excluded nodes
+can disconnect the graph, because excluded nodes are often the only path
+to included ones. `anny` walks through excluded nodes but only collects
+allowed ones:
+
+```
+   query ─▶ ○ ─── ○ ─── ● ─── ○ ─── ●     ● allowed: collect
+                                           ○ excluded: traverse, skip
+```
 
 ### fold — incremental dataflow
 
-`fold` is the engine, and it is where the "index as you write" idea
-actually lives.
+`fold` is the engine, and it is where "index as you write" actually lives.
 
-Data moves through it as **deltas**: a record paired with a signed count.
-`+1` inserts, `-1` retracts, and the governing invariant is that pushing a
-record and later pushing it again with the opposite sign leaves every index
-exactly as it was. Deletion is not a special case with its own code path —
-it is the same push with the sign flipped, which is why it is hard for a
-delete to be incomplete.
+Everything moves through it as a **delta**: a record paired with a signed
+count.
 
-A pipeline is built by composition: each operator owns the operator
-downstream of it, so an entire graph — filters, maps, and the indexes at the
-leaves — is one concrete Rust type. There is no scheduler, no work queue,
-and no dynamic dispatch; pushing a delta is a chain of direct calls the
-compiler can see through end to end. The shape of the graph is also the
-shape of its reader, so reading from a four-index graph destructures into
-exactly four readers.
+```
+   ("page 12, chunk 3", +1)     insert it everywhere
+   ("page 12, chunk 3", −1)     retract it — every index is now
+                                exactly as if it had never existed
+```
 
-Indexes are just sinks on that graph, and `fold` ships a useful set: counts,
-running statistics, key-value tables, forward and inverted indexes,
-score-ordered rankings, histograms, BM25 full-text search, and vector search
-over `anny`. Different sinks handle retraction differently — counting sinks
-accumulate signed multiplicities so deltas cancel exactly, while posting
-sinks decide membership by net sign — but the guarantee is the same from
-outside.
+Deletion is not a special code path that has to remember to visit every
+index — it is the same push with the sign flipped. That is why a delete
+can't be *partial*.
 
-The performance idea underneath is that stateful nodes **buffer in memory
-during a transaction and fold once at commit**. A key touched a thousand
-times in one transaction costs one write, not a thousand. This is what makes
+A pipeline is built by composition — each operator owns the one downstream
+of it — so an entire graph is a single concrete Rust type:
+
+```
+   push(delta)
+      │
+      ▼
+   filter ──▶ map ──┬──▶ BM25 sink        (keyword search)
+                    ├──▶ HNSW sink        (vector search)
+                    ├──▶ table sink       (manifest)
+                    └──▶ dictionary sink  (typeahead terms)
+
+   no scheduler, no queue, no dynamic dispatch —
+   a push is a chain of direct calls the compiler sees through
+```
+
+`fold` ships the useful sinks: counts, running statistics, key-value
+tables, forward and inverted indexes, score-ordered rankings, histograms,
+BM25 full-text search, and vector search over `anny`.
+
+The performance idea underneath: stateful sinks **buffer in memory during
+a transaction and fold once at commit**. A key touched a thousand times in
+one transaction costs one disk write, not a thousand — which is what makes
 bulk ingestion cheap without a separate bulk-loading path.
 
 ### fjall — the store underneath
 
-Underneath `fold` is fjall, an embedded log-structured merge-tree: an
-ordered key-value store with one writer and many concurrent snapshot
-readers, running in-process with no server.
+Under `fold` sits fjall, an embedded LSM key-value store: ordered bytes on
+disk, one writer, many concurrent snapshot readers, no server process.
 
-`fold` is a typed, incremental layer over ordered bytes, and the layout is
-chosen so that anything that *can* be a sequential scan *is* one. Keyword
-postings sit contiguously under their term. The term dictionary is stored
-with raw keys precisely so prefix scans work on it. Ranked sinks encode
-scores in an order-preserving form, so "the top ten" is a range read rather
-than a sort. This is not incidental tuning — the difference between a
-sequential scan and a few hundred scattered point reads is the difference
-between a search that feels instant and one that visibly lags.
+The key layout is chosen so anything that *can* be a sequential scan *is*
+one — postings contiguous under their term, a prefix-scannable term
+dictionary, scores encoded so "the top ten" is a range read:
 
-Reads pin a single snapshot across the whole graph, so the keyword side and
-the vector side can never disagree about which chunks exist. Writes are
+```
+   scattered point reads:   ●···●······●··●·····●    hundreds of seeks
+   sequential range scan:   ●●●●●●●●●●              one seek, then stream
+```
+
+That difference is the difference between a search that feels instant and
+one that visibly lags (see the [latency note](#end-to-end-search-latency)
+below for the time it bit us).
+
+Reads pin one snapshot across the whole graph — the keyword side and the
+vector side can never disagree about which chunks exist — and writes are
 atomic across every index at once.
 
-fjall takes a lock on its directory, so exactly one process can open a store
-at a time. Rather than work around this, The Library builds on it: the rule
-is that whoever holds the store owns ingestion. The background worker exits
-immediately if the app is running, and if the app starts mid-run the worker
-hands off its finished work on disk rather than recomputing it.
+fjall also locks its directory: exactly one process can open a store. The
+Library builds on that instead of working around it: **whoever holds the
+store owns ingestion**. The background worker exits if the app is running,
+and hands finished work off on disk rather than recomputing it.
 
 ### How they stack
 
@@ -157,32 +203,18 @@ hands off its finished work on disk rather than recomputing it.
     ese   text → vector, callable from anywhere
 ```
 
-The layering is strict and acyclic, and it buys three things.
-
-Search algorithms stay decoupled from persistence. `anny` knows nothing
-about transactions, documents, or storage — it is a graph over fixed-size
-arrays. `ese` knows nothing about anything; it is a function from string to
-vector. Everything about durability, atomicity, and identity lives in one
-place, `fold`'s sink layer, which is why the tricky parts (the vector graph
-lives in memory, its vectors live on disk, and a crashed transaction must
-rebuild it) are contained in a single file instead of smeared across the
-app.
-
-Incrementality becomes a property of the system rather than of each index.
-Because the keyword index, the vector index, the manifest, and the term
-dictionary are all just nodes on one delta stream, updating a chunk updates
-all four atomically and removing it retracts it from all four.
-
-And each layer is independently testable. The whole stack up through
-`library-core` is cross-platform and has no Apple dependencies, so the
-search engine can be tested anywhere; only ingestion and chat need macOS.
+The layering is strict and acyclic. `anny` knows nothing about storage or
+transactions; `ese` is just a function from string to vector; everything
+about durability, atomicity, and identity lives in one place — `fold`'s
+sink layer. Everything through `library-core` is cross-platform with no
+Apple dependencies, so the search engine tests anywhere; only ingestion
+and chat need macOS.
 
 ## Ingesting a document
 
-Ingestion turns a file into indexed chunks. The queue is the filesystem —
-dropping a file into the library's folder is enough to schedule it — and
-every phase is cached on disk, so interrupting the process costs only the
-page it was working on.
+The queue is the filesystem — drop a file in the library's folder and it
+gets picked up. Every phase caches to disk, so an interruption costs only
+the page in progress.
 
 ```
   ┌────────┐  ┌─ text layer ┐  ┌────────┐  ┌────────┐  ┌────────┐
@@ -192,38 +224,42 @@ page it was working on.
     images      their boxes      windows     per chunk   updated at once
 ```
 
-**Render.** Each page is rasterized to an image at a fixed width. These are
-not a byproduct — they are what the reader displays and what figure
-detection runs against, so they are kept.
+**Render.** Each page becomes an image at a fixed width. The images are
+kept — they are what the reader displays and what figure detection runs
+on.
 
-**Read.** Getting words off a page has two cases. A born-digital PDF already
-carries a text layer, which is exact and free, so it is preferred whenever
-it holds enough text to be real rather than a scanner's stray metadata. A
-scan has no usable layer, so the page image goes through the system's OCR.
-Either way the output is the same shape: a list of words, each with its
-bounding box on the page, in reading order. Those coordinates are what let a
-search hit highlight the exact words on the scan later.
+**Read.** A born-digital PDF already carries exact text, so its text layer
+is used whenever it holds enough to be real. A scan doesn't, so the page
+image goes through the system OCR. Either way the output is the same
+shape: words, each with its bounding box, in reading order.
 
-**Clean (optional).** OCR of old print is noisy in predictable ways. A small
-on-device model proposes corrections page by page, which are re-checked
-locally before being applied as a sparse overlay — the original OCR is never
-overwritten, so a bad cleanup pass can be discarded. Hyphenated line breaks
-are rejoined deterministically and always.
+**Clean (optional).** OCR of old print fails in predictable ways. A small
+on-device model proposes corrections page by page; they are re-checked
+locally and applied as a sparse overlay, so the original OCR is never
+overwritten and a bad pass can be discarded. Hyphenated line-breaks are
+rejoined deterministically.
 
-**Chunk.** Words are grouped into overlapping windows in reading order,
-bounded to a single page. Overlap matters because a passage that straddles a
-window boundary would otherwise be findable by neither half. Page-bounding
-matters because a hit has to point somewhere a reader can actually be sent.
+**Chunk.** Words are grouped into overlapping windows, bounded to one
+page:
 
-**Embed.** Each chunk gets a vector. Because `ese` is a pure table lookup
-this is a fast batch operation rather than an inference pass, and it happens
-inline in the pipeline rather than as a staged job.
+```
+   page text:   w1 w2 w3 w4 w5 w6 w7 w8 w9 ...
+   chunk 1:     [w1 ─────────── w6]
+   chunk 2:              [w4 ─────────── w9]      ← overlap, so a passage
+   chunk 3:                       [w7 ── ... ]      straddling a boundary
+                                                    is still findable
+```
+
+Page-bounding matters because a hit has to point somewhere a reader can
+actually be sent.
+
+**Embed.** One vector per chunk — a batch table lookup via `ese`, inline
+in the pipeline, not a staged inference job.
 
 **Commit.** The prepared chunks are diffed against what the store already
-holds for that document, and the difference is applied in one transaction:
-new chunks inserted, stale chunks retracted, all four indexes updated
-together. Re-ingesting an unchanged document is nearly free, and re-ingesting
-a corrected one leaves nothing behind.
+holds for this document, and only the difference is applied, in one
+transaction. Re-ingesting an unchanged document is nearly free;
+re-ingesting a corrected one leaves nothing behind.
 
 Figures travel a parallel track over the same rendered pages, into a store
 of their own:
@@ -236,27 +272,28 @@ of their own:
     on a page   as text     store
 ```
 
-A layout model marks pictures, tables, and formulas, and a geometric
-heuristic based on word gaps finds regions the model misses; the union is
-filtered to drop regions that are mostly blank. Each region is cropped and
-embedded with an image model whose text and image encoders share one vector
-space — which is the whole trick, because it means a typed English query can
-be compared directly against a picture with no words anywhere near it.
+A layout model marks pictures, tables, and formulas; a word-gap heuristic
+catches regions the model misses; mostly-blank regions are dropped. Each
+crop is embedded with an image model whose text and image encoders share
+one vector space — that shared space is the whole trick, because it lets a
+typed English query be compared directly against a picture with no words
+anywhere near it.
 
-Two structural notes. First, ingestion is split into a **prepare** phase
-that touches no store and a **commit** phase that holds it briefly: all the
-expensive work happens without the lock, so the background worker and the
-app never fight over it. If the store is taken when a document finishes, the
-prepared records are written to disk for whoever holds the lock to commit —
-nothing is recomputed. Second, a Markdown edition of every document is
-written alongside the indexes; that reading-order text is what the chat
-agent quotes from.
+Two structural notes:
+
+- Ingestion is split into a **prepare** phase that touches no store and a
+  brief **commit** phase that does. All the expensive work happens without
+  the lock, so the background worker and the app never fight over it — and
+  if the store is taken when a document finishes, the prepared records
+  wait on disk for whoever holds the lock to commit. Nothing is
+  recomputed.
+- A Markdown edition of every document is written alongside the indexes;
+  that reading-order text is what the chat agent quotes from.
 
 ## Answering a query
 
-Search runs on every keystroke. The budget is therefore a single-digit
-number of milliseconds, and the entire design of the query path follows from
-that.
+Search runs on every keystroke, so the budget is a single-digit number of
+milliseconds. The whole query path follows from that.
 
 ```
   ┌────────┐  ┌── lexical ──┐  ┌──────┐  ┌───────────┐  ┌───────┐
@@ -267,85 +304,92 @@ that.
     correction                                            crop rect
 ```
 
-**Expand.** A query typed live is usually incomplete, and a query against
-OCR is often misspelled on one side or the other. Both are handled against a
-dictionary of the terms that actually exist in the corpus, maintained
-incrementally like every other index. The word being typed is extended by
-prefix, so `micro` finds `microscope` before you finish it. Words that
-appear nowhere in the corpus get bounded edit-distance corrections. Terms
-are only ever *added* to the query, never substituted, so a correctly spelled
-query is passed through untouched.
-
-**The two tracks.** The keyword ranker scores documents by term overlap,
-weighted so that rare words count more than common ones and long chunks
-don't win on length alone. The semantic ranker embeds the query and walks
-the vector graph for nearest neighbours. They answer genuinely different
-questions — one finds the word you typed, the other finds the idea you meant
-— and they fail in different places: keyword search is helpless against
-vocabulary you didn't guess, and vector search is vague about exact strings.
-Both read from the same pinned snapshot.
-
-**Fuse.** The two result lists are combined by **rank, not by score**. This
-is the important detail: a keyword relevance score and a vector distance are
-not comparable quantities, and any attempt to blend them numerically means
-inventing a conversion and then tuning it forever. Reciprocal rank fusion
-sidesteps this by discarding the scores entirely and using only each item's
-position in its own list, so a result that both rankers liked rises above
-one that only a single ranker loved.
-
-**Diversify.** A book repeats itself, and the top of a fused list is often
-ten near-identical passages from adjacent pages. A diversity pass trades a
-little relevance for coverage, penalizing candidates that are too similar to
-what has already been chosen. It runs only on full library-wide searches;
-inside a single document, where the user is looking for every occurrence,
-suppressing near-duplicates is exactly wrong.
-
-**Shape.** Finally each hit is turned into something renderable: a snippet
-windowed around the first matched word, the bounding boxes of the matched
-words so they can be highlighted on the page, and a crop rectangle that
-zooms past the scan's margins to the text that matters.
-
-Figures are searched at the same time, on their own thread:
+**Expand.** A live-typed query is usually incomplete, and a query against
+OCR is often misspelled on one side or the other. Both are fixed against a
+dictionary of terms that *actually exist in this corpus*:
 
 ```
-  ┌────────┐  ┌────────────┐
-  │ embed  │─▶│ neighbours │─▶ dealt into the same list
-  └────────┘  └────────────┘
-    the query   nearest
-    a vector    figures
+   typed:     rhodum micro▌
+   expanded:  rhodum  +rhodium          (edit-distance fix; corpus term)
+              micro   +microscope       (prefix completion)
+
+   terms are only ever added, never substituted —
+   a correctly spelled query passes through untouched
 ```
 
-Because the image track shares nothing with the text track but the query
-itself, it runs concurrently and disappears entirely under the text search
-rather than adding to it. Merging is positional rather than score-based, for
-the same reason fusion is: an image similarity and a fused text rank have no
-common scale. Figures are instead dealt into the stream at a steady cadence,
-with each one's exact slot decided by a hash of its identity. This keeps the
-order stable — extending the text results never shuffles the figures already
-on screen, which is what makes endless scrolling work without items jumping
-around.
+**Two tracks.** The keyword ranker (BM25) scores by term overlap, weighted
+so rare words count more and long chunks don't win on length. The semantic
+ranker embeds the query and walks the vector graph. They answer different
+questions — one finds *the word you typed*, the other *the idea you meant*
+— and they fail in different places: keywords are helpless against
+vocabulary you didn't guess, vectors are vague about exact strings. Both
+read the same pinned snapshot.
 
-One consequence of the per-keystroke budget worth calling out: results are
-sent for every keystroke with no debouncing, and superseded answers are
-dropped on arrival rather than rendered. Waiting to see if the user has
-stopped typing costs more latency than simply answering, and rendering
-answers that are already stale starves the input box of the main thread.
+**Fuse.** The two lists are combined by **rank, not score** — a BM25 score
+and a vector distance are not comparable quantities, and blending them
+numerically means inventing a conversion and tuning it forever.
+Reciprocal rank fusion uses only each item's *position* in each list:
+
+```
+              keyword rank    semantic rank    fused
+   chunk A         #1              #3          top    — both liked it
+   chunk B         #2              —           middle — keywords only
+   chunk C         —               #1          middle — meaning only
+```
+
+**Diversify.** A book repeats itself, and a fused top-ten is often ten
+near-identical passages from adjacent pages. A diversity pass trades a
+little relevance for coverage — but only on library-wide searches. Inside
+a single document, where you want *every* occurrence, suppressing
+near-duplicates is exactly wrong.
+
+**Shape.** Each hit becomes something renderable:
+
+```
+   page scan
+   ┌────────────────────────────┐
+   │  ┌───────────────────────┐ │ ← crop rect: zoom past the margins
+   │  │ …the frame was cast   │ │
+   │  │ in ▓▓▓▓▓▓▓▓ alloy and │ │ ← matched words highlighted by
+   │  │ finished by hand…     │ │   their OCR bounding boxes
+   │  └───────────────────────┘ │
+   └────────────────────────────┘
+     + a text snippet windowed around the first match
+```
+
+Figures are searched at the same time on their own thread, so they hide
+entirely under the text search rather than adding to it. They are merged
+positionally — dealt into the stream at a steady cadence, each figure's
+slot decided by a hash of its identity:
+
+```
+   text hits:   t1  t2  t3  t4  t5  t6  t7 …
+   figures:            f1              f2
+   merged:      t1  t2  f1  t3  t4  t5  f2  t6 …
+
+   slots are stable: loading more text results never
+   shuffles the figures already on screen
+```
+
+One consequence of the per-keystroke budget: there is **no debouncing**.
+Waiting to see if you've stopped typing costs more latency than simply
+answering, so every keystroke gets an answer — and superseded answers are
+dropped on arrival rather than rendered.
 
 ## Benchmarks
 
-Everything below was measured on a **base Apple M3 — 8 cores, 8 GB of RAM**,
-macOS 26.3. That is a deliberately ordinary machine; the point of this
-section is what the architecture makes possible on hardware people actually
-own, not what it can reach on a workstation.
+Everything below was measured on a **base Apple M3 — 8 cores, 8 GB of
+RAM**, macOS 26.3: deliberately ordinary hardware, because the point is
+what the architecture makes possible on machines people actually own.
 
-The corpus these numbers describe is 61 documents, 22,843 rendered pages, a
-1.9 GB text store and a 580 MB figure store.
+The corpus is 61 documents, 22,843 rendered pages, a 1.9 GB text store and
+a 580 MB figure store.
 
 ### Vector search
 
-`anny` on SIFT10K (10,000 base vectors, 128 dimensions, ef_search 64),
-measuring **recall@10 = 0.990** — latency without a recall figure next to it
-is meaningless, so the harness reports both.
+`anny` on SIFT10K (10,000 base vectors, 128 dimensions, ef_search 64), at
+**recall@10 = 0.990** — latency without a recall figure next to it is
+meaningless, so the harness reports both.
 
 | operation            | time    | throughput      |
 | -------------------- | ------- | --------------- |
@@ -353,10 +397,9 @@ is meaningless, so the harness reports both.
 | query                | 20.8 µs | 48.2K queries/s |
 | delete (1k vectors)  | 159 ms  | 6.3K removals/s |
 
-The deletion number is the interesting one, because it is doing real work:
-unlinking the node and repairing its neighbourhood, not marking a tombstone
-and moving on. Paying 159 µs per removal is what buys an index whose recall
-does not rot as the collection churns.
+The deletion number is doing real work — unlinking each node and repairing
+its neighbourhood, not dropping a tombstone. That 159 µs per removal is
+what buys an index whose recall doesn't rot as the collection churns.
 
 ### Text embedding
 
@@ -369,16 +412,15 @@ does not rot as the collection churns.
 | single sentence, 50 chars  | 1.33 µs | —                |
 | single sentence, 100 chars | 2.96 µs | —                |
 
-Half a million sentences per second on eight cores, and roughly a
-microsecond for a typical query. This is the number that makes the "no
-forward pass" claim concrete: embedding is not a stage you schedule around,
-it is cheaper than the storage read that follows it.
+Roughly a microsecond for a typical query — embedding is cheaper than the
+storage read that follows it, which is what makes "no forward pass"
+concrete.
 
 ### Ingestion
 
 Measured across the 2,064 pages in this corpus whose ingest runs actually
-did work; documents whose recorded run was a no-op resweep are excluded,
-since averaging real work over skipped pages would flatter the numbers.
+did work (no-op resweeps excluded, since averaging real work over skipped
+pages would flatter the numbers).
 
 | stage                       | ms/page |
 | --------------------------- | ------- |
@@ -390,32 +432,30 @@ since averaging real work over skipped pages would flatter the numbers.
 | commit — figures            | 4       |
 | **total**                   | **429** |
 
-Two things stand out. Reading is strongly bimodal: pages with a usable text
-layer cost around 78 ms, while pages that need OCR cost around 507 ms — a
-6× difference, and the single best reason to prefer a born-digital PDF over
-a scan of the same book. And **indexing is a rounding error**. Embedding and
-committing to all four indexes together come to under 30 ms per page, under
-7% of the total. Almost the entire cost of ingestion is recovering content
-from pixels; maintaining the indexes incrementally is nearly free, which is
-what makes it viable to do on every write instead of in a nightly job.
+Two things stand out. Reading is strongly bimodal — ~78 ms for a usable
+text layer vs ~507 ms for OCR, the single best reason to prefer a
+born-digital PDF over a scan of the same book. And **indexing is a
+rounding error**: embedding plus committing to all four indexes is under
+7% of the total. Almost the entire cost is recovering content from pixels,
+which is what makes indexing on every write viable instead of a nightly
+job.
 
-### A note on end-to-end search latency
+### End-to-end search latency
 
-Not tabulated above, because it needs a running server against a live store
-rather than a bench harness. The one recorded measurement comes from
-[an investigation into the keyword ranker][rca], which found it was fetching
-document lengths as hundreds of scattered point reads per query — one per
-matched document, on every keystroke. Replacing that with a single warm-once
-sequential scan took the instant-search round trip from **~300–900 ms to
-~8–40 ms**. That is the thesis of this whole design in one measurement: the
-work was not too expensive, it was merely happening at the wrong time.
+Not tabulated above, because it needs a running server against a live
+store. The one recorded measurement comes from [an investigation into the
+keyword ranker][rca], which found it fetching document lengths as hundreds
+of scattered point reads per keystroke. Replacing that with a single
+warm-once sequential scan took the round trip from **~300–900 ms to
+~8–40 ms** — the thesis of the whole design in one measurement: the work
+was not too expensive, it was happening at the wrong time.
 
 [rca]: docs/rca-bm25-doclen-point-reads.md
 
 ## Working on this
 
-[`AGENTS.md`](AGENTS.md) covers building, testing, and the conventions this
-repository follows.
+[`AGENTS.md`](AGENTS.md) covers building, testing, and the conventions
+this repository follows.
 
 `examples/` holds standalone databases built on `fold`, `ese`, and `anny`
 alone, with no trace of The Library in them — a persistent counter, an

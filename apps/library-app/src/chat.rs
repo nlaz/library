@@ -71,13 +71,18 @@ fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
 
 fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value) -> String {
     use library_core::tools;
+    // tool results must be JSON: a bare string here gets injected into the
+    // model prompt verbatim instead of riding the sidecar's error path
     let figure_search = |q: &str, col: &str| -> String {
         let member = match tools::resolve_collection(data, col) {
             Ok(m) => m,
-            Err(e) => return e.to_string(),
+            Err(e) => return serde_json::json!({ "error": e.to_string() }).to_string(),
         };
         let Some(clip) = eng.clip_text.get() else {
-            return "figure search is still warming up — try again in a moment".to_string();
+            return serde_json::json!({
+                "error": "figure search is still warming up — try again in a moment"
+            })
+            .to_string();
         };
         let qemb: Option<ClipEmb> = clip
             .embed(vec![q.to_string()], None)

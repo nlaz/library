@@ -4,6 +4,7 @@
 // in the feature modules: dom / format / toast / viewer / home / ingest-ui /
 // search.
 
+import { atlasOpen, dismissAtlasSelection, toggleAtlas } from "./atlas";
 import { initChat } from "./chat";
 import { $cols, $q, $searchNav } from "./dom";
 import { closeDrawer, initDrawer } from "./drawer";
@@ -71,11 +72,21 @@ window.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       togglePerf();
+    } else if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === "/") {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleAtlas();
     } else if (e.key === "Escape" && perfOpen()) {
       e.preventDefault();
       e.stopPropagation();
       // innermost layer first: a term popover closes before the view does
       if (!dismissPerfPopover()) togglePerf();
+    } else if (e.key === "Escape" && atlasOpen()) {
+      e.preventDefault();
+      e.stopPropagation();
+      // innermost layer first: an active theme deselects before the view
+      // closes (perf sits above the atlas, so its branch runs first)
+      if (!dismissAtlasSelection()) toggleAtlas();
     } else if (perfOpen() && !e.metaKey && !e.ctrlKey && !e.altKey && "123".includes(e.key)) {
       // this handler outranks inputs' stopPropagation, so it must not steal
       // digits from someone typing

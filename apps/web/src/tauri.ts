@@ -8,6 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import type { Transport } from "./transport";
 import type {
+  AtlasResponse,
   CardRec,
   Collections,
   DocInfo,
@@ -157,6 +158,12 @@ export function updateCard(card: CardRec): Promise<CardRec> {
 
 export function cardNeighbors(id: string, k?: number): Promise<NeighborCard[]> {
   return invoke<NeighborCard[]>("card_neighbors", { id, k });
+}
+
+// --- corpus atlas ------------------------------------------------------------
+
+export function atlas(refresh?: boolean): Promise<AtlasResponse> {
+  return invoke<AtlasResponse>("atlas", { refresh });
 }
 
 export function onIngestProgress(cb: (e: IngestEvent) => void): void {

@@ -4,9 +4,14 @@
    reader (z 11 > reader 8, viewer 10) so citation chips can flip pages
    underneath without closing the conversation. */
 
-/* bezel + typography come from base.css §4, shared with #notes-toggle */
+/* bezel comes from base.css §4; icon-only, sized to match #notes-toggle */
 #chat-toggle {
   margin-left: auto;
+  padding: 4px 6px;
+}
+
+#chat-toggle svg {
+  display: block;
 }
 
 #chat {

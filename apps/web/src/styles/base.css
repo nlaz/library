@@ -101,9 +101,8 @@ main {
   transform: translate(1px, 1px);
 }
 
-/* header toggles share the small-caps mono face */
-#notes-toggle,
-#chat-toggle {
+/* header toggle keeps the small-caps mono face (chat is icon-only, chat.css) */
+#notes-toggle {
   font-family: var(--font-mono);
   font-size: var(--fs-mono);
   font-weight: 500;

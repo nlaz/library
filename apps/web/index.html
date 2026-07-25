@@ -14,7 +14,23 @@
     <header>
       <nav id="cols" role="group" title="Collections"></nav>
       <button id="notes-toggle" title="Notes">notes</button>
-      <button id="chat-toggle" title="Ask the librarian">chat</button>
+      <button id="chat-toggle" title="Ask the librarian" aria-label="Ask the librarian">
+        <!-- star burst filled with the 2×2 Bayer 50% tile from tokens.css §2,
+             in currentColor so it follows --ink across themes -->
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <defs>
+            <pattern id="chat-burst-dither" width="2" height="2" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="currentColor" />
+              <rect x="1" y="1" width="1" height="1" fill="currentColor" />
+            </pattern>
+          </defs>
+          <path
+            shape-rendering="crispEdges"
+            fill="url(#chat-burst-dither)"
+            d="M8 0 L9.5 5.4 L13.7 2.3 L10.6 6.5 L16 8 L10.6 9.5 L13.7 13.7 L9.5 10.6 L8 16 L6.5 10.6 L2.3 13.7 L5.4 9.5 L0 8 L5.4 6.5 L2.3 2.3 L6.5 5.4 Z"
+          />
+        </svg>
+      </button>
     </header>
     <main>
       <div id="home"></div>

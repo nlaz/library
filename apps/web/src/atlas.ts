@@ -89,6 +89,10 @@ async function load(refresh: boolean) {
     resp = await fetchAtlas(refresh);
   } catch (e) {
     $status.textContent = `atlas endpoint unreachable: ${e instanceof Error ? e.message : e}`;
+    // transient failures happen (e.g. the engine is still starting right
+    // after app launch) — retry while the view stays open rather than
+    // sticking on an empty layer
+    if (atlasOpen()) pollTimer = window.setTimeout(() => void load(false), 3000);
     return;
   }
   if (resp.status === "building") {

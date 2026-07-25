@@ -150,14 +150,15 @@ function render(msg: WireResponse) {
   const q = $q.value.trim();
   if (!q) return;
 
-  // "settled" = this response answers what's in the box right now; an older
-  // query's empty answer must not flash "no matches" over a pending one
-  const settled = msg.seq >= seq;
-  if (!settled && msg.hits.length === 0) return;
+  // only the answer to the box's current text commits to the DOM. During a
+  // fast burst a superseded answer lands every engine round-trip (the dirty
+  // catch-up is already in flight), and rebuilding 20 cards per landing
+  // starves the input of main-thread time — the box visibly stalls. Skipped
+  // renders cost nothing: the settled answer arrives one round-trip after
+  // the last keystroke and repaints everything.
+  if (msg.seq < seq) return;
 
-  $stats.textContent = settled
-    ? `${msg.hits.length} hits · ${msg.phase} · ${(msg.us / 1000).toFixed(1)}ms`
-    : "searching…";
+  $stats.textContent = `${msg.hits.length} hits · ${msg.phase} · ${(msg.us / 1000).toFixed(1)}ms`;
 
   const t0 = import.meta.env.DEV ? performance.now() : 0;
   const cards = msg.hits.map(card);
@@ -173,7 +174,7 @@ function render(msg: WireResponse) {
     }
   });
 
-  if (settled && msg.hits.length === 0) {
+  if (msg.hits.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty";
     empty.textContent = "no matches";
@@ -184,7 +185,7 @@ function render(msg: WireResponse) {
   seen.clear();
   for (const h of msg.hits) seen.add(hitKey(h));
   moreOffset = msg.hits.length;
-  endReached = settled && msg.hits.length < PAGE;
+  endReached = msg.hits.length < PAGE;
   setMoreState(!msg.hits.length ? "hidden" : endReached ? "end" : "idle");
   $main.scrollTop = 0;
   rearmSentinel();
@@ -320,11 +321,11 @@ export function initSearch() {
     if (msg.seq < rendered) return; // superseded while in flight
     rendered = msg.seq;
     if (hitDoc) {
-      // reader find: hits become ticks/highlights, never result cards
-      if (readerDoc() === hitDoc) {
+      // reader find: hits become ticks/highlights, never result cards —
+      // and, as with the grid, only the settled answer is applied
+      if (readerDoc() === hitDoc && msg.seq >= seq) {
         const n = setReaderHits(msg.hits);
-        const settled = msg.seq >= seq;
-        $searchCount.textContent = settled && !n ? "no matches" : n ? `${n} hits` : "";
+        $searchCount.textContent = n ? `${n} hits` : "no matches";
       }
       return;
     }

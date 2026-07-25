@@ -123,12 +123,16 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
 
     let mut committer = EngineCommitter { eng };
     loop {
+        let mut committed = false;
         for doc in worker::pending(&data) {
             let outcome = worker::process_doc(&ctx, &doc, &mut committer, &mut |p| {
                 emit_progress(&app, &doc, p)
             });
             match outcome {
-                Outcome::Ready => emit_stage(&app, &doc, "done"),
+                Outcome::Ready => {
+                    committed = true;
+                    emit_stage(&app, &doc, "done");
+                }
                 Outcome::Failed => {
                     let msg = status::read(&data, &doc)
                         .and_then(|s| s.error)
@@ -148,6 +152,29 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
                 // Staged can't happen here (EngineCommitter never returns
                 // Locked); Skipped means someone else has the claim
                 Outcome::Staged | Outcome::Skipped => {}
+            }
+        }
+        // atlas warm-up: at most one build per sweep that actually
+        // committed. The sweep drains the whole queue first and wake-ups
+        // are coalesced below, so a multi-doc batch triggers one build; if
+        // more docs land mid-build, the finished sidecar's fingerprint is
+        // already stale and the next sweep (or view open) rebuilds.
+        if committed {
+            let eng = committer.eng.clone();
+            let fp = {
+                let lib = eng.lib.read().expect("library lock poisoned");
+                library_core::atlas::fingerprint(&lib, &data)
+            };
+            if library_core::atlas::load_fresh(&data, &fp).is_none()
+                && let Some(claim) = library_core::atlas::try_claim()
+            {
+                let data = data.clone();
+                std::thread::spawn(move || {
+                    let lib = eng.lib.read().expect("library lock poisoned");
+                    if let Err(e) = library_core::atlas::build(claim, &lib, &data) {
+                        eprintln!("atlas build failed: {e:#}");
+                    }
+                });
             }
         }
         // drain buffered wake-ups so a burst of drops is one sweep

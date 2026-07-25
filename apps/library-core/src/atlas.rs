@@ -38,7 +38,9 @@ const MIN_THEME_CHUNKS: usize = 25;
 const MIN_THEME_DOCS: usize = 3;
 const MAX_THEMES: usize = 24;
 const TRAIL_STEPS: usize = 7; // beyond the seed
-const MIN_TRAIL: usize = 4; // shorter trails are dropped
+// a theme spans ≥ MIN_THEME_DOCS works, so 3 keeps a trail reachable for
+// every theme (4 would silently exclude minimum-spread themes)
+const MIN_TRAIL: usize = 3;
 const DUP_SIM: f32 = 0.995; // near-verbatim duplicate cutoff (multi-copy OCR)
 const LP_ROUNDS: usize = 20;
 const PCA_ITERS: usize = 30;

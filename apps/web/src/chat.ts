@@ -9,21 +9,8 @@
 // citations ([doc-id p.N]) are additionally linkified against the docs seen
 // in this turn's tool events.
 
-type Chip = { doc: string; title: string | null; page: number };
-
-type ChatEvent =
-  | { e: "token"; text: string; replace?: boolean }
-  | {
-      e: "tool";
-      name: string;
-      status: "started" | "done";
-      args?: Record<string, unknown>;
-      summary?: string;
-      hits?: Chip[];
-    }
-  | { e: "done"; content: string; ms: number }
-  | { e: "cancelled" }
-  | { e: "error"; message: string };
+import { startTurn } from "./agent-log";
+import type { ChatChip as Chip, ChatEvent } from "./types";
 
 type Opts = {
   prettify(id: string): string;
@@ -142,12 +129,16 @@ async function send(q: string) {
   $input.placeholder = "thinking…";
   $stop.hidden = false;
   abort = new AbortController();
+  // provenance capture for the perf view's Agent tab; sees every event,
+  // including the ones the panel itself has no use for (plan, done.ms)
+  const rec = startTurn(q, { conv, transport: opts.desktop ? "tauri" : "sse" });
 
   // created lazily so tool-activity rows land above the streamed answer
   const a: { el: HTMLElement | null } = { el: null };
   const assistant = () => (a.el ??= row("assistant"));
   let acc = "";
   const handle = (ev: ChatEvent) => {
+    rec.event(ev);
     switch (ev.e) {
       case "token":
         acc = ev.replace ? ev.text : acc + ev.text;
@@ -197,9 +188,14 @@ async function send(q: string) {
       } else a.el?.remove();
     } else {
       a.el?.remove();
-      errorRow(`${err instanceof Error ? err.message : err}`);
+      const msg = `${err instanceof Error ? err.message : err}`;
+      // a thrown transport failure produces no sidecar error event, so this
+      // is the only way the ring learns the turn died
+      rec.event({ e: "error", message: msg });
+      errorRow(msg);
     }
   } finally {
+    rec.finish({ aborted: !!abort?.signal.aborted });
     streaming = false;
     abort = null;
     $stop.hidden = true;

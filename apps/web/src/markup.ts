@@ -9,8 +9,7 @@
 // marginalia-api (Tauri or HTTP — both land in the same cards.json +
 // search index).
 
-import { createCard, listCards, proposeThread, updateCard } from "./marginalia-api";
-import { displayAddr } from "./notebox-model";
+import { createCard, listCards, updateCard } from "./marginalia-api";
 import {
   type DragUpdate,
   SNAP_DIST,
@@ -22,7 +21,7 @@ import {
   updateDrag,
 } from "./selection";
 import { notify } from "./toast";
-import type { Box, CardRec, OcrWord, QuoteAnchor, ThreadProposal } from "./types";
+import type { Box, CardRec, OcrWord, QuoteAnchor } from "./types";
 
 const $reader = document.getElementById("reader")!;
 const $scroll = document.getElementById("reader-scroll")!;
@@ -353,7 +352,6 @@ popover.innerHTML = `
     </span>
   </div>
   <textarea class="mp-note" rows="3" placeholder="note — files as a card…"></textarea>
-  <div class="mp-place"></div>
   <div class="mp-hint">esc discards · ⌘⏎ files</div>
 `;
 $reader.append(popover);
@@ -362,14 +360,12 @@ const mpActions = popover.querySelector<HTMLElement>(".mp-actions")!;
 const mpOpen = popover.querySelector<HTMLButtonElement>(".mp-open")!;
 const mpFileAway = popover.querySelector<HTMLButtonElement>(".mp-file-away")!;
 const mpNote = popover.querySelector<HTMLTextAreaElement>(".mp-note")!;
-const mpPlace = popover.querySelector<HTMLElement>(".mp-place")!;
 const mpHint = popover.querySelector<HTMLElement>(".mp-hint")!;
 
 type PopState =
-  | { kind: "pending"; anchor: QuoteAnchor; layer: HTMLElement; proposal: ThreadProposal | null }
+  | { kind: "pending"; anchor: QuoteAnchor; layer: HTMLElement }
   | { kind: "edit"; cardId: string };
 let pop: PopState | null = null;
-let proposeTimer = 0;
 
 /** Anchor the popover beside a mark's first box, clamped to the reader. */
 function placePopover(pageEl: HTMLElement, box: Box) {
@@ -394,34 +390,14 @@ function fmtWhen(created: number): string {
     .toLowerCase();
 }
 
-function renderPlace(p: ThreadProposal | null) {
-  mpPlace.textContent = p ? `files after ${p.parent_address} ${p.parent_title}` : "starts a new thread";
-}
-
-async function refreshProposal(text: string) {
-  if (pop?.kind !== "pending") return;
-  try {
-    const p = text.trim() ? await proposeThread(text) : null;
-    if (pop?.kind !== "pending") return; // closed mid-flight
-    pop.proposal = p;
-    renderPlace(p);
-  } catch {
-    // cold engine — "new thread" already shows
-  }
-}
-
 function openPendingPopover(anchor: QuoteAnchor, layer: HTMLElement, pageEl: HTMLElement) {
-  pop = { kind: "pending", anchor, layer, proposal: null };
+  pop = { kind: "pending", anchor, layer };
   mpAddr.textContent = "new mark";
   mpActions.hidden = true;
   mpNote.value = "";
-  mpPlace.textContent = "";
   mpHint.hidden = false;
   placePopover(pageEl, anchorBoxes(anchor)[0]);
   mpNote.focus();
-  // seed the filing proposal from the quoted snapshot; the note refines it
-  if (anchor.kind === "text") void refreshProposal(anchor.text);
-  else renderPlace(null);
 }
 
 export function openMarkPopover(cardId: string, scrollTo = false) {
@@ -435,17 +411,15 @@ export function openMarkPopover(cardId: string, scrollTo = false) {
     $scroll.scrollTo({ top: Math.max(y, 0) });
   }
   pop = { kind: "edit", cardId };
-  mpAddr.textContent = `${displayAddr(m.card.thread, m.card.addr)} · ${fmtWhen(m.card.created)}`;
+  mpAddr.textContent = fmtWhen(m.card.created);
   mpActions.hidden = false;
   mpNote.value = m.card.title;
-  mpPlace.textContent = "";
   mpHint.hidden = true;
   placePopover(pageEl, anchorBoxes(m.anchor)[0]);
   mpNote.focus();
 }
 
-/** Commit a pending mark: the note becomes a card, filed where the
- * proposal points (or a fresh thread). */
+/** Commit a pending mark: the note becomes a card on the timeline. */
 async function commitPending(state: Extract<PopState, { kind: "pending" }>) {
   const title = mpNote.value.trim();
   try {
@@ -454,15 +428,13 @@ async function commitPending(state: Extract<PopState, { kind: "pending" }>) {
       body: "",
       evidence: [state.anchor],
       links: [],
-      parent: state.proposal?.parent ?? null,
-      thread: null,
     });
     cards.push(saved);
     state.layer.remove();
     popover.hidden = true;
     pop = null;
     changed();
-    notify(`card ${displayAddr(saved.thread, saved.addr)} filed`);
+    notify("note filed");
   } catch (e) {
     pop = state; // keep the pending mark; the note is not lost
     popover.hidden = false;
@@ -529,7 +501,7 @@ mpOpen.addEventListener("click", () => {
   if (state?.kind !== "edit") return;
   const card = cards.find((c) => c.id === state.cardId);
   if (!card) return;
-  location.hash = `#/notes/${card.thread}?card=${card.id}`;
+  location.hash = `#/notes?card=${card.id}`;
 });
 
 mpFileAway.addEventListener("click", async () => {
@@ -546,13 +518,6 @@ mpNote.addEventListener("keydown", (e) => {
   e.stopPropagation();
   if (e.key === "Escape") discardPopover();
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void closePopover();
-});
-mpNote.addEventListener("input", () => {
-  if (pop?.kind !== "pending") return;
-  const snap = pop.anchor.kind === "text" ? `\n${pop.anchor.text}` : "";
-  const note = mpNote.value;
-  clearTimeout(proposeTimer);
-  proposeTimer = window.setTimeout(() => void refreshProposal(note + snap), 300);
 });
 // wherever focus goes, the note is not lost — blur commits (clicks that
 // land outside the pages container never reach the close handler). The

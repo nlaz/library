@@ -1,19 +1,18 @@
 // The card composer: always the same small card, never a full-screen
-// editor — a card should feel like a 3×5. Create mode carries its birth
-// context (parent branch / thread append / fresh thread); edit mode
-// carries the card. The only decision the writer makes is the claim.
+// editor — a card should feel like a 3×5. Create mode carries its seed
+// (text, evidence, links); edit mode carries the card. The only decision
+// the writer makes is the claim.
 
 import { createCard, listCards, updateCard } from "./marginalia-api";
-import { SPLIT_WORDS, displayAddr, splitPoint } from "./notebox-model";
+import { SPLIT_WORDS, fmtStamp, splitPoint } from "./notebox-model";
 import { notify } from "./toast";
-import type { CardRec, NewCard, QuoteAnchor } from "./types";
+import type { CardLink, CardRec, NewCard, QuoteAnchor } from "./types";
 
 export type ComposerSeed = {
   title?: string;
   body?: string;
   evidence?: QuoteAnchor[];
-  parent?: { id: string; address: string; title: string } | null;
-  thread?: number | null;
+  links?: CardLink[];
 };
 
 type Mode = { kind: "create"; seed: ComposerSeed } | { kind: "edit"; card: CardRec };
@@ -33,7 +32,6 @@ root.innerHTML = `
     <div class="cp-evidence"></div>
     <button class="cp-whisper" hidden>this is becoming an essay · split?</button>
     <div class="cp-foot">
-      <span class="cp-place"></span>
       <span class="cp-actions">
         <button class="cp-discard">esc discards</button>
         <button class="cp-save">save</button>
@@ -50,7 +48,6 @@ const $body = root.querySelector<HTMLTextAreaElement>(".cp-body")!;
 const $ac = root.querySelector<HTMLUListElement>(".cp-ac")!;
 const $evidence = root.querySelector<HTMLElement>(".cp-evidence")!;
 const $whisper = root.querySelector<HTMLButtonElement>(".cp-whisper")!;
-const $place = root.querySelector<HTMLElement>(".cp-place")!;
 const $save = root.querySelector<HTMLButtonElement>(".cp-save")!;
 const $discard = root.querySelector<HTMLButtonElement>(".cp-discard")!;
 
@@ -75,24 +72,18 @@ export function openComposer(m: Mode, done: (saved: CardRec | null) => void) {
     });
   updateWhisper();
   if (m.kind === "edit") {
-    $addr.textContent = displayAddr(m.card.thread, m.card.addr);
+    $addr.textContent = fmtStamp(m.card.created);
     $title.value = m.card.title;
     $body.value = m.card.body;
     renderEvidence(m.card.evidence);
-    $place.textContent = "";
     $file.hidden = false;
     $file.textContent = m.card.filed ? "restore" : "file away";
   } else {
     const s = m.seed;
-    $addr.textContent = "new card";
+    $addr.textContent = "new note";
     $title.value = s.title ?? "";
     $body.value = s.body ?? "";
     renderEvidence(s.evidence ?? []);
-    $place.textContent = s.parent
-      ? `files after ${s.parent.address} ${s.parent.title}`
-      : s.thread != null
-        ? `files in thread ${s.thread}`
-        : "starts a new thread";
     $file.hidden = true;
   }
   $title.focus();
@@ -150,9 +141,7 @@ async function doSave(extra?: { filed?: boolean; splitHinted?: boolean }): Promi
       title,
       body: $body.value,
       evidence: s.evidence ?? [],
-      links: [],
-      parent: s.parent?.id ?? null,
-      thread: s.parent ? null : (s.thread ?? null),
+      links: s.links ?? [],
     };
     return await createCard(input);
   } catch (e) {
@@ -191,17 +180,13 @@ $whisper.addEventListener("click", async () => {
   const saved = await doSave({ splitHinted: true });
   if (!saved) return;
   close(saved);
-  // the overflow becomes a branch card — same composer, new birth
+  // the overflow becomes its own note, linked as a continuation
   openComposer(
     {
       kind: "create",
       seed: {
         body: rest,
-        parent: {
-          id: saved.id,
-          address: displayAddr(saved.thread, saved.addr),
-          title: saved.title,
-        },
+        links: [{ to: saved.id, kind: "continues" }],
       },
     },
     done,

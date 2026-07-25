@@ -46,8 +46,8 @@ export let sendQuery: () => void = () => {};
 // search results (unchanged card/viewer logic, URLs via pageUrl)
 // ---------------------------------------------------------------------------
 
-/** Note-box hits have no page scan — a text card face (title/snippet)
- * replaces the crop preview. The click goes to the thread view; a card
+/** Note hits have no page scan — a text card face (title/snippet)
+ * replaces the crop preview. The click goes to the notes timeline; a card
  * anchored to a page (a mark) also offers the marked page itself. */
 function marginaliaCard(hit: WireHit): { el: HTMLElement; place: () => void } {
   const el = document.createElement("div");
@@ -56,13 +56,10 @@ function marginaliaCard(hit: WireHit): { el: HTMLElement; place: () => void } {
   const face = document.createElement("div");
   face.className = "preview note-face";
   if (hit.card) {
-    const addr = document.createElement("span");
-    addr.className = "nf-addr";
-    addr.textContent = hit.card.address;
     const title = document.createElement("div");
     title.className = "nf-title";
     title.textContent = hit.card.title;
-    face.append(addr, title);
+    face.append(title);
   }
   const body = document.createElement("div");
   body.className = "nf-snip";
@@ -83,7 +80,7 @@ function marginaliaCard(hit: WireHit): { el: HTMLElement; place: () => void } {
 
   const loc = document.createElement("div");
   loc.className = "loc";
-  loc.textContent = hit.card ? `note · thread ${hit.card.breadcrumb}` : "note";
+  loc.textContent = hit.card?.doc ? `note · ${docTitle(hit.card.doc)}` : "note";
   const meta = document.createElement("div");
   meta.className = "meta";
   meta.append(loc);
@@ -105,7 +102,7 @@ function marginaliaCard(hit: WireHit): { el: HTMLElement; place: () => void } {
 
   el.addEventListener("click", () => {
     settle();
-    if (hit.card) location.hash = `#/notes/${hit.card.thread}?card=${hit.card.id}`;
+    if (hit.card) location.hash = `#/notes?card=${hit.card.id}`;
   });
   return { el, place: () => {} };
 }

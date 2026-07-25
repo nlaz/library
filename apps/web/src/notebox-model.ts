@@ -1,77 +1,20 @@
-// Pure note-box logic: display addresses (a mirror of the Rust rules —
-// minting itself is Rust-only, single authority), thread grouping,
-// backlink derivation, wiki-link tokenizing, and the split-whisper
-// boundary. No DOM; vitest pins all of it.
+// Pure notes logic: timeline ordering, backlink derivation, wiki-link
+// tokenizing, and the split-whisper boundary. No DOM; vitest pins all
+// of it.
 
 import type { CardRec } from "./types";
 
-/** `21/3a2` for thread 21, addr [3,1,2] — bijective base-26 letters on
- * odd segments, mirroring notes.rs display_addr. */
-export function displayAddr(thread: number, addr: number[]): string {
-  let out = `${thread}/`;
-  addr.forEach((seg, i) => {
-    out += i % 2 === 0 ? String(seg) : letters(seg);
-  });
-  return out;
-}
-
-function letters(n: number): string {
-  let s = "";
-  while (n > 0) {
-    n -= 1;
-    s = String.fromCharCode(97 + (n % 26)) + s;
-    n = Math.floor(n / 26);
-  }
-  return s;
-}
-
-/** Thread-view order: lexicographic (thread, addr) — branches read
- * directly after their parent. */
-export function compareCards(a: CardRec, b: CardRec): number {
-  if (a.thread !== b.thread) return a.thread - b.thread;
-  const n = Math.min(a.addr.length, b.addr.length);
-  for (let i = 0; i < n; i++) {
-    if (a.addr[i] !== b.addr[i]) return a.addr[i] - b.addr[i];
-  }
-  return a.addr.length - b.addr.length;
-}
-
-export type ThreadRow = {
-  thread: number;
-  /** The thread's name: its first trunk card's title. */
-  name: string;
-  /** Live (unfiled) cards, thread-view order. */
-  cards: CardRec[];
-  filed: number;
-  lastTouched: number;
-};
-
-/** Group cards into threads, live threads sorted by recency (the box you
- * actually use floats up). A thread whose every card is filed drops out —
- * its cards still count in the caller's filed total. */
-export function threads(cards: CardRec[]): ThreadRow[] {
-  const byThread = new Map<number, CardRec[]>();
-  for (const c of cards) {
-    const arr = byThread.get(c.thread) ?? [];
-    arr.push(c);
-    byThread.set(c.thread, arr);
-  }
-  const rows: ThreadRow[] = [];
-  for (const [thread, all] of byThread) {
-    all.sort(compareCards);
-    const live = all.filter((c) => !c.filed);
-    if (!live.length) continue;
-    const trunk = all.find((c) => c.addr.length === 1);
-    rows.push({
-      thread,
-      name: (trunk ?? all[0]).title,
-      cards: live,
-      filed: all.length - live.length,
-      lastTouched: Math.max(...live.map((c) => c.modified)),
-    });
-  }
-  rows.sort((a, b) => b.lastTouched - a.lastTouched);
-  return rows;
+/** The notes view's order: a reverse-chronological journal by birth
+ * stamp (edits don't reshuffle it; ties break on id so the order is
+ * total), filed cards split out for the divider. */
+export function timeline(cards: CardRec[]): { live: CardRec[]; filed: CardRec[] } {
+  const sorted = [...cards].sort(
+    (a, b) => b.created - a.created || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+  );
+  return {
+    live: sorted.filter((c) => !c.filed),
+    filed: sorted.filter((c) => c.filed),
+  };
 }
 
 /** Cards that point at `target`: typed links plus [[Title]] mentions. */

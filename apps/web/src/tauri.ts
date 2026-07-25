@@ -15,7 +15,6 @@ import type {
   NeighborCard,
   NewCard,
   QueryMsg,
-  ThreadProposal,
   WireResponse,
 } from "./types";
 
@@ -154,10 +153,6 @@ export function createCard(input: NewCard): Promise<CardRec> {
 
 export function updateCard(card: CardRec): Promise<CardRec> {
   return invoke<CardRec>("update_card", { card });
-}
-
-export function proposeThread(text: string): Promise<ThreadProposal | null> {
-  return invoke<ThreadProposal | null>("propose_thread", { text });
 }
 
 export function cardNeighbors(id: string, k?: number): Promise<NeighborCard[]> {

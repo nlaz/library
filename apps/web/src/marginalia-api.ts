@@ -3,7 +3,7 @@
 // core functions server-side, so callers never care which host they're on.
 
 import { desktop } from "./state";
-import type { CardRec, NeighborCard, NewCard, ThreadProposal } from "./types";
+import type { CardRec, NeighborCard, NewCard } from "./types";
 
 async function j<T>(res: Promise<Response>): Promise<T> {
   const r = await res;
@@ -27,12 +27,6 @@ export function createCard(input: NewCard): Promise<CardRec> {
 
 export function updateCard(card: CardRec): Promise<CardRec> {
   return desktop ? desktop.updateCard(card) : j(fetch("/api/cards", json("PUT", card)));
-}
-
-export function proposeThread(text: string): Promise<ThreadProposal | null> {
-  return desktop
-    ? desktop.proposeThread(text)
-    : j(fetch("/api/cards/propose_thread", json("POST", { text })));
 }
 
 export function cardNeighbors(id: string, k = 8): Promise<NeighborCard[]> {

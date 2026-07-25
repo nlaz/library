@@ -1,18 +1,12 @@
-// The Note Box: a third top-level surface beside the shelves and the
-// reader (#/notes). The box list is deliberately boring — threads by
-// recency, a place you pass through — and the thread view is where cards
-// read as an argument: address order, branch indentation, j/k walking.
+// Notes: a third top-level surface beside the shelves and the reader
+// (#/notes). One flat reverse-chronological timeline — a journal of
+// reading — with day rules as the only grouping. The selected card opens
+// in place: full body, marks, links, and the related-but-unlinked rail
+// folded in beneath it.
 
 import { composerOpen, openComposer } from "./composer";
 import { cardNeighbors, listCards, updateCard } from "./marginalia-api";
-import {
-  backlinks,
-  compareCards,
-  displayAddr,
-  fmtStamp,
-  threads,
-  wikiTokens,
-} from "./notebox-model";
+import { backlinks, fmtStamp, timeline, wikiTokens } from "./notebox-model";
 import { notify } from "./toast";
 import type { CardRec } from "./types";
 
@@ -23,17 +17,15 @@ const $newCard = document.getElementById("notes-new")!;
 const $body = document.getElementById("notes-body")!;
 
 let cards: CardRec[] = [];
-let openThread: number | null = null;
 let selected: string | null = null;
 
 export function notesOpen(): boolean {
   return !$notes.hidden;
 }
 
-/** Route entry: #/notes → box list; #/notes/<t>?card=<id> → thread view. */
-export async function openNotes(thread: number | null, cardId: string | null) {
+/** Route entry: #/notes, optionally ?card=<id> to land selected. */
+export async function openNotes(cardId: string | null) {
   $notes.hidden = false;
-  openThread = thread;
   if (cardId) selected = cardId;
   await reload();
   if (cardId) {
@@ -57,103 +49,57 @@ async function reload() {
 }
 
 function render() {
-  if (openThread == null) renderBox();
-  else renderThread(openThread);
-}
+  $title.textContent = "notes";
+  const { live, filed } = timeline(cards);
+  if (selected && !cards.some((c) => c.id === selected)) selected = null;
 
-// ---------------------------------------------------------------------------
-// box list: threads by recency
-// ---------------------------------------------------------------------------
-
-function renderBox() {
-  $title.textContent = "note box";
-  const rows = threads(cards);
   const list = document.createElement("div");
-  list.className = "nb-drawer";
-  if (!rows.length) {
+  list.className = "nb-timeline";
+  if (!live.length && !filed.length) {
     const empty = document.createElement("div");
     empty.className = "nb-empty";
-    empty.textContent = "no cards yet — press c, or quote a passage in the reader";
+    empty.textContent = "no notes yet — press c, or mark up a page in the reader (⌘U)";
     list.append(empty);
   }
-  for (const r of rows) {
-    const row = document.createElement("div");
-    row.className = "nb-row";
-    const no = document.createElement("span");
-    no.className = "nb-no";
-    no.textContent = String(r.thread);
-    const name = document.createElement("span");
-    name.className = "nb-name";
-    name.textContent = r.name;
-    const meta = document.createElement("span");
-    meta.className = "nb-meta";
-    meta.textContent =
-      `${r.cards.length} card${r.cards.length === 1 ? "" : "s"}` +
-      (r.filed ? ` · ${r.filed} filed` : "");
-    const when = document.createElement("span");
-    when.className = "nb-when";
-    when.textContent = fmtStamp(r.lastTouched);
-    row.append(no, name, meta, when);
-    row.addEventListener("click", () => {
-      location.hash = `#/notes/${r.thread}`;
-    });
-    list.append(row);
+  let day = "";
+  for (const c of live) {
+    const d = new Date(c.created * 1000).toDateString();
+    if (d !== day) {
+      day = d;
+      const rule = document.createElement("div");
+      rule.className = "nb-day";
+      rule.textContent = fmtStamp(c.created);
+      list.append(rule);
+    }
+    list.append(cardEl(c));
+  }
+  if (filed.length) {
+    const rule = document.createElement("div");
+    rule.className = "nb-filedrule";
+    rule.textContent = `filed away · ${filed.length}`;
+    list.append(rule);
+    for (const c of filed) list.append(cardEl(c));
   }
   $body.replaceChildren(list);
 }
 
 // ---------------------------------------------------------------------------
-// thread view: the argument, in address order
-// ---------------------------------------------------------------------------
-
-function renderThread(thread: number) {
-  const all = cards.filter((c) => c.thread === thread).sort(compareCards);
-  const live = all.filter((c) => !c.filed);
-  const filed = all.filter((c) => c.filed);
-  const trunk = all.find((c) => c.addr.length === 1);
-  $title.textContent = `thread ${thread} · ${trunk?.title ?? ""}`;
-
-  if (selected && !all.some((c) => c.id === selected)) selected = null;
-  selected ??= live[0]?.id ?? null;
-
-  const wrap = document.createElement("div");
-  wrap.className = "nb-thread";
-  for (const c of live) wrap.append(cardEl(c));
-  if (filed.length) {
-    const rule = document.createElement("div");
-    rule.className = "nb-filedrule";
-    rule.textContent = `filed · ${filed.length}`;
-    wrap.append(rule);
-    for (const c of filed) wrap.append(cardEl(c));
-  }
-  const grid = document.createElement("div");
-  grid.className = "nb-threadwrap";
-  grid.append(wrap, railEl());
-  $body.replaceChildren(grid);
-}
-
-// ---------------------------------------------------------------------------
-// the rail: what the box suggests — near-but-unlinked cards
+// the rail: what the box suggests — near-but-unlinked cards, shown
+// inside the selected card
 // ---------------------------------------------------------------------------
 
 let railToken = 0;
 
-function railEl(): HTMLElement {
-  const rail = document.createElement("aside");
-  rail.id = "notes-rail";
-  const me = selectedCard();
-  if (!me || me.filed) return rail;
-
+function railEl(me: CardRec): HTMLElement {
   const box = document.createElement("div");
   box.className = "railbox";
   const lab = document.createElement("div");
   lab.className = "rail-lab";
-  lab.textContent = "near this card · unlinked";
+  lab.textContent = "related · unlinked";
   const list = document.createElement("div");
   list.className = "rail-list";
   list.textContent = "…";
   box.append(lab, list);
-  rail.append(box);
 
   const token = ++railToken;
   cardNeighbors(me.id, 6)
@@ -167,9 +113,6 @@ function railEl(): HTMLElement {
       for (const n of ns) {
         const row = document.createElement("div");
         row.className = "rail-row";
-        const a = document.createElement("span");
-        a.className = "rail-addr";
-        a.textContent = n.address;
         const t = document.createElement("span");
         t.className = "rail-title";
         t.textContent = n.title;
@@ -181,14 +124,14 @@ function railEl(): HTMLElement {
         add.className = "rail-add";
         add.textContent = "link";
         add.addEventListener("click", () => void linkTo(n.id));
-        row.append(a, t, add);
+        row.append(t, add);
         list.append(row);
       }
     })
     .catch(() => {
       if (token === railToken) list.textContent = "";
     });
-  return rail;
+  return box;
 }
 
 /** One click in the rail = a relates-link from the active card. */
@@ -207,17 +150,17 @@ function cardEl(c: CardRec): HTMLElement {
   const el = document.createElement("div");
   el.className = "ncard";
   el.dataset.id = c.id;
-  if (c.id === selected) el.classList.add("active");
+  const active = c.id === selected;
+  if (active) el.classList.add("active");
   if (c.filed) el.classList.add("filed");
-  el.style.marginLeft = `${Math.min(c.addr.length - 1, 4) * 22}px`;
 
-  const addr = document.createElement("span");
-  addr.className = "ncard-addr";
-  addr.textContent = displayAddr(c.thread, c.addr);
+  const when = document.createElement("span");
+  when.className = "ncard-when";
+  when.textContent = fmtWhen(c.created);
   const title = document.createElement("div");
   title.className = "ncard-title";
   title.textContent = c.title;
-  el.append(addr, title);
+  el.append(when, title);
 
   if (c.body) {
     const body = document.createElement("div");
@@ -265,8 +208,11 @@ function cardEl(c: CardRec): HTMLElement {
     el.append(foot);
   }
 
+  // the open card carries the suggestion rail
+  if (active && !c.filed) el.append(railEl(c));
+
   el.addEventListener("click", () => {
-    selected = c.id;
+    selected = active ? null : c.id;
     render();
   });
   el.addEventListener("dblclick", () => editCard(c));
@@ -276,7 +222,7 @@ function cardEl(c: CardRec): HTMLElement {
 function linkChip(glyph: string, target: CardRec): HTMLElement {
   const s = document.createElement("span");
   s.className = "nlink";
-  s.textContent = `${glyph} ${displayAddr(target.thread, target.addr)} ${trunc(target.title, 40)}`;
+  s.textContent = `${glyph} ${trunc(target.title, 40)}`;
   s.addEventListener("click", (e) => {
     e.stopPropagation();
     jumpToCard(target);
@@ -286,9 +232,20 @@ function linkChip(glyph: string, target: CardRec): HTMLElement {
 
 const trunc = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+/** Time within the day rule: `5:31 pm`; older years fall back to the date. */
+function fmtWhen(secs: number): string {
+  if (!secs) return "—";
+  const d = new Date(secs * 1000);
+  return d
+    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    .toLowerCase();
+}
+
 function jumpToCard(c: CardRec) {
   selected = c.id;
-  location.hash = `#/notes/${c.thread}?card=${c.id}`;
+  location.hash = `#/notes?card=${c.id}`;
+  // hash may already match (same card re-selected) — render regardless
+  render();
 }
 
 function jumpToTitle(title: string) {
@@ -305,27 +262,11 @@ function selectedCard(): CardRec | null {
 }
 
 function newCard() {
-  const parent = openThread != null ? selectedCard() : null;
-  openComposer(
-    {
-      kind: "create",
-      seed: parent
-        ? {
-            parent: {
-              id: parent.id,
-              address: displayAddr(parent.thread, parent.addr),
-              title: parent.title,
-            },
-          }
-        : { thread: openThread },
-    },
-    (saved) => {
-      if (!saved) return;
-      selected = saved.id;
-      if (openThread == null) location.hash = `#/notes/${saved.thread}?card=${saved.id}`;
-      else void reload();
-    },
-  );
+  openComposer({ kind: "create", seed: {} }, (saved) => {
+    if (!saved) return;
+    selected = saved.id;
+    void reload();
+  });
 }
 
 function editCard(c: CardRec) {
@@ -336,7 +277,7 @@ function editCard(c: CardRec) {
 
 $newCard.addEventListener("click", newCard);
 $back.addEventListener("click", () => {
-  location.hash = openThread == null ? "#/" : "#/notes";
+  location.hash = "#/";
 });
 document.getElementById("notes-toggle")!.addEventListener("click", () => {
   location.hash = notesOpen() ? "#/" : "#/notes";
@@ -347,7 +288,7 @@ document.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
   switch (e.key) {
     case "Escape":
-      location.hash = openThread == null ? "#/" : "#/notes";
+      location.hash = "#/";
       break;
     case "c":
       newCard();
@@ -355,10 +296,7 @@ document.addEventListener("keydown", (e) => {
       break;
     case "j":
     case "k": {
-      if (openThread == null) return;
-      const live = cards
-        .filter((c) => c.thread === openThread && !c.filed)
-        .sort(compareCards);
+      const { live } = timeline(cards);
       if (!live.length) return;
       const i = live.findIndex((c) => c.id === selected);
       const next = live[Math.min(Math.max(i + (e.key === "j" ? 1 : -1), 0), live.length - 1)];

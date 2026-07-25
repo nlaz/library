@@ -44,12 +44,14 @@
   padding: var(--sp-5) clamp(16px, 6vw, 64px) 80px;
 }
 
-/* box list: a drawer of threads, recency first */
-.nb-drawer {
-  max-width: 720px;
+/* the timeline: one flat column, a journal of reading */
+.nb-timeline {
+  max-width: 640px;
   margin: 0 auto;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
 }
 
 .nb-empty {
@@ -60,83 +62,35 @@
   text-align: center;
 }
 
-.nb-row {
-  display: grid;
-  grid-template-columns: 56px 1fr auto auto;
+/* day rules — the only grouping the view has */
+.nb-day {
+  display: flex;
+  align-items: center;
   gap: var(--sp-3);
-  align-items: baseline;
-  padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--line);
-  cursor: pointer;
-}
-
-.nb-row:last-child {
-  border-bottom: none;
-}
-
-.nb-row:hover {
-  background: var(--bg);
-}
-
-.nb-no {
+  margin-top: var(--sp-4);
   font-family: var(--font-mono);
-  font-size: var(--fs-mono);
+  font-size: var(--fs-micro);
   font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
   color: var(--ink-dim);
 }
 
-.nb-name {
-  font-weight: 550;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+.nb-day:first-child {
+  margin-top: 0;
 }
 
-.nb-meta,
-.nb-when {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  white-space: nowrap;
+.nb-day::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--line);
 }
 
-/* thread view: cards as an argument, the rail beside them */
-.nb-threadwrap {
-  max-width: 860px;
-  margin: 0 auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 240px;
-  gap: var(--sp-5);
-  align-items: start;
-}
-
-@media (max-width: 860px) {
-  .nb-threadwrap {
-    grid-template-columns: 1fr;
-  }
-}
-
-.nb-thread {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  min-width: 0;
-}
-
-#notes-rail {
-  position: sticky;
-  top: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-
+/* the related rail, folded into the open card */
 .railbox {
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  margin-top: 10px;
+  padding-top: var(--sp-2);
+  border-top: 1px dashed var(--line);
 }
 
 .rail-lab {
@@ -165,13 +119,6 @@
 
 .rail-row:last-child {
   border-bottom: none;
-}
-
-.rail-addr {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  color: var(--ink-faint);
-  flex: none;
 }
 
 .rail-title {
@@ -213,7 +160,7 @@
   border: 1px solid var(--line-strong);
   padding: 10px 14px 12px;
   position: relative;
-  cursor: default;
+  cursor: pointer;
 }
 
 /* the index card's head rule, in the pen's ink */
@@ -242,14 +189,15 @@
   opacity: 0.55;
 }
 
-.ncard-addr {
+.ncard-when {
   position: absolute;
   top: 8px;
   right: 12px;
   font-family: var(--font-mono);
-  font-size: var(--fs-meta);
+  font-size: var(--fs-micro);
   font-weight: 500;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
   color: var(--ink-faint);
 }
 
@@ -347,15 +295,6 @@
   .card.notehit .note-face {
     background: var(--surface);
   }
-}
-
-.card.notehit .nf-addr {
-  position: absolute;
-  top: 5px;
-  right: 12px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  color: var(--ink-faint);
 }
 
 .card.notehit .nf-title {
@@ -558,21 +497,12 @@
 
 .cp-foot {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: baseline;
   gap: var(--sp-2);
   margin-top: 10px;
   padding-top: 6px;
   border-top: 1px solid var(--line);
-}
-
-.cp-place {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  color: var(--ink-dim);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .cp-actions {

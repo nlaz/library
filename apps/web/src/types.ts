@@ -1,13 +1,10 @@
 export type SnippetWord = { t: string; m: boolean };
 
-/** Note-box context on a `kind: "card"` hit. `doc`/`page` are the real
+/** Note context on a `kind: "card"` hit. `doc`/`page` are the real
  * page the card's first mark lives on — present only on mark-cards. */
 export type CardMeta = {
   id: string;
-  address: string;
   title: string;
-  thread: number;
-  breadcrumb: string;
   doc?: string;
   page?: number;
 };
@@ -88,8 +85,6 @@ export type QuoteAnchor = { doc: string; page: number } & (
 
 export type CardRec = {
   id: string;
-  thread: number;
-  addr: number[];
   title: string;
   body: string;
   evidence: QuoteAnchor[];
@@ -105,19 +100,9 @@ export type NewCard = {
   body: string;
   evidence: QuoteAnchor[];
   links: CardLink[];
-  parent: string | null;
-  thread: number | null;
 };
 
-export type NeighborCard = { id: string; address: string; title: string; score: number };
-
-export type ThreadProposal = {
-  parent: string;
-  parent_address: string;
-  parent_title: string;
-  thread: number;
-  address: string;
-};
+export type NeighborCard = { id: string; title: string; score: number };
 
 // --- hidden perf view (Cmd+.) ---------------------------------------------
 

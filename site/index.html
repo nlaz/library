@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The Library</title>
+  <meta name="description" content="An on-device search engine and chat agent for a personal collection of scanned PDFs. Nothing leaves the machine." />
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <img class="mark" src="icon.png" alt="" width="96" height="96" />
+    <h1>The Library</h1>
+    <p class="tagline">
+      An on-device search engine and chat agent for a personal collection of
+      scanned PDFs &mdash; books, catalogs, papers. Nothing leaves the machine:
+      no cloud, no accounts, no API keys.
+    </p>
+
+    <img class="shot" src="screenshot.png" alt="The Library app window" width="1280" height="860" />
+
+    <a class="download" href="https://github.com/nlaz/library/releases/latest/download/TheLibrary-macos-arm64.dmg">
+      Download for macOS
+    </a>
+    <p class="meta">v0.0.1 &middot; macOS 26+ &middot; Apple silicon &middot; unsigned</p>
+
+    <section class="firstrun">
+      <h2>First launch</h2>
+      <p>
+        The app isn&rsquo;t notarized yet. Drag it to Applications, then
+        right-click it and choose <em>Open</em> the first time. Or, from a
+        terminal:
+      </p>
+      <pre><code>xattr -dr com.apple.quarantine '/Applications/The Library.app'</code></pre>
+    </section>
+  </main>
+
+  <footer>
+    <a href="https://github.com/nlaz/library">github.com/nlaz/library</a>
+    <span>&middot;</span>
+    <span>Apache-2.0</span>
+  </footer>
+</body>
+</html>

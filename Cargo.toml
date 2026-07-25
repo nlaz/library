@@ -6,6 +6,7 @@ members = [
     "ese",
     "examples/*",
     "tools/librarian-eval",
+    "tools/retrieval-eval",
     "apps/library-core",
     "apps/library-ingest",
     "apps/library-server",
@@ -68,6 +69,9 @@ opt-level = 2
 [profile.dev.package.postcard]
 opt-level = 2
 [profile.dev.package.fxhash]
+opt-level = 2
+# the brute-force cosine ranking in the eval tool is a dense matmul
+[profile.dev.package.retrieval-eval]
 opt-level = 2
 
 # hoisted from anny

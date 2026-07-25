@@ -5399,6 +5399,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "retrieval-eval"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "ese",
+ "fxhash",
+ "library-core",
+ "minreq",
+ "model2vec-rs",
+ "parquet",
+ "rayon",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rfd"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

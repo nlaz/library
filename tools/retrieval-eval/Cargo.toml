@@ -1,0 +1,18 @@
+[package]
+name = "retrieval-eval"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ese = { workspace = true }
+library-core = { path = "../../apps/library-core" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+fxhash = { workspace = true }
+rayon = "1"
+minreq = { version = "2", features = ["https-native"] }
+parquet = "58"
+model2vec-rs = "0"

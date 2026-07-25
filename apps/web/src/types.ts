@@ -301,3 +301,36 @@ export type AgentTurn = {
   model: string | null;
   content: string;
 };
+
+/** Mirror of the Rust atlas wire shapes (library-core atlas.rs). Compact
+ * field names on the point/passage records are deliberate — the payload is
+ * dominated by ~10-20k points. */
+export type AtlasDoc = { id: string; title: string; collection: string; chunks: number };
+/** One map dot: PCA position, doc index, theme id (-1 = none), neighborhood
+ * doc-diversity, page, snippet. */
+export type AtlasPoint = { x: number; y: number; d: number; c: number; e: number; p: number; s: string };
+export type AtlasPassage = { d: number; p: number; s: string };
+export type AtlasTheme = {
+  id: number;
+  size: number;
+  ndocs: number;
+  /** Local-model label; absent when the librarian probe was unavailable. */
+  title?: string;
+  terms: string[];
+  top: AtlasPassage[];
+};
+export type AtlasTrailStep = { d: number; p: number; s: string; sim: number };
+export type AtlasTrail = { c: number; steps: AtlasTrailStep[] };
+export type Atlas = {
+  fingerprint: { version: number; docs: number; chunks: number; hash: number };
+  built_ms: number;
+  build_ms: number;
+  docs: AtlasDoc[];
+  points: AtlasPoint[];
+  themes: AtlasTheme[];
+  trails: AtlasTrail[];
+};
+/** Envelope from /api/atlas (web) and the `atlas` command (desktop). */
+export type AtlasResponse =
+  | { status: "ready"; atlas: Atlas; rebuilding?: boolean }
+  | { status: "building"; since: number; stage: string };

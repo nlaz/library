@@ -21,6 +21,16 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, v: &T) -> io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Like [`write_json_atomic`] but compact — for machine-derived sidecars
+/// (megabytes of atlas points) where pretty-printing would double the size
+/// for no human benefit.
+pub fn write_json_atomic_compact<T: Serialize>(path: &Path, v: &T) -> io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec(v).map_err(io::Error::other)?;
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
 /// Read a JSON sidecar; missing or corrupt files read as `None`.
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
     let bytes = std::fs::read(path).ok()?;
@@ -54,6 +64,22 @@ mod tests {
         // rewrite replaces whole file, no tmp left behind
         write_json_atomic(&path, &vec!["c".to_string()]).unwrap();
         assert_eq!(read_json::<Vec<String>>(&path), Some(vec!["c".to_string()]));
+        assert!(!path.with_extension("json.tmp").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn compact_round_trip() {
+        let dir = tmp_dir("compact");
+        let path = dir.join("v.json");
+        write_json_atomic_compact(&path, &vec!["a".to_string(), "b".to_string()]).unwrap();
+        assert_eq!(
+            read_json::<Vec<String>>(&path),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        // compact output carries no pretty-print whitespace
+        let raw = std::fs::read(&path).unwrap();
+        assert!(!raw.contains(&b'\n'));
         assert!(!path.with_extension("json.tmp").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }

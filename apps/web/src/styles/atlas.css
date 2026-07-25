@@ -1,0 +1,259 @@
+/* ---------------------------------------------------------------------------
+   corpus atlas (Cmd+/): hidden full-screen map of the library's passages.
+   Grayscale like the rest of the chrome — the highlighter lights the
+   selected theme's cluster, nothing else. Sits above chat (11) and toast
+   (12), below the notebox modal (14) and perf (15), so perf can be opened
+   on top of it. */
+
+#atlas {
+  position: fixed;
+  inset: 0;
+  z-index: 13;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink);
+}
+
+#atlas-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-strong);
+  font-size: var(--fs-meta);
+}
+
+#atlas-title {
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+}
+
+#atlas-status {
+  color: var(--ink-dim);
+}
+
+#atlas-refresh {
+  margin-left: auto;
+  font: inherit;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+  padding: 1px var(--sp-2);
+  cursor: pointer;
+}
+
+#atlas-refresh:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+#atlas-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* --- themes rail ---------------------------------------------------------- */
+
+#atlas-rail {
+  width: 264px;
+  flex: none;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  padding: var(--sp-2);
+}
+
+.a-rail-head {
+  display: flex;
+  justify-content: space-between;
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+}
+
+#atlas-rail button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  background: none;
+  border: 1px solid transparent;
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  cursor: pointer;
+}
+
+.a-title {
+  display: block;
+  font-size: var(--fs-mono);
+}
+
+.a-panel-title {
+  font-weight: 500;
+}
+
+.a-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 3px 0;
+}
+
+.a-badge {
+  border: 1px solid var(--line);
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--ink-dim);
+  background: var(--surface);
+}
+
+#atlas-rail button:hover {
+  background: var(--well);
+}
+
+#atlas-rail button.on {
+  background: var(--hl-wash);
+  border-color: var(--line-strong);
+}
+
+#atlas-rail .a-count {
+  display: block;
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+
+/* --- map stage ------------------------------------------------------------ */
+
+#atlas-stage {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#atlas-map {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#atlas-note {
+  position: absolute;
+  left: var(--sp-3);
+  bottom: var(--sp-2);
+  max-width: 46ch;
+  font-size: var(--fs-meta);
+  color: var(--ink-faint);
+  pointer-events: none;
+}
+
+#atlas-tip {
+  position: absolute;
+  max-width: 300px;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  box-shadow: 2px 2px 0 var(--edge-lo);
+  padding: var(--sp-2);
+  pointer-events: none;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+}
+
+/* --- theme panel ---------------------------------------------------------- */
+
+#atlas-panel {
+  width: 340px;
+  flex: none;
+  overflow-y: auto;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  padding: var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+}
+
+.a-count {
+  color: var(--ink-dim);
+}
+
+.a-sect {
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  color: var(--ink-dim);
+  border-bottom: 1px solid var(--line);
+  margin: var(--sp-4) 0 var(--sp-2);
+  padding-bottom: 3px;
+}
+
+.a-step,
+.a-quote {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  padding: var(--sp-1) var(--sp-2);
+  margin: 0 calc(-1 * var(--sp-2)) var(--sp-2);
+  position: relative;
+}
+
+.a-step:hover,
+.a-quote:hover {
+  background: var(--well);
+}
+
+.a-step .a-n {
+  position: absolute;
+  left: var(--sp-1);
+  top: var(--sp-1);
+  color: var(--ink-dim);
+}
+
+.a-step {
+  padding-left: var(--sp-4);
+}
+
+.a-src {
+  display: block;
+  color: var(--ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 2px;
+}
+
+#atlas q,
+#atlas-tip q {
+  quotes: "\201C" "\201D";
+  display: block;
+  line-height: 1.5;
+}
+
+.a-sim {
+  display: block;
+  color: var(--ink-faint);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.a-none {
+  color: var(--ink-faint);
+  padding: var(--sp-1) 0;
+}
+
+@media (max-width: 900px) {
+  #atlas-rail {
+    width: 200px;
+  }
+
+  #atlas-panel {
+    width: 280px;
+  }
+}

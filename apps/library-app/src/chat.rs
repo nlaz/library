@@ -24,7 +24,7 @@ impl Drop for ChatBridge {
     }
 }
 
-fn librarian_bin(app: &AppHandle) -> PathBuf {
+pub(crate) fn librarian_bin(app: &AppHandle) -> PathBuf {
     if let Ok(p) = std::env::var("LIBRARIAN_BIN") {
         return PathBuf::from(p);
     }

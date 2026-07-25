@@ -111,6 +111,24 @@
       <div id="perf-agent-body" class="perf-pane" role="tabpanel" hidden></div>
       <div id="perf-pop" hidden></div>
     </section>
+    <section id="atlas" hidden aria-label="Corpus atlas">
+      <div id="atlas-head">
+        <div id="atlas-title">corpus atlas</div>
+        <div id="atlas-status"></div>
+        <button id="atlas-refresh" title="Recompute the atlas">rebuild</button>
+      </div>
+      <div id="atlas-body">
+        <aside id="atlas-rail" aria-label="Recurring themes"></aside>
+        <div id="atlas-stage">
+          <canvas id="atlas-map"></canvas>
+          <div id="atlas-note">
+            brightness — how many books a passage's neighbors span
+          </div>
+          <div id="atlas-tip" hidden></div>
+        </div>
+        <aside id="atlas-panel" hidden aria-label="Theme detail"></aside>
+      </div>
+    </section>
     <div id="toast" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

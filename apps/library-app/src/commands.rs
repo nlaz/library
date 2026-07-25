@@ -88,3 +88,46 @@ pub(crate) async fn perf_ingest(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Hidden corpus-atlas view (Cmd+/): the cached themes/throughlines
+/// sidecar, built lazily in the background on first open and warmed after
+/// ingest — the desktop analogue of the server's `/api/atlas` route.
+#[tauri::command]
+pub(crate) async fn atlas(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    refresh: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let eng = engine(&state)?;
+    let data = state.settings.data.clone();
+    let librarian = crate::chat::librarian_bin(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let fp = {
+            let lib = eng.lib.read().expect("library lock poisoned");
+            library_core::atlas::fingerprint(&lib, &data)
+        };
+        if !refresh.unwrap_or(false)
+            && let Some(a) = library_core::atlas::load_fresh(&data, &fp)
+        {
+            // a manual rebuild may be running behind a still-fresh sidecar;
+            // the flag keeps the client polling
+            return serde_json::json!({
+                "status": "ready",
+                "rebuilding": library_core::atlas::building().is_some(),
+                "atlas": a,
+            });
+        }
+        if let Some(claim) = library_core::atlas::try_claim() {
+            std::thread::spawn(move || {
+                let lib = eng.lib.read().expect("library lock poisoned");
+                if let Err(e) = library_core::atlas::build(claim, &lib, &data, Some(&librarian)) {
+                    eprintln!("atlas build failed: {e:#}");
+                }
+            });
+        }
+        let (since, stage) = library_core::atlas::building().unwrap_or((0, "starting"));
+        serde_json::json!({"status": "building", "since": since, "stage": stage})
+    })
+    .await
+    .map_err(|e| e.to_string())
+}

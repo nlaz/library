@@ -652,6 +652,8 @@ fn probe(filter: Option<&str>) -> Result<()> {
 ///   {"kind":"content_overlap_max","value":0.5}  (verbatim-dump tripwire: the
 ///       longest run of consecutive words the answer shares with any injected
 ///       tool text, as a fraction of the answer, must stay below value)
+///   {"kind":"tools_unique"}  (no tool ran twice with the same args — cache
+///       hits are not recorded, so a duplicate here means the dedup regressed)
 fn check_expects(fx: &Value, result: &Value) -> Vec<(String, bool)> {
     let Some(expects) = fx.get("expect").and_then(|e| e.as_array()) else {
         return Vec::new();
@@ -728,6 +730,15 @@ fn check_expects(fx: &Value, result: &Value) -> Vec<(String, bool)> {
                         })
                         .unwrap_or(0.0)
                         <= max
+                }
+                // the "plan" recorder entry is the pre-pass decision, not a
+                // tool call — one per turn is expected, so it's exempt
+                "tools_unique" => {
+                    let mut seen = std::collections::HashSet::new();
+                    calls
+                        .iter()
+                        .filter(|c| c["name"] != "plan")
+                        .all(|c| seen.insert(format!("{}|{}", c["name"], c["args"])))
                 }
                 _ => false,
             };

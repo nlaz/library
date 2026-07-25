@@ -126,9 +126,43 @@ func json(_ s: String) -> Any? {
 
 // MARK: - Tools
 
+/// Results of tool calls already made this turn, keyed by tool name and
+/// normalized args. The plan pre-pass populates it; a model re-call of the
+/// same hop returns the cached body without re-executing, re-recording, or
+/// re-emitting tool events — before this, every planned first hop ran twice
+/// (once host-side, once when the model called the same tool again). Cleared
+/// at the start of each turn; cross-turn browse state lives in SeenPages.
+final class ToolCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String: String] = [:]
+    func get(_ key: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries[key]
+    }
+    func put(_ key: String, _ body: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries[key] = body
+    }
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.removeAll()
+    }
+}
+
+func searchCacheKey(_ toolName: String, _ query: String, _ collection: String) -> String {
+    "\(toolName)|\(query.trimmingCharacters(in: .whitespaces).lowercased())|\(collection.lowercased())"
+}
+
 /// Shared search plumbing: emit started/done tool events with hit chips,
 /// route to /api/search (text or figures — the `kind` param picks).
-func runSearch(toolName: String, query: String, collection: String, kind: String) async -> String {
+func runSearch(
+    toolName: String, query: String, collection: String, kind: String, cache: ToolCache
+) async -> String {
+    let key = searchCacheKey(toolName, query, collection)
+    if let hit = cache.get(key) { return hit }
     recorder.record(toolName, ["query": query, "collection": collection])
     emit.line([
         "e": "tool", "name": toolName, "status": "started",
@@ -167,6 +201,7 @@ func runSearch(toolName: String, query: String, collection: String, kind: String
     else if let ts = obj?["perf_ts"] as? Int { done["perf_ts"] = ts }
     done["summary"] = summary
     emit.line(done)
+    cache.put(key, body)
     return body
 }
 
@@ -174,6 +209,7 @@ struct SearchLibrary: Tool {
     let name = "search_library"
     let description =
         "Search the text of the library's scanned books (full-text + semantic). Returns matching passages with title, page, and snippet. Plain keywords work best."
+    let cache: ToolCache
 
     var parameters: GenerationSchema {
         GenerationSchema(
@@ -187,7 +223,7 @@ struct SearchLibrary: Tool {
     func call(arguments: GeneratedContent) async throws -> String {
         let query = (try? arguments.value(String.self, forProperty: "query")) ?? ""
         let col = ((try? arguments.value(String?.self, forProperty: "collection")) ?? nil) ?? ""
-        return await runSearch(toolName: name, query: query, collection: col, kind: "")
+        return await runSearch(toolName: name, query: query, collection: col, kind: "", cache: cache)
     }
 }
 
@@ -195,6 +231,7 @@ struct SearchFigures: Tool {
     let name = "search_figures"
     let description =
         "Find pictures, photographs, diagrams, and maps in the books. Only for requests about images — for facts, recipes, or any text question, use search_library instead."
+    let cache: ToolCache
 
     var parameters: GenerationSchema {
         GenerationSchema(
@@ -208,7 +245,8 @@ struct SearchFigures: Tool {
     func call(arguments: GeneratedContent) async throws -> String {
         let query = (try? arguments.value(String.self, forProperty: "query")) ?? ""
         let col = ((try? arguments.value(String?.self, forProperty: "collection")) ?? nil) ?? ""
-        return await runSearch(toolName: name, query: query, collection: col, kind: "images")
+        return await runSearch(
+            toolName: name, query: query, collection: col, kind: "images", cache: cache)
     }
 }
 
@@ -235,12 +273,18 @@ final class SeenPages: @unchecked Sendable {
 
 /// The sample fetch, shared by the model-visible tool and the plan
 /// pre-pass (browse turns run it host-side — see plannedPrompt).
-func fetchSample(collection col: String, seen: SeenPages) async -> String {
-    recorder.record("sample_page", ["collection": col])
+/// The cache key ignores `avoid` on purpose: a same-turn re-call gets the
+/// same page back, while the next turn (cleared cache, grown avoid list)
+/// samples fresh. The recorder captures `avoid` so probe expects can tell
+/// turns apart.
+func fetchSample(collection col: String, seen: SeenPages, cache: ToolCache) async -> String {
+    let key = "sample_page|\(col.lowercased())"
+    if let hit = cache.get(key) { return hit }
+    let avoid = seen.csv()
+    recorder.record("sample_page", ["collection": col, "avoid": avoid])
     emit.line(["e": "tool", "name": "sample_page", "status": "started", "args": ["collection": col]])
     var params: [String: String] = [:]
     if !col.isEmpty { params["col"] = col }
-    let avoid = seen.csv()
     if !avoid.isEmpty { params["avoid"] = avoid }
     let body = await callTool(
         "sample_page", ["collection": col, "avoid": avoid], path: "/api/sample", query: params)
@@ -257,6 +301,7 @@ func fetchSample(collection col: String, seen: SeenPages) async -> String {
         }
     }
     emit.line(["e": "tool", "name": "sample_page", "status": "done", "summary": summary, "hits": chips])
+    cache.put(key, body)
     return body
 }
 
@@ -265,6 +310,7 @@ struct SamplePage: Tool {
     let description =
         "Open one page of the library at random and return its text. Use when the user leaves the choice of material to you — open-ended, browsing, or inspiration asks with no specific topic to search for. Pass collection to browse one shelf."
     let seen: SeenPages
+    let cache: ToolCache
 
     var parameters: GenerationSchema {
         GenerationSchema(
@@ -276,7 +322,7 @@ struct SamplePage: Tool {
 
     func call(arguments: GeneratedContent) async throws -> String {
         let col = ((try? arguments.value(String?.self, forProperty: "collection")) ?? nil) ?? ""
-        return await fetchSample(collection: col, seen: seen)
+        return await fetchSample(collection: col, seen: seen, cache: cache)
     }
 }
 
@@ -284,6 +330,7 @@ struct ReadPages: Tool {
     let name = "read_pages"
     let description =
         "Read the full text of specific pages of a document, in reading order. Use to dig into a page another tool surfaced, or to keep reading nearby pages. Returns at most 2 pages per call."
+    let cache: ToolCache
 
     var parameters: GenerationSchema {
         GenerationSchema(
@@ -299,6 +346,8 @@ struct ReadPages: Tool {
         let doc = (try? arguments.value(String.self, forProperty: "doc")) ?? ""
         let from = (try? arguments.value(Int.self, forProperty: "from")) ?? 1
         let to = ((try? arguments.value(Int?.self, forProperty: "to")) ?? nil) ?? from
+        let key = "read_pages|\(doc.lowercased())|\(from)|\(to)"
+        if let hit = cache.get(key) { return hit }
         recorder.record(name, ["doc": doc, "from": from, "to": to])
         emit.line([
             "e": "tool", "name": name, "status": "started",
@@ -319,6 +368,7 @@ struct ReadPages: Tool {
             }
         }
         emit.line(["e": "tool", "name": name, "status": "done", "summary": summary, "hits": chips])
+        cache.put(key, body)
         return body
     }
 }
@@ -326,7 +376,9 @@ struct ReadPages: Tool {
 /// The overview fetch, shared by the model-visible tool and the plan
 /// pre-pass (which injects it host-side rather than trusting the model to
 /// make the call — see plannedPrompt).
-func fetchOverview() async -> String {
+func fetchOverview(cache: ToolCache) async -> String {
+    let key = "library_overview"
+    if let hit = cache.get(key) { return hit }
     recorder.record("library_overview", [:])
     emit.line(["e": "tool", "name": "library_overview", "status": "started", "args": [String: String]()])
     let body = await callTool("library_overview", [:], path: "/api/overview", query: [:])
@@ -335,6 +387,7 @@ func fetchOverview() async -> String {
         summary = "\(n) books on the shelves"
     }
     emit.line(["e": "tool", "name": "library_overview", "status": "done", "summary": summary, "hits": [[String: Any]]()])
+    cache.put(key, body)
     return body
 }
 
@@ -359,13 +412,14 @@ struct LibraryOverview: Tool {
     let name = "library_overview"
     let description =
         "See what the library holds: each collection with its size and a few example titles. Use to orient yourself before deciding where to look, or when the user asks what the library contains."
+    let cache: ToolCache
 
     var parameters: GenerationSchema {
         GenerationSchema(type: GeneratedContent.self, properties: [])
     }
 
     func call(arguments: GeneratedContent) async throws -> String {
-        await fetchOverview()
+        await fetchOverview(cache: cache)
     }
 }
 
@@ -398,15 +452,19 @@ let INSTRUCTIONS = """
     """
 
 /// Fresh tool instances per session/conversation. `seen` is the
-/// conversation's sample-page avoid list — the caller holds it so the
-/// plan pre-pass (which runs browse turns host-side) shares it with the
-/// model-visible SamplePage tool.
-func defaultTools(seen: SeenPages) -> [any Tool] {
-    [SearchLibrary(), SearchFigures(), SamplePage(seen: seen), ReadPages(), LibraryOverview()]
+/// conversation's sample-page avoid list and `cache` its per-turn tool
+/// result cache — the caller holds both so the plan pre-pass (which runs
+/// first hops host-side) shares them with the model-visible tools.
+func defaultTools(seen: SeenPages, cache: ToolCache) -> [any Tool] {
+    [
+        SearchLibrary(cache: cache), SearchFigures(cache: cache),
+        SamplePage(seen: seen, cache: cache), ReadPages(cache: cache),
+        LibraryOverview(cache: cache),
+    ]
 }
 
 func makeSession(tools: [any Tool]? = nil) -> LanguageModelSession {
-    let tools = tools ?? defaultTools(seen: SeenPages())
+    let tools = tools ?? defaultTools(seen: SeenPages(), cache: ToolCache())
     // Permissive guardrails are deliberate: benign questions about this
     // corpus (butchering a chicken, curing meat, sharpening a knife, home
     // brewing, lighting a wood stove) trip AFM's default guardrail. The
@@ -594,7 +652,9 @@ struct PlannedTurn {
 /// never searched; browse turns wandered into library_overview). The model
 /// still has every tool for follow-up hops (read_pages, another search);
 /// only the first, planned hop is guaranteed.
-func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages) async -> PlannedTurn {
+func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages, cache: ToolCache) async
+    -> PlannedTurn
+{
     guard let plan else { return PlannedTurn(prompt: prompt) }
     switch plan.approach {
     case "search":
@@ -605,7 +665,7 @@ func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages) async -> Pl
         }
         let body = await runSearch(
             toolName: "search_library", query: plan.query,
-            collection: plan.collection, kind: "")
+            collection: plan.collection, kind: "", cache: cache)
         let flat = searchResultText(body)
         return PlannedTurn(
             prompt: "\(prompt)\n\nLibrary search results for \"\(plan.query)\": \(flat)",
@@ -620,7 +680,7 @@ func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages) async -> Pl
         }
         let body = await runSearch(
             toolName: "search_figures", query: plan.query,
-            collection: plan.collection, kind: "images")
+            collection: plan.collection, kind: "images", cache: cache)
         let flat = searchResultText(body)
         return PlannedTurn(
             prompt: "\(prompt)\n\nFigure search results for \"\(plan.query)\": \(flat)",
@@ -628,7 +688,7 @@ func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages) async -> Pl
             confidence: (json(body) as? [String: Any])?["confidence"] as? String,
             injected: flat)
     case "browse":
-        let body = await fetchSample(collection: plan.collection, seen: seen)
+        let body = await fetchSample(collection: plan.collection, seen: seen, cache: cache)
         let flat = sampleTextForPrompt(body)
         var citation: String? = nil
         if let obj = json(body) as? [String: Any], obj["error"] == nil {
@@ -642,7 +702,7 @@ func plannedPrompt(_ prompt: String, _ plan: Plan?, seen: SeenPages) async -> Pl
                 "\(prompt)\n\nA page opened at random. Tell the user the most interesting thing on it, in your own words: \(flat)",
             approach: plan.approach, citation: citation, injected: flat)
     case "overview":
-        let flat = overviewText(await fetchOverview())
+        let flat = overviewText(await fetchOverview(cache: cache))
         return PlannedTurn(
             prompt: "\(prompt)\n\nAnswer from this library overview: \(flat)",
             approach: plan.approach, injected: flat)
@@ -852,12 +912,13 @@ func runTurn() async {
         return
     }
     let seen = SeenPages()
-    let session = makeSession(tools: defaultTools(seen: seen))
+    let cache = ToolCache()
+    let session = makeSession(tools: defaultTools(seen: seen, cache: cache))
     session.prewarm()  // main session warms while the plan pre-pass runs
     let plan = await planTurn(prompt)
     await executeTurn(
         session: session,
-        turn: await plannedPrompt(prompt, plan, seen: seen),
+        turn: await plannedPrompt(prompt, plan, seen: seen, cache: cache),
         fallback: messages.last?.content ?? prompt)
 }
 
@@ -879,28 +940,33 @@ final class ServeState: @unchecked Sendable {
     private let lock = NSLock()
     private var sessions: [String: LanguageModelSession] = [:]
     private var seenPages: [String: SeenPages] = [:]
+    private var toolCaches: [String: ToolCache] = [:]
     private var lastUsed: [String: Date] = [:]
     private var active: Task<Void, Never>?
 
-    /// Returns (session, seen, isNew), evicting idle conversations first.
-    /// `seen` outlives session replacement (overflow retry) so "another
-    /// one" keeps walking new shelves across the whole conversation.
-    func checkout(_ conv: String) -> (LanguageModelSession, SeenPages, Bool) {
+    /// Returns (session, seen, cache, isNew), evicting idle conversations
+    /// first. `seen` outlives session replacement (overflow retry) so
+    /// "another one" keeps walking new shelves across the whole
+    /// conversation; `cache` is cleared by the caller at each turn start.
+    func checkout(_ conv: String) -> (LanguageModelSession, SeenPages, ToolCache, Bool) {
         lock.lock()
         defer { lock.unlock() }
         let now = Date()
         for (k, t) in lastUsed where now.timeIntervalSince(t) > SESSION_IDLE_EVICT {
             sessions.removeValue(forKey: k)
             seenPages.removeValue(forKey: k)
+            toolCaches.removeValue(forKey: k)
             lastUsed.removeValue(forKey: k)
         }
         lastUsed[conv] = now
         let seen = seenPages[conv] ?? SeenPages()
         seenPages[conv] = seen
-        if let s = sessions[conv] { return (s, seen, false) }
-        let s = makeSession(tools: defaultTools(seen: seen))
+        let cache = toolCaches[conv] ?? ToolCache()
+        toolCaches[conv] = cache
+        if let s = sessions[conv] { return (s, seen, cache, false) }
+        let s = makeSession(tools: defaultTools(seen: seen, cache: cache))
         sessions[conv] = s
-        return (s, seen, true)
+        return (s, seen, cache, true)
     }
 
     func replace(_ conv: String, with s: LanguageModelSession) {
@@ -955,9 +1021,10 @@ func runServe() async {
                 }
                 // session transcripts carry history natively; only a brand-new
                 // (or evicted) conversation needs the folded-history rebuild
-                let (session, seen, isNew) = state.checkout(conv)
+                let (session, seen, cache, isNew) = state.checkout(conv)
                 let prompt = isNew ? buildPrompt(messages) : last.content
                 let task = Task {
+                    cache.clear()  // per-turn: the planned hop must re-run fresh
                     // plan over the folded history, not the bare message —
                     // "another one" only classifies with context
                     let plan = await planTurn(buildPrompt(messages))
@@ -967,7 +1034,8 @@ func runServe() async {
                         return
                     }
                     if let replacement = await executeTurn(
-                        session: session, turn: await plannedPrompt(prompt, plan, seen: seen),
+                        session: session,
+                        turn: await plannedPrompt(prompt, plan, seen: seen, cache: cache),
                         fallback: last.content)
                     {
                         state.replace(conv, with: replacement)
@@ -1012,14 +1080,15 @@ func runProbe(_ path: String) async {
     if let t = fx["temperature"] as? Double { options = GenerationOptions(temperature: t) }
 
     let seen = SeenPages()
+    let cache = ToolCache()
     let session: LanguageModelSession
     if let instructions = fx["instructions"] as? String {
         session = LanguageModelSession(
             model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
-            tools: useTools ? defaultTools(seen: seen) : [],
+            tools: useTools ? defaultTools(seen: seen, cache: cache) : [],
             instructions: instructions)
     } else {
-        session = makeSession(tools: useTools ? defaultTools(seen: seen) : [])
+        session = makeSession(tools: useTools ? defaultTools(seen: seen, cache: cache) : [])
     }
 
     let start = Date()
@@ -1040,10 +1109,11 @@ func runProbe(_ path: String) async {
             var transcript: [Msg] = []
             for (i, turn) in turns.enumerated() {
                 transcript.append(Msg(role: "user", content: turn))
+                cache.clear()  // per-turn, matching serve mode
                 var planned = PlannedTurn(prompt: turn)
                 if useTools {
                     planned = await plannedPrompt(
-                        turn, await planTurn(buildPrompt(transcript)), seen: seen)
+                        turn, await planTurn(buildPrompt(transcript)), seen: seen, cache: cache)
                 }
                 if let injected = planned.injected { toolTexts.append(injected) }
                 // guided generation, matching serve/turn mode

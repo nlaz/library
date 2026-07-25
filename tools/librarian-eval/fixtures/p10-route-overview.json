@@ -3,6 +3,7 @@
   "prompt": "what kinds of books are in this library?",
   "expect": [
     { "kind": "tools_include", "value": "library_overview" },
-    { "kind": "content_not_regex", "value": "00vol|Document ID" }
+    { "kind": "content_not_regex", "value": "00vol|Document ID" },
+    { "kind": "tools_unique" }
   ]
 }

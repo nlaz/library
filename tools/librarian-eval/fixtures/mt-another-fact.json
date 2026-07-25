@@ -10,6 +10,7 @@
     { "kind": "all_content_not_regex", "value": "00vol|Document ID" },
     { "kind": "all_content_not_regex", "value": "\\\\n" },
     { "kind": "all_content_not_regex", "value": "(?i)^here is an(other)? interesting" },
-    { "kind": "content_overlap_max", "value": 0.5 }
+    { "kind": "content_overlap_max", "value": 0.5 },
+    { "kind": "tools_unique" }
   ]
 }

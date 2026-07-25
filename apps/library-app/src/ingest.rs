@@ -169,9 +169,11 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
                 && let Some(claim) = library_core::atlas::try_claim()
             {
                 let data = data.clone();
+                let librarian = crate::chat::librarian_bin(&app);
                 std::thread::spawn(move || {
                     let lib = eng.lib.read().expect("library lock poisoned");
-                    if let Err(e) = library_core::atlas::build(claim, &lib, &data) {
+                    if let Err(e) = library_core::atlas::build(claim, &lib, &data, Some(&librarian))
+                    {
                         eprintln!("atlas build failed: {e:#}");
                     }
                 });

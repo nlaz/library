@@ -49,6 +49,13 @@ opt-level = 3
 codegen-units = 1
 lto = "fat"
 
+# dependencies don't need debuginfo — nobody steps through tauri or
+# tokenizers in lldb, and full DWARF for ~600 dep crates is the bulk of a
+# multi-GB target/debug. "*" excludes workspace members, which keep full
+# debuginfo. Backtraces through deps still show symbol names.
+[profile.dev.package."*"]
+debug = false
+
 # the search/store hot path runs at near-release speed inside `cargo tauri
 # dev` and debug test runs — BM25 over a full library is 10-40x slower
 # unoptimized, which reads as an app hang

@@ -8,6 +8,9 @@ use std::{
 
 static MODEL_URL: &str = "https://huggingface.co/sentence-transformers/static-retrieval-mrl-en-v1/resolve/main/0_StaticEmbedding/model.safetensors";
 static TOKENIZER_URL: &str = "https://huggingface.co/sentence-transformers/static-retrieval-mrl-en-v1/resolve/main/0_StaticEmbedding/tokenizer.json";
+/// English word frequencies (Norvig's Google-ngram counts) driving the SIF
+/// token weights baked into the table.
+static FREQ_URL: &str = "https://norvig.com/ngrams/count_1w.txt";
 
 fn main() {
     let out = Path::new(&env::var("OUT_DIR").unwrap()).to_path_buf();
@@ -20,7 +23,7 @@ fn main() {
 
     download_if_missing(model_path, MODEL_URL);
     download_if_missing(tokenizer_path, TOKENIZER_URL);
-    let (weights, dims) = parse_safetensors(model_path);
+    let (mut weights, dims) = parse_safetensors(model_path);
 
     println!(
         "cargo:rerun-if-changed={}",
@@ -33,8 +36,6 @@ fn main() {
         .expect("missing model.vocab");
 
     let mut unk: Vec<f32> = Default::default();
-    let mut cls: Vec<f32> = Default::default();
-    let mut sep: Vec<f32> = Default::default();
 
     // Collect (token, weight_index) pairs
     let mut entries: Vec<(String, usize)> = Vec::new();
@@ -44,13 +45,36 @@ fn main() {
             continue;
         }
         entries.push((token.clone(), i));
-        match i {
-            100 => unk = weights[i].clone(),
-            101 => cls = weights[i].clone(),
-            102 => sep = weights[i].clone(),
-            _ => {}
+        if i == 100 {
+            unk = weights[i].clone();
         }
     }
+
+    // SIF re-weighting: scale each token's row by a/(a + p(token)), with
+    // p from a general-English word-frequency list pushed through the
+    // model's own wordpiece vocabulary. Mean pooling of the scaled rows IS
+    // frequency-weighted pooling — cosine similarity is scale-invariant,
+    // so no runtime change is needed and the token-count denominator stays
+    // harmless. Validated on the library gold set (retrieval-eval README):
+    // +~1 point NDCG@10 over unweighted pooling, with general-English
+    // frequencies performing on par with in-domain ones.
+    let freq_path = &model_dir.join("count_1w.txt");
+    download_if_missing(freq_path, FREQ_URL);
+    apply_sif_weights(&mut weights, &entries, freq_path);
+    // CLS/SEP are appended to every text at runtime; scale them to near
+    // zero — the validated configuration excludes them from the mean, and
+    // the epsilon keeps empty-input vectors directional instead of zero.
+    // Scale the table rows (never reachable as text tokens — the
+    // pretokenizer splits "[CLS]" apart) and recapture the constants from
+    // them, so the golden-test reference generated from raw rows stays
+    // byte-consistent with the runtime.
+    for row in [101, 102] {
+        for v in weights[row].iter_mut() {
+            *v *= 0.01;
+        }
+    }
+    let cls = weights[101].clone();
+    let sep = weights[102].clone();
 
     // hash table
     let vocab_size = entries.len();
@@ -205,6 +229,74 @@ pub const QUANT_SCALE: f32 = {quant_scale:?};\n\
 
     #[cfg(feature = "tests")]
     generate_testdata(&out, &weights, dims as usize, tokenizer_path);
+}
+
+/// Scale every vocab row by its SIF weight a/(a + p(token)). Token
+/// probabilities come from pushing a word-frequency list through the
+/// vocabulary with the same greedy longest-match rule the runtime uses;
+/// tokens the list never produces keep weight 1.0 (maximally rare).
+fn apply_sif_weights(weights: &mut [Vec<f32>], entries: &[(String, usize)], freq_path: &Path) {
+    use std::collections::HashMap;
+    const A: f64 = 1e-3;
+    let vocab: HashMap<&str, usize> = entries.iter().map(|(t, i)| (t.as_str(), *i)).collect();
+    let mut counts: HashMap<usize, f64> = HashMap::new();
+    let mut total = 0f64;
+    let data = fs::read_to_string(freq_path).expect("failed to read frequency file");
+    for line in data.lines() {
+        let mut it = line.split('\t');
+        let (Some(word), Some(count)) = (it.next(), it.next()) else {
+            continue;
+        };
+        let count: f64 = count.trim().parse().unwrap_or(0.0);
+        for id in wordpiece_ids(word, &vocab) {
+            *counts.entry(id).or_insert(0.0) += count;
+            total += count;
+        }
+    }
+    assert!(total > 0.0, "frequency file produced no token counts");
+    for (_, i) in entries {
+        let p = counts.get(i).copied().unwrap_or(0.0) / total;
+        let w = (A / (A + p)) as f32;
+        for v in weights[*i].iter_mut() {
+            *v *= w;
+        }
+    }
+}
+
+/// Greedy longest-match wordpiece over the raw vocab map — a build-time
+/// mirror of the runtime tokenizer, close enough for frequency estimation.
+fn wordpiece_ids(word: &str, vocab: &std::collections::HashMap<&str, usize>) -> Vec<usize> {
+    if !word.is_ascii() || word.is_empty() || word.len() > 100 {
+        return vec![];
+    }
+    let mut ids = Vec::new();
+    let mut start = 0;
+    while start < word.len() {
+        let mut end = word.len();
+        let mut found = None;
+        while end > start {
+            let piece = if start == 0 {
+                word[start..end].to_string()
+            } else {
+                format!("##{}", &word[start..end])
+            };
+            if let Some(&id) = vocab.get(piece.as_str()) {
+                found = Some((id, end));
+                break;
+            }
+            end -= 1;
+        }
+        match found {
+            Some((id, e)) => {
+                ids.push(id);
+                start = e;
+            }
+            // un-tokenizable word: contribute nothing (runtime maps it to UNK,
+            // whose weight stays 1.0 either way)
+            None => return vec![],
+        }
+    }
+    ids
 }
 
 fn phf_hash(key: &[u8], seed: u64) -> u64 {

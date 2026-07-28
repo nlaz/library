@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { backlinks, splitPoint, timeline, wikiTokens } from "./notebox-model";
-import type { CardRec } from "./types";
+import {
+  backlinks,
+  cardShown,
+  cropCSS,
+  docCounts,
+  evidenceDocs,
+  impliedTitle,
+  pruneSelection,
+  splitPoint,
+  timeline,
+  wikiTokens,
+} from "./notebox-model";
+import type { CardRec, QuoteAnchor } from "./types";
 
 const card = (over: Partial<CardRec>): CardRec => ({
   id: "c0",
@@ -74,6 +85,87 @@ describe("wikiTokens", () => {
       { kind: "text", text: "!" },
     ]);
     expect(wikiTokens("plain")).toEqual([{ kind: "text", text: "plain" }]);
+  });
+});
+
+const region = (doc: string, page = 1): QuoteAnchor => ({
+  doc,
+  page,
+  kind: "region",
+  bbox: [0.1, 0.2, 0.4, 0.1],
+});
+
+describe("ledger filters", () => {
+  const cards = [
+    card({ id: "a", evidence: [region("lwec"), region("lwec", 2)] }),
+    card({ id: "b", evidence: [region("lwec")] }),
+    card({ id: "c", evidence: [region("cookery")] }),
+    card({ id: "d" }), // no evidence — belongs to no document
+  ];
+
+  it("evidenceDocs dedupes in first-seen order", () => {
+    expect(evidenceDocs(cards[0])).toEqual(["lwec"]);
+    expect(evidenceDocs(card({ evidence: [region("b"), region("a"), region("b")] }))).toEqual([
+      "b",
+      "a",
+    ]);
+  });
+
+  it("docCounts counts cards, not anchors", () => {
+    expect([...docCounts(cards)]).toEqual([
+      ["lwec", 2],
+      ["cookery", 1],
+    ]);
+  });
+
+  it("cardShown intersects collection scope and rail selection", () => {
+    const none = new Set<string>();
+    expect(cardShown(cards[0], null, none)).toBe(true);
+    expect(cardShown(cards[0], new Set(["lwec"]), none)).toBe(true);
+    expect(cardShown(cards[2], new Set(["lwec"]), none)).toBe(false);
+    expect(cardShown(cards[0], null, new Set(["cookery"]))).toBe(false);
+    expect(cardShown(cards[0], new Set(["lwec"]), new Set(["lwec"]))).toBe(true);
+    // in scope but not selected — the selection still filters
+    expect(cardShown(cards[2], new Set(["lwec", "cookery"]), new Set(["lwec"]))).toBe(false);
+  });
+
+  it("any active filter hides evidence-less cards", () => {
+    expect(cardShown(cards[3], null, new Set())).toBe(true);
+    expect(cardShown(cards[3], new Set(["lwec"]), new Set())).toBe(false);
+    expect(cardShown(cards[3], null, new Set(["lwec"]))).toBe(false);
+  });
+
+  it("pruneSelection drops docs the scope hid", () => {
+    expect(pruneSelection(new Set(["lwec", "cookery"]), new Set(["cookery"]))).toEqual(
+      new Set(["cookery"]),
+    );
+  });
+});
+
+describe("cropCSS", () => {
+  it("windows the scan to the bbox with exact percentages", () => {
+    expect(cropCSS([0.1, 0.2, 0.4, 0.1])).toEqual({
+      width: "250%",
+      left: "-25%",
+      top: "-200%",
+    });
+  });
+
+  it("rejects degenerate boxes", () => {
+    expect(cropCSS([0.5, 0.5, 0, 0.1])).toBeNull();
+    expect(cropCSS([0.5, 0.5, 0.1, 0])).toBeNull();
+  });
+});
+
+describe("impliedTitle", () => {
+  it("prefers the explicit title", () => {
+    expect(impliedTitle("  a claim ", "body text")).toBe("a claim");
+  });
+
+  it("falls back to the body's first line, truncated", () => {
+    expect(impliedTitle("", "  first line\nsecond line")).toBe("first line");
+    expect(impliedTitle("", `${"x".repeat(100)}\nrest`)).toBe(`${"x".repeat(79)}…`);
+    expect(impliedTitle("", "")).toBe("");
   });
 });
 

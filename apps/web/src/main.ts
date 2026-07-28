@@ -11,7 +11,8 @@ import { closeDrawer, initDrawer } from "./drawer";
 import { docTitle, getDocList, prettify, setDocList } from "./format";
 import { getCol, loadCollections, renderHome, setCol } from "./home";
 import { wireDesktop } from "./ingest-ui";
-import { closeNotes, notesOpen, openNotes } from "./notebox";
+import { closeNotes, notesOpen, openNotes, rerenderNotes } from "./notebox";
+import { closeSheet, openSheet, sheetOpen, startCreate } from "./sheet";
 import { dismissPerfPopover, perfOpen, setPerfTab, togglePerf } from "./perf";
 import { closeReader, openReader, readerDoc, readerOpen } from "./reader";
 import { initSearch, sendQuery, sentDoc, showSearch } from "./search";
@@ -20,24 +21,33 @@ import { notify } from "./toast";
 import { isTauri, makeTransport } from "./transport";
 
 // ---------------------------------------------------------------------------
-// routing: #/ = home (shelves) or search results; #/read/<doc>?p=N = reader
+// routing: #/ = home (shelves) or search results; #/read/<doc>?p=N = reader;
+// #/notes = the ledger; #/notes/new|edit = the sheet
 // ---------------------------------------------------------------------------
 
 async function route() {
   const m = location.hash.match(/^#\/read\/([^?]+)(?:\?p=(\d+))?$/);
   const nm = location.hash.match(/^#\/notes(?:\?card=([^&]+))?$/);
+  const sm = location.hash.match(/^#\/notes\/(new|edit)(?:\?card=([^&]+))?$/);
   closeDrawer(); // drawer is per-doc; any navigation invalidates it
   if (m) {
     closeNotes();
+    closeSheet();
     const doc = decodeURIComponent(m[1]);
     // no explicit ?p= -> the reader resumes the remembered position
     openReader(doc, await pagesOf(doc), m[2] ? Number(m[2]) : undefined, docTitle(doc));
+  } else if (sm) {
+    closeReader();
+    closeNotes();
+    await openSheet(sm[1] as "new" | "edit", sm[2] ? decodeURIComponent(sm[2]) : null);
   } else if (nm) {
     closeReader();
+    closeSheet();
     await openNotes(nm[1] ? decodeURIComponent(nm[1]) : null);
   } else {
     closeReader();
     closeNotes();
+    closeSheet();
   }
   // crossing the library/reader boundary re-scopes the query: in-flight
   // answers for the old scope are dropped by seq, this refreshes the new one
@@ -100,6 +110,18 @@ window.addEventListener(
   true,
 );
 
+// c starts a note from any surface (routing closes whatever's open) — but
+// never over the perf/atlas layers, and never while writing somewhere
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "c" || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (sheetOpen() || perfOpen() || atlasOpen()) return;
+  const t = e.target as HTMLElement | null;
+  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t?.isContentEditable)
+    return;
+  e.preventDefault();
+  startCreate();
+});
+
 async function main() {
   if (isTauri()) setDesktop(await import("./tauri"));
   setTransport(await makeTransport());
@@ -154,7 +176,8 @@ async function main() {
     // no "Everything" tab: clicking the active collection again clears it
     setCol(getCol() === btn.dataset.col ? "" : btn.dataset.col!);
     for (const b of $cols.children) b.classList.toggle("on", b === btn && getCol() !== "");
-    if ($q.value.trim()) sendQuery();
+    if (notesOpen()) rerenderNotes(); // the tabs scope the ledger too
+    else if ($q.value.trim()) sendQuery();
     else renderHome();
   });
 }

@@ -1,57 +1,94 @@
-/* --- §17 the note box: threads, cards, composer --------------------------- */
+/* --- §17 the note box: the ledger, the rail, the sheet -------------------- */
 
+/* The notes surface sits under the app's one header (body is a flex
+   column; main hides while notes shows) — the header never changes
+   between the shelves and here. */
 #notes {
-  position: fixed;
-  inset: 0;
-  background: var(--bg);
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  z-index: 8;
+  background: var(--bg);
 }
 
 #notes[hidden] {
   display: none;
 }
 
-#notes-top {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 20px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-  flex: none;
-}
-
-#notes-back,
-#notes-new {
-  font-family: var(--font-mono);
-  padding: 4px 10px;
-}
-
-#notes-title {
-  flex: 1;
-  font-size: var(--fs-title);
-  font-weight: 600;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
 #notes-body {
   flex: 1;
   overflow-y: auto;
-  padding: var(--sp-5) clamp(16px, 6vw, 64px) 80px;
+  padding: 0 clamp(16px, 5vw, 64px) 80px;
 }
 
-/* the timeline: one flat column, a journal of reading */
-.nb-timeline {
-  max-width: 640px;
-  margin: 0 auto;
+/* breadcrumbs live in the content, not the chrome */
+.nb-crumbs {
+  max-width: 860px;
+  margin: 22px auto 0;
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  min-width: 0;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.nb-crumb {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.nb-crumb:hover {
+  color: var(--ink);
+}
+
+.nb-crumb .here {
+  color: var(--ink-dim);
+}
+
+.nb-tools {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+}
+
+/* the surface's one bezel — creating is an act, not a crumb */
+.nb-new {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.nb-new:active {
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  transform: translate(1px, 1px);
+}
+
+/* the two-column body: rail + ledger as one centered unit */
+.nb-content {
+  max-width: 860px;
+  margin: 18px auto 0;
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr);
+  gap: 0 44px;
+  align-items: start;
+}
+
+.nb-content.railless {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .nb-empty {
@@ -62,31 +99,273 @@
   text-align: center;
 }
 
-/* day rules — the only grouping the view has */
-.nb-day {
+/* --- the document rail: a floating accompaniment, not a panel ------------ */
+
+.docrail {
+  position: sticky;
+  top: 18px;
+  padding-top: 26px; /* optically aligns with the first day rule */
+  min-width: 0;
+}
+
+.rail-head {
   display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  margin-top: var(--sp-4);
+  justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: 10px;
+}
+
+.rail-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.rail-clear {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.rail-clear:hover {
+  color: var(--ink);
+}
+
+.docitem {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  font-size: var(--fs-ui);
+  color: var(--ink-faint);
+  padding: 6px 0;
+  cursor: pointer;
+}
+
+.docitem:hover {
+  color: var(--ink-dim);
+}
+
+.docitem .t {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+  border-bottom: 1.5px solid transparent;
+  padding-bottom: 1px;
+}
+
+.docitem .n {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+  flex: none;
+}
+
+/* selection is the pen's mark, never a fill */
+.docitem.sel {
+  color: var(--ink);
+}
+
+.docitem.sel .t {
+  border-bottom-color: var(--hl-line);
+}
+
+/* --- the ledger: time in the margin, whitespace instead of boxes --------- */
+
+.ledger {
+  min-width: 0;
+}
+
+/* day labels are the only grouping — no rule line, the whitespace is it */
+.nb-day {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   font-weight: 500;
   letter-spacing: var(--track-label);
   text-transform: uppercase;
   color: var(--ink-dim);
+  margin-bottom: 4px;
+  padding-top: 26px;
 }
 
 .nb-day:first-child {
-  margin-top: 0;
+  padding-top: 26px;
 }
 
-.nb-day::after {
+.lentry {
+  position: relative;
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 0 16px;
+  padding: 14px 10px 16px;
+  margin: 0 -10px;
+  cursor: pointer;
+}
+
+.lentry:hover {
+  background: var(--surface);
+}
+
+/* the open entry: a settle-line in the margin, not an outline */
+.lentry.active::before {
   content: "";
-  flex: 1;
-  border-top: 1px solid var(--line);
+  position: absolute;
+  left: 0;
+  top: 16px;
+  bottom: 18px;
+  border-left: 2px solid var(--hl-line);
 }
 
-/* the related rail, folded into the open card */
+.lentry.filed {
+  opacity: 0.55;
+}
+
+.lwhen {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding-top: 3px;
+  text-align: right;
+}
+
+.lcontent {
+  min-width: 0;
+}
+
+.ltitle {
+  font-weight: 600;
+  font-size: var(--fs-title);
+}
+
+.lbody {
+  padding-top: 6px;
+  font-size: var(--fs-ui);
+  line-height: 1.55;
+  color: var(--ink-dim);
+  white-space: pre-wrap;
+}
+
+/* wiki-links: settle-line underline, the pen marking a connection */
+.wl {
+  border-bottom: 1.5px solid var(--hl-line);
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+/* --- evidence: a citation, with the region's own image ------------------- */
+
+.lev {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: 9px;
+  cursor: pointer;
+}
+
+.lev-crop {
+  position: relative;
+  display: block;
+  width: 104px;
+  height: 70px;
+  overflow: hidden;
+  flex: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.lev-crop img {
+  position: absolute;
+  display: block;
+}
+
+.lev-meta {
+  min-width: 0;
+  display: block;
+}
+
+.lquote {
+  display: block;
+  font-size: var(--fs-ui);
+  color: var(--ink-dim);
+  line-height: 1.5;
+  max-width: 52ch;
+}
+
+.lcite {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lquote + .lcite,
+.lev-crop + .lev-meta .lcite {
+  margin-top: 6px;
+}
+
+.lev-crop + .lev-meta {
+  padding-top: 3px;
+}
+
+.lev:hover .lcite {
+  color: var(--ink);
+}
+
+.llinks {
+  margin-top: 10px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--ink-dim);
+}
+
+.nlink {
+  cursor: pointer;
+  border-bottom: 1px solid var(--hl-line);
+}
+
+.nb-filedrule {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-2);
+  margin-top: var(--sp-5);
+}
+
+/* --- the related rail, folded into the open entry ------------------------ */
+
 .railbox {
   margin-top: 10px;
   padding-top: var(--sp-2);
@@ -154,123 +433,8 @@
   color: var(--bg);
 }
 
-.ncard {
-  background: var(--paper);
-  color: var(--ink);
-  border: 1px solid var(--line-strong);
-  padding: 10px 14px 12px;
-  position: relative;
-  cursor: pointer;
-}
+/* --- search results: a note-box hit is an index card, not a page crop ---- */
 
-/* the index card's head rule, in the pen's ink */
-.ncard::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 30px;
-  border-top: 1.5px solid var(--hl-line);
-  opacity: 0.75;
-}
-
-@media (prefers-color-scheme: dark) {
-  .ncard {
-    background: var(--surface);
-  }
-}
-
-.ncard.active {
-  outline: 2px solid var(--ink);
-  outline-offset: 1px;
-}
-
-.ncard.filed {
-  opacity: 0.55;
-}
-
-.ncard-when {
-  position: absolute;
-  top: 8px;
-  right: 12px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  font-weight: 500;
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
-
-.ncard-title {
-  font-weight: 600;
-  font-size: var(--fs-body);
-  padding: 0 56px 10px 0;
-}
-
-.ncard-body {
-  padding-top: 9px;
-  font-size: var(--fs-ui);
-  line-height: 1.55;
-  color: var(--ink-dim);
-  white-space: pre-wrap;
-}
-
-/* wiki-links: settle-line underline, the pen marking a connection */
-.wl {
-  border-bottom: 1.5px solid var(--hl-line);
-  font-weight: 500;
-  color: var(--ink);
-  cursor: pointer;
-}
-
-.ncard-ev {
-  display: block;
-  width: 100%;
-  text-align: left;
-  margin-top: 10px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink-dim);
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  letter-spacing: 0.04em;
-  padding: 6px 10px;
-  cursor: pointer;
-}
-
-.ncard-ev:hover {
-  color: var(--ink);
-}
-
-.ncard-links {
-  margin-top: 10px;
-  padding-top: 6px;
-  border-top: 1px solid var(--line);
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  color: var(--ink-dim);
-}
-
-.nlink {
-  cursor: pointer;
-  border-bottom: 1px solid var(--hl-line);
-}
-
-.nb-filedrule {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  border-top: 1px solid var(--line-strong);
-  padding-top: var(--sp-2);
-  margin-top: var(--sp-2);
-}
-
-/* search results: a note-box hit is an index card, not a page crop */
 .card.notehit .note-face {
   position: relative;
   background: var(--paper);
@@ -323,113 +487,125 @@
   color: var(--bg);
 }
 
-/* composer: the same small card, over a dithered scrim */
-#composer {
-  position: fixed;
-  inset: 0;
-  z-index: 14;
+/* --- §18 the sheet: writing a note is a full page ------------------------- */
+
+#sheet {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 12vh;
-  background: rgba(0, 0, 0, 0.25);
-}
-
-#composer[hidden] {
-  display: none;
-}
-
-.cp-card {
-  width: min(460px, 92vw);
-  background: var(--paper);
-  color: var(--ink);
-  border: 1px solid var(--line-strong);
-  padding: 10px 14px 12px;
+  flex-direction: column;
   position: relative;
-}
-
-.cp-card::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 30px;
-  border-top: 1.5px solid var(--hl-line);
-  opacity: 0.75;
+  background: var(--paper);
 }
 
 @media (prefers-color-scheme: dark) {
-  .cp-card {
+  #sheet {
     background: var(--surface);
   }
 }
 
-.cp-head {
+#sheet[hidden] {
+  display: none;
+}
+
+#sheet-top {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  margin-bottom: 6px;
+  padding: 14px 22px 0;
+  flex: none;
 }
 
-.cp-addr {
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  color: var(--ink-faint);
-}
-
-.cp-file {
+#sheet-back {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
+  font-weight: 500;
   letter-spacing: var(--track-label);
   text-transform: uppercase;
-  color: var(--ink-dim);
+  color: var(--ink-faint);
   background: none;
   border: none;
+  padding: 2px 0;
   cursor: pointer;
 }
 
-.cp-file:hover {
-  background: var(--ink);
-  color: var(--bg);
+#sheet-back:hover {
+  color: var(--ink);
 }
 
-.cp-title {
+#sheet-state {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+#sheet-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+#sheet-col {
+  max-width: 54ch;
+  margin: 30px auto 0;
+  padding: 0 24px 96px;
+}
+
+#sheet-date {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+#sheet-title {
   width: 100%;
   font-family: var(--font-ui);
-  font-size: var(--fs-body);
-  font-weight: 600;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
   color: var(--ink);
   background: none;
   border: none;
   outline: none;
-  padding: 2px 0 10px;
+  padding: 14px 0 0;
 }
 
-.cp-body {
+#sheet-title::placeholder {
+  color: var(--ink-faint);
+  font-weight: 500;
+}
+
+#sheet-body {
   width: 100%;
-  resize: vertical;
+  resize: none;
+  overflow: hidden;
   font-family: var(--font-ui);
-  font-size: var(--fs-ui);
-  line-height: 1.55;
+  font-size: 15.5px;
+  line-height: 1.75;
   color: var(--ink);
   background: none;
   border: none;
   outline: none;
-  padding-top: 9px;
+  padding: 18px 0 0;
 }
 
-/* [[ autocomplete: card titles under the body */
-.cp-ac {
+/* [[ autocomplete: card titles under the caret's line */
+#sheet-ac {
   list-style: none;
-  margin: 0;
+  margin: 4px 0 0;
   padding: 0;
   border: 1px solid var(--line-strong);
   background: var(--surface);
 }
 
-.cp-ac li {
+#sheet-ac li {
   padding: 4px 10px;
   font-size: var(--fs-ui);
   color: var(--ink-dim);
@@ -437,19 +613,19 @@
   border-bottom: 1px solid var(--line);
 }
 
-.cp-ac li:last-child {
+#sheet-ac li:last-child {
   border-bottom: none;
 }
 
-.cp-ac li:hover {
+#sheet-ac li:hover {
   background: var(--hl-wash);
   color: var(--ink);
 }
 
 /* the split whisper — an invitation, never a demand */
-.cp-whisper {
+#sheet-whisper {
   display: block;
-  margin-top: 8px;
+  margin-top: 14px;
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   letter-spacing: var(--track-label);
@@ -461,77 +637,61 @@
   cursor: pointer;
 }
 
-.cp-whisper:hover {
+#sheet-whisper:hover {
   border-style: solid;
   background: var(--hl-wash);
   color: var(--ink);
 }
 
-.cp-quote {
-  border: 1px solid var(--line);
-  background: var(--surface);
-  padding: 7px 10px 6px;
-  margin-top: 8px;
+/* the display:block above would beat the UA's [hidden] rule — hidden wins */
+#sheet-whisper[hidden] {
+  display: none;
 }
 
-.cp-quote-text {
-  font-size: var(--fs-ui);
-  font-style: italic;
-  line-height: 1.5;
-  color: var(--ink-dim);
-  margin-bottom: 4px;
+#sheet-evidence {
+  margin-top: 20px;
 }
 
-.cp-quote-src {
+/* keep / file away wait in the corner, out of the writing line */
+#sheet-foot {
+  position: absolute;
+  right: 22px;
+  bottom: 18px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+#sheet-file {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  letter-spacing: 0.08em;
+  letter-spacing: var(--track-label);
   text-transform: uppercase;
-  color: var(--ink-dim);
+  color: var(--ink-faint);
   background: none;
   border: none;
-  border-bottom: 1px solid var(--hl-line);
+  padding: 5px 6px;
   cursor: pointer;
-  padding: 0;
 }
 
-.cp-foot {
-  display: flex;
-  justify-content: flex-end;
-  align-items: baseline;
-  gap: var(--sp-2);
-  margin-top: 10px;
-  padding-top: 6px;
-  border-top: 1px solid var(--line);
+#sheet-file:hover {
+  background: var(--ink);
+  color: var(--bg);
 }
 
-.cp-actions {
-  display: flex;
-  gap: 1px;
-  flex: none;
-}
-
-.cp-discard,
-.cp-save {
+#sheet-keep {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   font-weight: 500;
   letter-spacing: var(--track-label);
   text-transform: uppercase;
-  border: 1px solid var(--line-strong);
-  background: var(--surface);
-  color: var(--ink-dim);
-  padding: 3px 9px;
+  background: var(--ink);
+  color: var(--bg);
+  border: none;
+  padding: 5px 12px;
   cursor: pointer;
 }
 
-.cp-save {
-  background: var(--ink);
-  color: var(--bg);
-  border-color: var(--ink);
-}
-
-.cp-discard:active,
-.cp-save:active {
+#sheet-keep:active {
   translate: 1px 1px;
 }

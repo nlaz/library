@@ -73,8 +73,6 @@ main {
 #viewer-close,
 #search-prev,
 #search-next,
-#notes-back,
-#notes-new,
 #notes-toggle,
 #chat-toggle,
 .bmenu {
@@ -92,8 +90,6 @@ main {
 #viewer-close:active,
 #search-prev:active,
 #search-next:active,
-#notes-back:active,
-#notes-new:active,
 #notes-toggle:active,
 #chat-toggle:active,
 .bmenu:active {
@@ -101,14 +97,27 @@ main {
   transform: translate(1px, 1px);
 }
 
-/* header toggle keeps the small-caps mono face (chat is icon-only, chat.css) */
+/* both header toggles are icon-only dithered glyphs; notes pushes the
+   pair to the right edge of the header */
+#notes-toggle,
+#chat-toggle {
+  padding: 4px 6px;
+}
+
 #notes-toggle {
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: var(--track-label);
-  padding: 4px 10px;
+  margin-left: auto;
+}
+
+#notes-toggle svg,
+#chat-toggle svg {
+  display: block;
+}
+
+/* on the notes surfaces the toggle stays pressed in — state by bezel,
+   never inversion */
+#notes-toggle.on {
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+  background: var(--well);
 }
 
 #q,

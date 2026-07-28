@@ -13,7 +13,27 @@
   <body>
     <header>
       <nav id="cols" role="group" title="Collections"></nav>
-      <button id="notes-toggle" title="Notes">notes</button>
+      <button id="notes-toggle" title="Notes" aria-label="Notes">
+        <!-- typewriter in the same 2×2 Bayer 50% tile as the chat burst:
+             paper, carriage, body, feet — all currentColor -->
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <defs>
+            <pattern id="notes-type-dither" width="2" height="2" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="currentColor" />
+              <rect x="1" y="1" width="1" height="1" fill="currentColor" />
+            </pattern>
+          </defs>
+          <g shape-rendering="crispEdges" fill="url(#notes-type-dither)">
+            <rect x="5" y="0" width="6" height="4" />
+            <rect x="2" y="4" width="12" height="3" />
+            <rect x="0" y="4" width="2" height="2" />
+            <rect x="14" y="4" width="2" height="2" />
+            <rect x="1" y="8" width="14" height="6" />
+            <rect x="2" y="14" width="3" height="2" />
+            <rect x="11" y="14" width="3" height="2" />
+          </g>
+        </svg>
+      </button>
       <button id="chat-toggle" title="Ask the librarian" aria-label="Ask the librarian">
         <!-- star burst filled with the 2×2 Bayer 50% tile from tokens.css §2,
              in currentColor so it follows --ink across themes -->
@@ -58,12 +78,27 @@
       </div>
     </section>
     <section id="notes" hidden>
-      <div id="notes-top">
-        <button id="notes-back" title="Back (Esc)">←</button>
-        <div id="notes-title"></div>
-        <button id="notes-new" title="New note (c)">+ note</button>
-      </div>
       <div id="notes-body"></div>
+    </section>
+    <section id="sheet" hidden>
+      <div id="sheet-top">
+        <button id="sheet-back">← notes</button>
+        <span id="sheet-state"></span>
+      </div>
+      <div id="sheet-scroll">
+        <div id="sheet-col">
+          <div id="sheet-date"></div>
+          <input id="sheet-title" type="text" placeholder="a title, if it wants one" autocomplete="off" />
+          <textarea id="sheet-body" rows="6" placeholder="write… ([[ links a note)"></textarea>
+          <ul id="sheet-ac" hidden></ul>
+          <button id="sheet-whisper" hidden>this is becoming an essay · split?</button>
+          <div id="sheet-evidence"></div>
+        </div>
+      </div>
+      <div id="sheet-foot">
+        <button id="sheet-file" hidden>file away</button>
+        <button id="sheet-keep">keep</button>
+      </div>
     </section>
     <div id="overlay" hidden>
       <aside id="viewer">

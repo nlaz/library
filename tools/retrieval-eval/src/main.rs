@@ -215,7 +215,8 @@ fn library_cmd(rest: &[String]) -> Result<()> {
         return Ok(());
     }
     if let Some(dump) = &args.dump {
-        return pipeline_eval::dump_hybrid_topk(&pairs, &ids, 20, dump);
+        // 100 deep: enough headroom to sweep rerank pool depths offline
+        return pipeline_eval::dump_hybrid_topk(&pairs, &ids, 100, dump);
     }
     println!(
         "### library gold ({} queries over {} pages)",

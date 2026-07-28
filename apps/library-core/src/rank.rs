@@ -89,10 +89,12 @@ pub const LEX_FETCH: usize = 512;
 pub(crate) const FUZZ_CANDIDATES: usize = 3;
 
 /// How many top fused hits the MaxSim late-interaction re-rank rescores.
-/// Matches the reranker spike's candidate depth; recall@20 on the library
-/// gold set is 0.91, so the right answer is almost always inside the pool
-/// and the win comes from ordering it.
-pub(crate) const RERANK_POOL: usize = 20;
+/// Chosen by the 2026-07-29 pool-depth sweep (raw top-100 dump, pools
+/// 10..100): quality peaks at 30 (library gold 0.815/r@1 0.74) and
+/// *declines* past 50 — deeper candidates add false-positive surface
+/// faster than they add reachable gold. Cost is linear in pool size and
+/// still ~ms at 30.
+pub(crate) const RERANK_POOL: usize = 30;
 /// MaxSim share of the reranked score: `w·maxsim + (1−w)·fused`, both
 /// min-max normalized over the pool. Chosen by the 2026-07 reranker spike
 /// (tools/retrieval-eval README): 0.7 scored 0.813 NDCG@10 / recall@1 0.73

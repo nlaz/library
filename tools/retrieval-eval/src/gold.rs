@@ -26,6 +26,10 @@ pub struct GoldDoc {
 pub struct GoldQuery {
     pub q: String,
     pub gold: String,
+    /// Query style the generator was steered toward: "known-item",
+    /// "paraphrase", or "question". Absent in v1 gold sets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -96,12 +100,41 @@ fn list_pages(text_dir: &Path, min_chars: usize) -> Result<Vec<(String, String)>
     Ok(pages)
 }
 
+/// The steering prompt per query style. Cycling styles makes the gold set
+/// report per-workload numbers instead of one blended average — a change
+/// that helps paraphrase queries but hurts known-item lookups (or the
+/// reverse) is visible instead of washing out.
+const STYLES: &[(&str, &str)] = &[
+    (
+        "known-item",
+        "Write one short search query (2-6 words) a reader would type to \
+         re-find this page, using a distinctive word or phrase they would \
+         remember FROM the page itself.",
+    ),
+    (
+        "paraphrase",
+        "Write one search query describing this page's subject entirely in \
+         your own words — do not reuse the page's distinctive words or copy \
+         any phrase verbatim.",
+    ),
+    (
+        "question",
+        "Write one natural question a reader would type into search if they \
+         wanted the information on this page.",
+    ),
+];
+
 /// One `librarian probe` round-trip: page text in, one search query out.
 /// Toolless and schema-constrained, so no server and no fjall lock; AFM
 /// sessions must run sequentially (see atlas.rs).
-fn gen_query(bin: &Path, tmp: &Path, id: &str, text: &str) -> Result<String> {
+fn gen_query(bin: &Path, tmp: &Path, id: &str, text: &str, style: &str) -> Result<String> {
     // AFM's window is ~4k tokens; 2500 chars matches the app's own cap
     let excerpt: String = text.chars().take(2500).collect();
+    let steer = STYLES
+        .iter()
+        .find(|(k, _)| *k == style)
+        .map(|(_, s)| *s)
+        .unwrap_or(STYLES[0].1);
     let fixture = serde_json::json!({
         "id": id,
         "tools": false,
@@ -109,12 +142,7 @@ fn gen_query(bin: &Path, tmp: &Path, id: &str, text: &str) -> Result<String> {
         "instructions": "You write the search query a reader would type into a \
             personal library's search box to find a specific page they remember. \
             Write natural queries in the reader's own words.",
-        "prompt": format!(
-            "Page text:\n{excerpt}\n\nWrite one search query (a question or a \
-             short phrase) a reader would type to find this page. Describe the \
-             page's subject in your own words — do not copy distinctive phrases \
-             verbatim."
-        ),
+        "prompt": format!("Page text:\n{excerpt}\n\n{steer}"),
         "schema": {"name": "Query", "properties": [
             {"name": "query", "type": "string",
              "description": "one natural search query, under 15 words, no quotation marks"}]}
@@ -188,12 +216,14 @@ pub fn generate(corpus: usize, n_queries: usize, seed: u64, out: &Path) -> Resul
         if queries.len() >= n_queries {
             break;
         }
-        match gen_query(&bin, &tmp, id, text) {
+        let style = STYLES[queries.len() % STYLES.len()].0;
+        match gen_query(&bin, &tmp, id, text, style) {
             Ok(q) => {
-                eprintln!("[{}/{n_queries}] {id}: {q}", queries.len() + 1);
+                eprintln!("[{}/{n_queries}] ({style}) {id}: {q}", queries.len() + 1);
                 queries.push(GoldQuery {
                     q,
                     gold: id.clone(),
+                    kind: Some(style.to_string()),
                 });
             }
             Err(e) => eprintln!("skip {id}: {e}"),

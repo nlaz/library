@@ -161,9 +161,31 @@ pub struct Hnsw<
     free_upper: [Vec<u32>; MAX_LEVEL],
     entry_point: Option<(u8, u32)>,
     rng_state: u64,
+    // alive-node count, maintained by insert/remove so len() stays O(1);
+    // derived state like `visited` — recomputed on load, never serialized.
+    live: usize,
 
     visited: Vec<u32>,
     vstamp: u32,
+}
+
+/// Cheap size/shape snapshot of a graph: O(1), no allocation.
+///
+/// `slots` is the high-water mark — removals tombstone nodes onto a free list
+/// and never shrink the backing arrays, so heap cost tracks `slots`, not
+/// `live`. Not counted here: the per-thread visited scratch, which adds
+/// `slots × 4` bytes to every thread that has ever searched this index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HnswStats {
+    pub live: usize,
+    pub slots: usize,
+    pub free_slots: usize,
+    pub upper_len: usize,
+    pub free_upper_len: usize,
+    pub dim: usize,
+    pub dtype_bytes: usize,
+    pub m0: usize,
+    pub heap_bytes: usize,
 }
 
 impl<
@@ -197,6 +219,7 @@ where
             free_upper: std::array::from_fn(|_| Vec::new()),
             entry_point: None,
             rng_state: seed | 1,
+            live: 0,
             visited: Vec::new(),
             vstamp: 0,
         }
@@ -204,11 +227,38 @@ where
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.meta.iter().filter(|m| m.alive).count()
+        self.live
     }
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.entry_point.is_none()
+    }
+
+    /// Heap bytes reserved by the graph's arrays (capacity-based, so it
+    /// reflects real allocator demand, not just live payload).
+    pub fn memory_bytes(&self) -> usize {
+        self.vectors.capacity() * size_of::<[Dtype; DIM]>()
+            + self.l0.capacity() * size_of::<[u32; M_0]>()
+            + self.meta.capacity() * size_of::<NodeMeta>()
+            + (self.upper.capacity()
+                + self.free_nodes.capacity()
+                + self.free_upper.iter().map(|v| v.capacity()).sum::<usize>()
+                + self.visited.capacity())
+                * size_of::<u32>()
+    }
+
+    pub fn stats(&self) -> HnswStats {
+        HnswStats {
+            live: self.live,
+            slots: self.meta.len(),
+            free_slots: self.free_nodes.len(),
+            upper_len: self.upper.len(),
+            free_upper_len: self.free_upper.iter().map(|v| v.len()).sum(),
+            dim: DIM,
+            dtype_bytes: size_of::<Dtype>(),
+            m0: M_0,
+            heap_bytes: self.memory_bytes(),
+        }
     }
 
     #[inline]
@@ -468,6 +518,7 @@ where
             });
             s
         };
+        self.live += 1;
 
         let (e_lvl, e_id) = match self.entry_point {
             Some(ep) => ep,
@@ -668,6 +719,7 @@ where
         self.meta[idu].alive = false;
         self.meta[idu].upper = NONE;
         self.l0[idu] = [NONE; M_0];
+        self.live -= 1;
 
         if matches!(self.entry_point, Some((_, e)) if e == id) {
             self.entry_point = self.highest_alive();
@@ -866,6 +918,7 @@ where
         let vectors: Vec<[Dtype; DIM]> = c.raw_vec(n)?;
         let l0: Vec<[u32; M_0]> = c.raw_vec(n)?;
         let mut meta = Vec::with_capacity(n);
+        let mut live = 0usize;
         for _ in 0..n {
             let level = c.take(1)?[0];
             let upper = c.u32()?;
@@ -873,6 +926,7 @@ where
             if level as usize >= MAX_LEVEL {
                 return Err(LoadError::Corrupt);
             }
+            live += alive as usize;
             meta.push(NodeMeta {
                 level,
                 upper,
@@ -908,6 +962,7 @@ where
             free_upper,
             entry_point,
             rng_state,
+            live,
             visited: Vec::new(),
             vstamp: 0,
         })
@@ -1166,6 +1221,11 @@ mod tests {
             (None, None) => {}
             (ep, ml) => panic!("entry/alive disagreement: {:?} vs max_level {:?}", ep, ml),
         }
+        assert_eq!(
+            ix.live,
+            ix.meta.iter().filter(|m| m.alive).count(),
+            "live counter diverged from alive scan"
+        );
     }
 
     fn dangling<
@@ -1503,6 +1563,58 @@ mod tests {
             let ib: Vec<u32> = rb.iter().map(|(_, i)| *i).collect();
             assert_eq!(ia, ib, "same seed produced different results");
         }
+    }
+
+    // ======================= stats =======================
+
+    // Pins the serialized layout to the stats snapshot: every term of
+    // to_bytes()'s size is derivable from HnswStats, so stats can price the
+    // graph without allocating the blob.
+    #[test]
+    fn stats_predicts_serialized_size() {
+        const ML: usize = 12;
+        let mut rng = Rng::new(13);
+        let mut ix: Ix8 = Hnsw::new(L2, 13);
+        let ids: Vec<u32> = (0..800).map(|_| ix.insert(rng.vec())).collect();
+        for id in ids.iter().step_by(3) {
+            ix.remove(*id);
+        }
+        let s = ix.stats();
+        let expected = 62
+            + 8 * ML
+            + s.slots * (s.dim * s.dtype_bytes + s.m0 * 4 + 6)
+            + (s.upper_len + s.free_slots + s.free_upper_len) * 4;
+        assert_eq!(ix.to_bytes().len(), expected);
+        assert!(
+            s.heap_bytes >= s.slots * (s.dim * s.dtype_bytes + s.m0 * 4 + size_of::<NodeMeta>()),
+            "heap_bytes must cover at least the dense per-slot arrays"
+        );
+    }
+
+    #[test]
+    fn tombstones_hold_high_water() {
+        const N: usize = 600;
+        let mut rng = Rng::new(29);
+        let mut ix: Ix8 = Hnsw::new(L2, 29);
+        let ids: Vec<u32> = (0..N).map(|_| ix.insert(rng.vec())).collect();
+        let before = ix.stats();
+        assert_eq!((before.live, before.slots), (N, N));
+        for id in ids.iter().take(N / 2) {
+            ix.remove(*id);
+        }
+        let after = ix.stats();
+        assert_eq!(after.live, N / 2);
+        assert_eq!(after.slots, N, "removals must not shrink the slot arrays");
+        assert_eq!(after.free_slots, N / 2);
+        assert!(
+            after.heap_bytes >= before.heap_bytes,
+            "heap is high-water: removals free no memory"
+        );
+        check_invariants(&ix);
+        // live counter survives a persistence round-trip
+        let re = Ix8::from_bytes(L2, &ix.to_bytes()).expect("load failed");
+        assert_eq!(re.len(), N / 2);
+        check_invariants(&re);
     }
 
     // ======================= persistence =======================

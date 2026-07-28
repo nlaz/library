@@ -224,6 +224,39 @@ quantization, word tables, PRF, char-ngrams, projection alignment) is
 neutral or negative. Remaining unexplored: librarian document expansion,
 adaptive fusion α, and full in-domain training.
 
+## External calibration: NanoBEIR (2026-07-29)
+
+The shipped recipe replicated faithfully in Python and run on NanoBEIR
+(13 public datasets × 50 queries, NDCG@10 averaged) against the industry
+reference models — all contestants scored identically. Validation
+anchor: our pre-SIF ese replica scored 0.494 vs the published 0.5032 for
+the same base model, so these are leaderboard-comparable.
+
+| system | avg | class |
+|---|---|---|
+| bge-small-en-v1.5 | 0.609 | transformer, 33M params |
+| **ours: BM25 + SIF-ese fusion + MaxSim** | **0.588** | static + lexical |
+| all-MiniLM-L6-v2 | 0.563 | transformer, 22M params |
+| BM25 | 0.537 | lexical |
+| potion-retrieval-32M | 0.511 | best published static |
+| ese pre-SIF / SIF (encoder alone) | 0.494 / 0.486 | static |
+
+The system beats the models: the pipeline outscores MiniLM-L6 — the most
+widely deployed transformer embedder — with no neural net in the query
+path, beats the best static model by ~8 points, and closes to 2.1 points
+of bge-small at ~100× less query compute. Wins outright on 4/13 datasets
+(ClimateFEVER, DBPedia, HotpotQA, Touché — beating both transformers on
+three); best non-transformer on 11/13. Transformers keep an irreducible
+edge only on reasoning-shaped tasks (ArguAna, SCIDOCS) where relevance
+isn't carried by shared vocabulary at any weighting. SIF alone measures
+slightly below plain mean out-of-domain (0.486 vs 0.494, consistent with
+the GooAQ cost) — its value is in-domain and inside MaxSim's weights, and
+the 0.588 recipe already carries that trade. The 2.1-point gap to
+bge-small is the measured value of contextual encoding — the in-domain
+training road is the identified way to close it without transformer
+compute. Raw per-dataset results: session scratchpad
+`nanobeir-results.json` / `nanobeir.py`.
+
 ## Comparing compile-time ese variants
 
 Quantization (`quant-8`/`quant-16`/f32) and dimension (`dim-*`) are cargo

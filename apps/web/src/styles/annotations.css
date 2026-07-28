@@ -173,6 +173,10 @@
 }
 
 /* severity by inversion, not hue */
+#mark-pop .mp-actions {
+  position: relative;
+}
+
 #mark-pop .mp-actions button {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
@@ -188,6 +192,36 @@
 #mark-pop .mp-actions button:hover {
   background: var(--ink);
   color: var(--bg);
+}
+
+/* both verbs wait behind ⋯ — the header stays date-only */
+#mark-pop .mp-more {
+  letter-spacing: 0;
+  padding: 0 6px;
+}
+
+#mark-pop .mp-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  padding: 2px;
+}
+
+/* display:flex would beat the UA's [hidden] rule (same idiom as mp-head) */
+#mark-pop .mp-menu[hidden] {
+  display: none;
+}
+
+#mark-pop .mp-menu button {
+  text-align: left;
+  white-space: nowrap;
+  padding: 4px 8px;
 }
 
 /* the inset-input idiom (base.css §5), not --paper — the scanned-page

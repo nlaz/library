@@ -347,8 +347,11 @@ popover.innerHTML = `
   <div class="mp-head">
     <span class="mp-addr"></span>
     <span class="mp-actions">
-      <button class="mp-open">open ↗</button>
-      <button class="mp-file-away">file away</button>
+      <button class="mp-more" aria-haspopup="menu" aria-expanded="false" aria-label="mark actions">⋯</button>
+      <div class="mp-menu" role="menu" hidden>
+        <button class="mp-open" role="menuitem">open in notes ↗</button>
+        <button class="mp-file-away" role="menuitem">file away</button>
+      </div>
     </span>
   </div>
   <textarea class="mp-note" rows="3" placeholder="note…"></textarea>
@@ -361,6 +364,8 @@ $reader.append(popover);
 const mpHead = popover.querySelector<HTMLElement>(".mp-head")!;
 const mpAddr = popover.querySelector<HTMLElement>(".mp-addr")!;
 const mpActions = popover.querySelector<HTMLElement>(".mp-actions")!;
+const mpMore = popover.querySelector<HTMLButtonElement>(".mp-more")!;
+const mpMenu = popover.querySelector<HTMLElement>(".mp-menu")!;
 const mpOpen = popover.querySelector<HTMLButtonElement>(".mp-open")!;
 const mpFileAway = popover.querySelector<HTMLButtonElement>(".mp-file-away")!;
 const mpNote = popover.querySelector<HTMLTextAreaElement>(".mp-note")!;
@@ -372,6 +377,13 @@ type PopState =
   | { kind: "pending"; anchor: QuoteAnchor; layer: HTMLElement }
   | { kind: "edit"; cardId: string };
 let pop: PopState | null = null;
+
+/** The header holds only the date; both verbs wait behind ⋯ so the note
+ * stays the whole surface and filing away takes a deliberate second click. */
+function setMenu(open: boolean) {
+  mpMenu.hidden = !open;
+  mpMore.setAttribute("aria-expanded", String(open));
+}
 
 /** Anchor the popover beside a mark's first box, clamped to the reading
  * pane — the scroll pane's right edge, not the reader's, so it never
@@ -403,6 +415,7 @@ function fmtWhen(created: number): string {
  * above it is the header. */
 function openPendingPopover(anchor: QuoteAnchor, layer: HTMLElement, pageEl: HTMLElement) {
   pop = { kind: "pending", anchor, layer };
+  setMenu(false);
   mpHead.hidden = true;
   mpNote.value = "";
   mpFoot.hidden = false;
@@ -422,6 +435,7 @@ export function openMarkPopover(cardId: string, scrollTo = false) {
     $scroll.scrollTo({ top: Math.max(y, 0) });
   }
   pop = { kind: "edit", cardId };
+  setMenu(false);
   mpHead.hidden = false;
   mpAddr.textContent = fmtWhen(m.card.created);
   mpActions.hidden = false;
@@ -446,7 +460,8 @@ async function commitPending(state: Extract<PopState, { kind: "pending" }>) {
     popover.hidden = true;
     pop = null;
     changed();
-    notify("note filed");
+    // "noted", not "note filed" — "file" is reserved for the archive verb
+    notify("noted");
   } catch (e) {
     pop = state; // keep the pending mark; the note is not lost
     popover.hidden = false;
@@ -471,6 +486,7 @@ async function saveEdit(state: Extract<PopState, { kind: "edit" }>) {
  * discards; an edited title saves. Escape is the only way out that
  * throws ink away (discardPopover). */
 async function closePopover() {
+  setMenu(false);
   if (popover.hidden || !pop) {
     popover.hidden = true;
     return;
@@ -490,6 +506,7 @@ async function closePopover() {
 }
 
 function discardPopover() {
+  setMenu(false);
   if (pop?.kind === "pending") pop.layer.remove();
   pop = null;
   popover.hidden = true;
@@ -507,6 +524,8 @@ export async function fileAwayMark(cardId: string) {
   }
   changed();
 }
+
+mpMore.addEventListener("click", () => setMenu(mpMenu.hidden));
 
 mpOpen.addEventListener("click", () => {
   const state = pop;

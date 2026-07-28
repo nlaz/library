@@ -29,6 +29,7 @@ mod fusion;
 mod gold;
 mod metrics;
 mod pipeline_eval;
+mod prf;
 mod report;
 
 use anyhow::{Context, Result, bail};
@@ -48,6 +49,8 @@ struct Args {
     label: String,
     out: Option<String>,
     gold: Option<String>,
+    trace: Option<String>,
+    dump: Option<String>,
 }
 
 fn parse_args(rest: &[String], default_docs: usize, default_queries: usize) -> Result<Args> {
@@ -61,6 +64,8 @@ fn parse_args(rest: &[String], default_docs: usize, default_queries: usize) -> R
         label: String::new(),
         out: None,
         gold: None,
+        trace: None,
+        dump: None,
     };
     let mut it = rest.iter();
     while let Some(flag) = it.next() {
@@ -85,6 +90,8 @@ fn parse_args(rest: &[String], default_docs: usize, default_queries: usize) -> R
             "--label" => args.label = val()?,
             "--out" => args.out = Some(val()?),
             "--gold" => args.gold = Some(val()?),
+            "--trace" => args.trace = Some(val()?),
+            "--dump" => args.dump = Some(val()?),
             _ => bail!("unknown flag {flag:?}"),
         }
     }
@@ -202,7 +209,14 @@ fn library_cmd(rest: &[String]) -> Result<()> {
         .gold
         .clone()
         .unwrap_or_else(|| "target/library-gold.json".to_string());
-    let pairs = gold::load_gold(std::path::Path::new(&path))?;
+    let (pairs, ids) = gold::load_gold_ids(std::path::Path::new(&path))?;
+    if let Some(which) = &args.trace {
+        pipeline_eval::trace(&pairs, &ids, which);
+        return Ok(());
+    }
+    if let Some(dump) = &args.dump {
+        return pipeline_eval::dump_hybrid_topk(&pairs, &ids, 20, dump);
+    }
     println!(
         "### library gold ({} queries over {} pages)",
         pairs.questions.len(),
@@ -225,6 +239,60 @@ fn library_cmd(rest: &[String]) -> Result<()> {
         };
         report::write_json(out, &meta, &results)?;
     }
+    Ok(())
+}
+
+/// Offline PRF experiments over the gold set: round-2 lexical search with
+/// terms borrowed from round-1's top hits, alone and fused.
+fn prf_cmd(rest: &[String]) -> Result<()> {
+    let args = parse_args(rest, 0, 0)?;
+    let path = args
+        .gold
+        .clone()
+        .unwrap_or_else(|| "target/library-gold.json".to_string());
+    let (pairs, _) = gold::load_gold_ids(std::path::Path::new(&path))?;
+    println!(
+        "### prf on library gold ({} queries over {} pages)",
+        pairs.questions.len(),
+        pairs.answers.len()
+    );
+    let results = prf::run(&pairs, KS);
+    report::print_table(&results);
+    report::print_paired("hybrid (round1, ships)", &results, MRR_COL);
+    Ok(())
+}
+
+/// Dump ese's embeddings for a gold set (docs and queries) as JSON, so
+/// offline experiments (alignment training, pooling prototypes, cross-model
+/// comparisons in Python) start from the exact vectors the app produces —
+/// quantization and all — rather than a reimplementation.
+fn embed_cmd(rest: &[String]) -> Result<()> {
+    let args = parse_args(rest, 0, 0)?;
+    let path = args
+        .gold
+        .clone()
+        .unwrap_or_else(|| "target/library-gold.json".to_string());
+    let (pairs, ids) = gold::load_gold_ids(std::path::Path::new(&path))?;
+    let docs = ese::encode(&pairs.answers);
+    let queries = ese::encode(&pairs.questions);
+    let out = args
+        .out
+        .clone()
+        .unwrap_or_else(|| "target/library-gold-ese.json".to_string());
+    let doc = serde_json::json!({
+        "dim": ese::DIMENSIONS,
+        "gold": path,
+        "ids": ids,
+        "docs": docs.iter().map(|v| v.to_vec()).collect::<Vec<_>>(),
+        "queries": queries.iter().map(|v| v.to_vec()).collect::<Vec<_>>(),
+    });
+    std::fs::write(&out, serde_json::to_string(&doc)?)?;
+    eprintln!(
+        "wrote {out} ({} docs, {} queries, dim {})",
+        docs.len(),
+        queries.len(),
+        ese::DIMENSIONS
+    );
     Ok(())
 }
 
@@ -347,7 +415,9 @@ fn smoke_cmd() -> Result<()> {
     // baselined 2026-07 after the score-blend fusion landed: paraphrase
     // encoder recall@5 0.92 / ndcg 0.84; paraphrase hybrid recall@5 0.84;
     // known-item lex-only and hybrid 1.00; mixed hybrid recall@5 0.92 /
-    // ndcg 0.87.
+    // ndcg 0.87. Re-observed 2026-07-28 after SIF weights were baked into
+    // ese: everything at or above those values (paraphrase hybrid 0.88,
+    // mixed hybrid 0.94/0.88) — floors deliberately left unchanged.
     println!();
     let mut ok = true;
     ok &= floor("paraphrase/encoder", "recall@05", 0.85);
@@ -371,6 +441,8 @@ fn main() -> Result<()> {
         Some("fusion") => fusion_cmd(&args[2..]),
         Some("gen-gold") => gen_gold_cmd(&args[2..]),
         Some("library") => library_cmd(&args[2..]),
+        Some("embed") => embed_cmd(&args[2..]),
+        Some("prf") => prf_cmd(&args[2..]),
         Some("smoke") => smoke_cmd(),
         _ => {
             eprintln!(

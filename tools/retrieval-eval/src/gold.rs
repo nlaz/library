@@ -226,13 +226,14 @@ pub fn generate(corpus: usize, n_queries: usize, seed: u64, out: &Path) -> Resul
     Ok(())
 }
 
-/// Parse a gold set into [`Pairs`]: query i's gold page becomes answer i,
-/// remaining corpus pages follow as distractors. Same alignment contract
-/// as the checked-in fixture.
-pub fn parse_gold(json: &str) -> Result<crate::data::Pairs> {
+/// Parse a gold set into [`Pairs`] plus the page id for each answer index:
+/// query i's gold page becomes answer i, remaining corpus pages follow as
+/// distractors. Same alignment contract as the checked-in fixture.
+pub fn parse_gold_ids(json: &str) -> Result<(crate::data::Pairs, Vec<String>)> {
     let set: GoldSet = serde_json::from_str(json).context("parse gold set json")?;
     let mut questions = Vec::new();
     let mut ordered = Vec::new();
+    let mut ids = Vec::new();
     let mut taken = vec![false; set.docs.len()];
     for q in &set.queries {
         let Some(i) = set.docs.iter().position(|d| d.id == q.gold) else {
@@ -242,21 +243,31 @@ pub fn parse_gold(json: &str) -> Result<crate::data::Pairs> {
         taken[i] = true;
         questions.push(q.q.clone());
         ordered.push(set.docs[i].text.clone());
+        ids.push(set.docs[i].id.clone());
     }
     for (i, d) in set.docs.iter().enumerate() {
         if !taken[i] {
             ordered.push(d.text.clone());
+            ids.push(d.id.clone());
         }
     }
-    Ok(crate::data::Pairs {
-        questions,
-        answers: ordered,
-    })
+    Ok((
+        crate::data::Pairs {
+            questions,
+            answers: ordered,
+        },
+        ids,
+    ))
 }
 
-pub fn load_gold(path: &Path) -> Result<crate::data::Pairs> {
+#[cfg(test)]
+pub fn parse_gold(json: &str) -> Result<crate::data::Pairs> {
+    parse_gold_ids(json).map(|(pairs, _)| pairs)
+}
+
+pub fn load_gold_ids(path: &Path) -> Result<(crate::data::Pairs, Vec<String>)> {
     let json = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    parse_gold(&json)
+    parse_gold_ids(&json)
 }
 
 #[cfg(test)]

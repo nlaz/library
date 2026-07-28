@@ -101,6 +101,129 @@ Guardrail refusals are skipped during generation (the page stays in the
 corpus as a distractor). When GooAQ and the library set disagree about a
 change, trust the library set — it is the deployment distribution.
 
+## Encoder experiment history (2026-07)
+
+Semantic-improvement sweep on the library gold set (2,000 pages / 100
+queries, NDCG@10; ese baseline 0.678, BM25 0.774, shipping hybrid 0.753).
+The `embed` subcommand exports ese's exact vectors for offline (Python)
+experiments — quantization included.
+
+- **Static-model swaps**: potion-retrieval-32M looked like +1.4
+  (0.693) in the Python runtime — but baking it into ese scored 0.665,
+  and the discrepancy traced to model2vec's **default 512-token document
+  truncation**: full-length potion is 0.679 ≈ ese's 0.678. The swap is
+  neutral; the artifact was the truncation. (Baking it works
+  mechanically — parse is tensor-name-agnostic, but special-token rows
+  must be found by NAME, not BERT's ids 100..102: potion uses 1..3.)
+  potion-base-8M 0.576 (regression). quant-8/dim-512 vs f32/full-dim:
+  no measurable cost, on either model.
+- **Text-per-vector (the truncation finding)**: encoding only a page's
+  first 512 tokens beats encoding all of it (0.693 vs 0.679) — dilution
+  in action — but 256 tokens is too little (0.586), and multi-chunk
+  max-sim scoring at 350/150/80 words is flat (0.676–0.687): smaller
+  chunks trade dilution for false-positive surface. Granularity moves
+  points but is not a breakthrough at page scale.
+- **Pooling** (current model, same tokens): SIF weighting a/(a+p(t))
+  0.689 (+1.1); IDF 0.680; dropping CLS/SEP: nil. The tokenizer emits no
+  [UNK] but fragments identifying rare words into meaningless pieces
+  (mignonette → mig ##non ##ette) — that dilution is the failure mode,
+  and per-token *weighting* recovers only part of it.
+- **Projection alignment** (train ridge W between independently trained
+  spaces, both directions): transformer-docs→ese-space + ese queries
+  peaked at 0.637; ese docs + transformer-query→ese-space 0.459. Both
+  *below* plain ese — equal dimension count is not equal space. Dead end
+  as a bolt-on; don't retry without a jointly trained student/teacher.
+- **DIY distillation** (model2vec distill of bge-small, ±27k-word corpus
+  vocabulary): 0.436 / 0.401. Naive distillation is not the potion
+  recipe — the quality lives in the post-distillation tokenlearn
+  training, not the distill step. A corpus vocabulary also can't capture
+  the words that matter: true identifiers are df=1 in this corpus.
+- **Transformer ceilings** (both sides, own space): bge-small-en-v1.5
+  0.735 — still under BM25 on this workload; MiniLM-L6-v2 0.649 — under
+  ese. Full-context encoding is not automatically better on long OCR
+  pages; truncation and page length dominate.
+
+- **SIF weighting, baked (2026-07-28)**: general-English frequencies
+  (Norvig count_1w, downloaded/cached like the model files) perform on
+  par with in-domain frequencies (0.686 vs 0.684 in the prototype), so
+  the weights bake at build time: each vocab row is pre-scaled by
+  a/(a+p(token)) in `ese/build.rs` — cosine is scale-invariant, so the
+  runtime is untouched and mean pooling of scaled rows *is* weighted
+  pooling. CLS/SEP are scaled to ~0 (the validated configuration).
+  Measured after baking: library encoder 0.678→**0.689**, sem-only
+  0.657→**0.685** (the ANN gap nearly closed), hybrid 0.753→**0.768**
+  with recall@1 0.66→0.68 — hybrid now ties lex-only (11W/15L).
+  Cost: GooAQ encoder −1.9, but hybrid there only −0.3 (0.828→0.825);
+  smoke floors all pass, several points higher. Shipping requires
+  re-embedding existing libraries — vectors from different weightings
+  don't mix in one index.
+- **Word-level token table (Layer 2 prototype)**: grouping tokens into
+  per-word composed vectors with library-df weights scored 0.636 — worse
+  than unweighted pooling — and the ablation (word grouping, general
+  weights) 0.604 shows the word-level grouping itself is the regression,
+  not the weighting. Concept withdrawn before implementation.
+
+- **PRF / RM3 query expansion (2026-07-28)**: the `prf` subcommand runs
+  the classic round-2 lexical expansion offline (terms from round-1's
+  top-K docs scored tf·idf, K/E swept). Decisively negative on the gold
+  set: every setting craters recall@1 (0.34–0.59 vs 0.68) from query
+  drift — round-1's top hit already IS the gold for ~68% of queries, so
+  expansion mostly dilutes winners. Paired stats cap the upside at ~9
+  queries against 19–49 losses. Closed.
+- **Cross-encoder reranker spike (2026-07-28)**: `library --dump` exports
+  the real hybrid top-20; a MiniLM-class ms-marco cross-encoder rescores
+  the pairs. First configuration to beat BM25:
+  ms-marco-MiniLM-L6-v2 rerank-only 0.796, blended 0.9·CE + 0.1·fused
+  **0.805 NDCG@10 / recall@1 0.72** (hybrid 0.768/0.68, BM25 0.774/0.67),
+  at ~150 ms per query for 20 pairs on CPU (PyTorch batch; ONNX int8
+  would roughly halve that). MiniLM-L12 matches at 2× cost — take L6.
+  The rerank stage is the lever aimed at recall@1: run on Enter, never
+  per keystroke.
+- **Static MaxSim reranker (2026-07-28)** — the embeddable answer to the
+  cross-encoder's latency: ColBERT-style late interaction using ese's own
+  baked token vectors. Each query token takes its best cosine over the
+  page's token set (deduped), SIF-weighted sum, blended with the fused
+  score. Blend 0.7·maxsim + 0.3·fused scores **0.801 NDCG@10 / recall@1
+  0.72** — statistically equal to the cross-encoder (0.805/0.72) — at
+  **1.4 ms/query in numpy** (sub-ms expected in Rust). No new model, no
+  runtime: table lookups and dot products, "the way ese worked." Blend
+  weight was tuned on the gold set — verify on GooAQ + smoke when
+  implementing, and prefer w=0.5–0.7 (0.792–0.801, both strong).
+
+- **Char-n-gram splitter / OCR robustness (2026-07-28)**: measured the
+  disease first — true OCR garbage is **0.020%** of corpus tokens (197
+  occurrences/1M; several are legitimate identifiers like `rdwr`). The
+  3.8% dictionary-OOV mass is French/Italian cookery vocabulary, i.e.
+  content. Then the cure: fastText (char 3–6-grams) trained on the full
+  library text is genuinely corruption-robust (corrupted word forms stay
+  at cosine 0.9+) but scores **0.33** NDCG@10 on the gold set — the
+  splitter family can't carry retrieval. Closed: wrong disease, and a
+  cure that costs 36 points. If the foreign-vocabulary mass ever
+  matters, that's a multilingual-model question, not a splitter one.
+
+- **MaxSim reranker SHIPPED into rank.rs (2026-07-28)**: the
+  late-interaction re-rank now runs inside `search()` on every query —
+  `maxsim_rerank` rescores the fused top-20 (RERANK_POOL) with each query
+  token's best cosine against the chunk's deduped token vectors (via the
+  new `ese::for_each_token_vector`; row norms carry the SIF weights),
+  blends 0.7·maxsim + 0.3·fused (RERANK_WEIGHT), and rescales into the
+  pool's score range so the list stays monotonic. Measured live through
+  the real pipeline: library gold hybrid 0.768→**0.813** NDCG@10,
+  recall@1 0.68→**0.73** (exactly matching the offline spike); GooAQ
+  hybrid 0.825→**0.857**, recall@1 0.725→**0.784** — hybrid now beats
+  sem-only on GooAQ for the first time; all smoke floors pass at their
+  highest observed values (paraphrase hybrid r@5 0.92, mixed ndcg 0.89).
+  Latency: ~16 ms/query total in the dev profile — well inside the
+  keystroke budget, so it is not gated behind Enter.
+
+Standing conclusion: hybrid search now beats every single-signal
+configuration on both corpora — the MaxSim rerank supplied the word-level
+interaction the pooled bi-encoder averages away, which was the last
+measured gap. Every other lever (model swap, truncation, chunking,
+quantization, word tables, PRF, char-ngrams, projection alignment) is
+neutral or negative. Remaining unexplored: librarian document expansion,
+adaptive fusion α, and full in-domain training.
+
 ## Comparing compile-time ese variants
 
 Quantization (`quant-8`/`quant-16`/f32) and dimension (`dim-*`) are cargo

@@ -14,11 +14,11 @@ use rayon::prelude::*;
 use std::time::Instant;
 
 /// The fusion step's inputs for one query, in rank order.
-struct Lists {
+pub(crate) struct Lists {
     /// (corpus doc index, raw BM25 score) — up to LEX_FETCH=512 deep
-    lex: Vec<(usize, f32)>,
+    pub(crate) lex: Vec<(usize, f32)>,
     /// (corpus doc index, cosine distance) — capped by the HNSW K=40
-    sem: Vec<(usize, f32)>,
+    pub(crate) sem: Vec<(usize, f32)>,
 }
 
 /// Generic weighted RRF over the two lists. `rel_weight` additionally
@@ -56,7 +56,7 @@ fn wrrf(
 
 /// Convex blend of per-query-normalized scores: `α·lex_rel + (1−α)·sem_rel`
 /// where lex_rel = bm25/top_bm25 and sem_rel = similarity/top_similarity.
-fn score_blend(l: &Lists, alpha: f32) -> Vec<usize> {
+pub(crate) fn score_blend(l: &Lists, alpha: f32) -> Vec<usize> {
     let top_bm25 = l.lex.first().map(|&(_, s)| s).unwrap_or(0.0);
     let top_sim = l.sem.first().map(|&(_, d)| 1.0 - d).unwrap_or(0.0);
     let mut scores: Vec<(f32, usize)> = Vec::new();

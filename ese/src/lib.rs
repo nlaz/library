@@ -114,5 +114,39 @@ pub fn encode_single(input: impl AsRef<str>) -> [f32; DIMENSIONS] {
     vector
 }
 
+/// Yields each wordpiece token's dequantized vector, in input order — no
+/// CLS/SEP, no pooling. Same normalization and greedy tokenization as
+/// [`encode_single`]; pieces outside the vocabulary yield the UNK vector.
+///
+/// This is the primitive behind late-interaction (MaxSim) reranking: token
+/// vectors compared individually instead of averaged. Because the baked
+/// rows are pre-scaled by their SIF weight, each vector's *norm* doubles as
+/// the token's importance weight and its *direction* carries the meaning.
+///
+/// # Examples
+///
+/// ```
+/// let mut n = 0;
+/// ese::for_each_token_vector("hello world", |v| {
+///     assert_eq!(v.len(), ese::DIMENSIONS);
+///     n += 1;
+/// });
+/// assert_eq!(n, 2);
+/// ```
+pub fn for_each_token_vector(input: impl AsRef<str>, mut f: impl FnMut(&[f32; DIMENSIONS])) {
+    let text = input.as_ref();
+    let mut normalized = String::with_capacity(text.len());
+    pretokenizer::normalize_into(text, &mut normalized);
+    let mut wp_buf = String::with_capacity(64);
+    let mut vector = [0.0f32; DIMENSIONS];
+    pretokenizer::for_each_pre_token(&normalized, |token| {
+        wordpiece::for_each_token(token, &mut wp_buf, |param| {
+            vector = [0.0; DIMENSIONS];
+            wordpiece::accumulate(&mut vector, param);
+            f(&vector);
+        });
+    });
+}
+
 #[cfg(test)]
 mod test;

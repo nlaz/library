@@ -126,6 +126,41 @@ fn lookup_known_term_resolves() {
     // Skipping rather than reaching into build-generated internals.
 }
 
+#[test]
+fn token_vectors_sum_to_pooled_encoding() {
+    // the contract between per-token access and pooling: summing the yielded
+    // token vectors plus the CLS/SEP contribution (= encode_single("")) and
+    // dividing by the token count must reproduce encode_single. Pins
+    // for_each_token_vector to the exact tokenization the pooled path uses.
+    let text = "the quick brown mignonette";
+    let mut sum = [0.0f32; crate::DIMENSIONS];
+    let mut n = 0u32;
+    crate::for_each_token_vector(text, |v| {
+        for (s, x) in sum.iter_mut().zip(v.iter()) {
+            *s += x;
+        }
+        n += 1;
+    });
+    assert!(n >= 4, "expected at least one token per word, got {n}");
+    let clssep = crate::encode_single("");
+    let pooled = crate::encode_single(text);
+    for (i, ((s, c), p)) in sum.iter().zip(clssep.iter()).zip(pooled.iter()).enumerate() {
+        let want = (s + c) / n as f32;
+        assert!(
+            (want - p).abs() < 1e-4,
+            "dim {i}: per-token sum {want} != pooled {p}"
+        );
+    }
+}
+
+#[test]
+fn token_vectors_empty_input_yields_none() {
+    let mut n = 0;
+    crate::for_each_token_vector("", |_| n += 1);
+    crate::for_each_token_vector("   ", |_| n += 1);
+    assert_eq!(n, 0);
+}
+
 #[cfg(feature = "tests")]
 mod optional {
     include!(concat!(env!("OUT_DIR"), "/optional_testdata.rs"));

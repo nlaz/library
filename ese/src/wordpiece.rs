@@ -9,16 +9,14 @@ pub fn accumulate(vector: &mut [f32; crate::DIMENSIONS], param: &crate::lookup::
     }
 }
 
+/// Greedy longest-match wordpiece over one pre-token, yielding each matched
+/// piece's parameter row (UNK for unmatched or oversized words). The single
+/// source of the tokenization rule — pooling ([`wordpiece_accumulate`]) and
+/// per-token consumers (late-interaction scoring) both walk through here.
 #[inline]
-pub fn wordpiece_accumulate(
-    word: &str,
-    vector: &mut [f32; crate::DIMENSIONS],
-    token_count: &mut u32,
-    wp_buf: &mut String,
-) {
+pub fn for_each_token(word: &str, wp_buf: &mut String, mut f: impl FnMut(&crate::lookup::Param)) {
     if word.chars().count() > crate::lookup::MAX_WORD_LEN {
-        *token_count += 1;
-        accumulate(vector, &crate::lookup::UNK);
+        f(&crate::lookup::UNK);
         return;
     }
     let mut start = 0;
@@ -38,8 +36,7 @@ pub fn wordpiece_accumulate(
                 crate::lookup::lookup(wp_buf.as_str())
             };
             if let Some(emb) = embedding {
-                *token_count += 1;
-                accumulate(vector, emb);
+                f(emb);
                 start = end;
                 matched = true;
                 break;
@@ -50,9 +47,21 @@ pub fn wordpiece_accumulate(
             }
         }
         if !matched {
-            *token_count += 1;
-            accumulate(vector, &crate::lookup::UNK);
+            f(&crate::lookup::UNK);
             return;
         }
     }
+}
+
+#[inline]
+pub fn wordpiece_accumulate(
+    word: &str,
+    vector: &mut [f32; crate::DIMENSIONS],
+    token_count: &mut u32,
+    wp_buf: &mut String,
+) {
+    for_each_token(word, wp_buf, |param| {
+        *token_count += 1;
+        accumulate(vector, param);
+    });
 }

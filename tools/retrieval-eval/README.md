@@ -282,6 +282,64 @@ training road is the identified way to close it without transformer
 compute. Raw per-dataset results: session scratchpad
 `nanobeir-results.json` / `nanobeir.py`.
 
+## Contextual doc-token prototype (2026-07): closed, and what it opened
+
+The proposed ceiling-raiser: store the teacher transformer's PER-OCCURRENCE
+token vectors at ingest (bge-small last_hidden_state, pages windowed at 510
+tokens), distill the query-side static table as the centroid of each token's
+occurrence cloud (shared space by construction), and run the shipped MaxSim
+blend unchanged. Python prototype over the v2 gold set, reranking the same
+rerank-neutered hybrid top-100 dump at pool 30 / weight 0.7. The static-static
+replication reproduced the shipped Rust result (0.789 vs 0.798 live, within
+the ±1.3 noise floor), validating the frame.
+
+| condition | query side | doc side | NDCG@10 | known | para | ques |
+|---|---|---|---|---|---|---|
+| A fused baseline | — | — | 0.727 | 0.749 | 0.744 | 0.689 |
+| B static-static (shipped) | ese table | ese table | 0.789 | 0.879 | 0.758 | 0.730 |
+| C distilled-static | distilled table | distilled table | 0.796 | 0.874 | 0.772 | 0.740 |
+| **D ctx-doc (the proposal)** | distilled table | **stored occurrences** | **0.783** | 0.838 | 0.769 | 0.743 |
+| E ctx-ctx | bge tokens | stored occurrences | **0.820** | 0.850 | 0.819 | 0.792 |
+| F pooled-bge rerank | bge CLS | bge CLS | 0.753 | 0.747 | 0.792 | 0.721 |
+
+Paired bootstrap (2,000 resamples, per-query NDCG@10): D−C **−1.2 points,
+P(Δ>0)=0.04** — storing doc-side context while the query stays static is
+*significantly worse* than the free distilled table, not merely equal. C−B
++0.6 is noise (CI spans zero): a table distilled purely from the corpus
+teacher reaches parity with ese, no more. E−B **+3.1 [CI +1.3,+5.0],
+P=1.000, 88W/48L** — token-level context is a real win only when BOTH sides
+have it, and the gain lands exactly where v2 said the headroom is
+(paraphrase +6, question +6, known-item −3 on an already-saturated workload).
+The "free retriever upgrade" (pooled contextual doc vectors + static query)
+scored 0.203 brute-force — closed; pooled cross-space mixing fails just like
+the projection-alignment spike.
+
+Costs, measured on the 4,000-page corpus (~755 occurrences/page, projected
+to the 21,537-page live library):
+
+| doc-side storage | KiB/page | library | D | E |
+|---|---|---|---|---|
+| fp16 384d | 566 | 12.5 GB | 0.783 | 0.820 |
+| int8 384d | 283 | 6.3 GB | 0.784 | — |
+| PCA-128 + int8 | 94 | 2.1 GB | 0.791 | 0.809 |
+| + SIF prune (keep 81%) | 76 | 1.7 GB | 0.792 | — |
+| PCA-64 + int8 | 47 | 1.0 GB | 0.775 | — |
+
+Ingest encode: ~25 pages/s on MPS (~14 min full library), ~9 pages/s on CPU
+(~40 min) — vs 149 s for the current full ese re-embed. Query-side bge-small
+encode of a real query: 6.1 ms p50 / 11.0 ms p95 on 4 CPU threads.
+
+**Verdict: the two-lane architecture (contextual docs, static queries) is
+closed** — it pays gigabytes and minutes to score below its own zero-byte
+control. The prototype's real finding is the reframed road: the +3.1 that
+survives (0.809 at 2.1 GB compressed) requires a query-side transformer,
+and that transformer costs ~6 ms — well inside the sub-100 ms budget. The
+open question is engineering, not quality: a 33M-param encoder embedded in
+the app (candle/ort, or the librarian sidecar) vs the shipped zero-dependency
+static path, for +2–3 NDCG points concentrated in paraphrase/question.
+Scripts: session scratchpad `ctxtok_encode.py` / `ctxtok_eval.py` /
+`ctxtok_followup.py`, results `ctxtok-results.json`.
+
 ## Comparing compile-time ese variants
 
 Quantization (`quant-8`/`quant-16`/f32) and dimension (`dim-*`) are cargo

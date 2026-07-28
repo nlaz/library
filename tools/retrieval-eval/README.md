@@ -224,6 +224,31 @@ quantization, word tables, PRF, char-ngrams, projection alignment) is
 neutral or negative. Remaining unexplored: librarian document expansion,
 adaptive fusion α, and full in-domain training.
 
+## Gold set v2 baseline (2026-07-29)
+
+`target/library-gold-v2.json`: 500 queries over 4,000 pages (seed 43),
+generated with three cycled steering styles recorded per query; the
+`library` subcommand reports per-kind tables alongside the blend. Noise
+floor ~±1.3 NDCG points (vs ±3 for v1's 100 queries). First run with the
+shipped stack (SIF + MaxSim pool-30) — NOT comparable to v1 numbers, the
+corpus is twice as hard:
+
+| config | all (500) | known-item (167) | paraphrase (167) | question (166) |
+|---|---|---|---|---|
+| hybrid | **0.798** | 0.876 | 0.767 | 0.750 |
+| lex-only | 0.791 | 0.875 | 0.759 | 0.740 |
+| encoder | 0.581 | 0.547 | 0.637 | 0.559 |
+| sem-only | 0.568 | 0.532 | 0.628 | 0.542 |
+
+Reading: hybrid's edge over lex-only lives entirely in paraphrase and
+question workloads (paired overall 66W/44L for hybrid); known-item is
+dead even at 0.88 — BM25 already solves it and the semantic side adds
+nothing there. The static encoder degrades further at 4k-page scale
+(0.581 vs 0.689 at 2k) while BM25 holds — corpus growth widens the
+lexical-semantic gap, strengthening the case for the ceiling-raiser
+roads. v1 stays frozen for cross-checking; v2 is the referee for all
+future decisions.
+
 ## External calibration: NanoBEIR (2026-07-29)
 
 The shipped recipe replicated faithfully in Python and run on NanoBEIR

@@ -209,7 +209,7 @@ fn library_cmd(rest: &[String]) -> Result<()> {
         .gold
         .clone()
         .unwrap_or_else(|| "target/library-gold.json".to_string());
-    let (pairs, ids) = gold::load_gold_ids(std::path::Path::new(&path))?;
+    let (pairs, ids, kinds) = gold::load_gold_ids(std::path::Path::new(&path))?;
     if let Some(which) = &args.trace {
         pipeline_eval::trace(&pairs, &ids, which);
         return Ok(());
@@ -228,6 +228,33 @@ fn library_cmd(rest: &[String]) -> Result<()> {
     results.extend(pipeline_eval::run(&pairs, KS));
     report::print_table(&results);
     report::print_paired("hybrid", &results, MRR_COL);
+
+    // per-workload breakdown (v2 gold sets tag each query's style) — the
+    // blended average can hide a change that helps one workload and hurts
+    // another; this makes the trade visible per config.
+    let mut kind_names: Vec<String> = kinds.iter().flatten().cloned().collect();
+    kind_names.sort();
+    kind_names.dedup();
+    for kind in &kind_names {
+        let idx: Vec<usize> = kinds
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| k.as_deref() == Some(kind))
+            .map(|(i, _)| i)
+            .collect();
+        println!("\n#### {kind} ({} queries)", idx.len());
+        let sliced: Vec<(String, encoder_eval::EvalResult)> = results
+            .iter()
+            .map(|(name, r)| {
+                let rows: Vec<Vec<f64>> = idx.iter().map(|&i| r.per_query[i].clone()).collect();
+                (
+                    name.clone(),
+                    encoder_eval::EvalResult::from_rows(KS, rows, 0),
+                )
+            })
+            .collect();
+        report::print_table(&sliced);
+    }
     if let Some(out) = &args.out {
         let meta = RunMeta {
             subcommand: "library".to_string(),
@@ -251,7 +278,7 @@ fn prf_cmd(rest: &[String]) -> Result<()> {
         .gold
         .clone()
         .unwrap_or_else(|| "target/library-gold.json".to_string());
-    let (pairs, _) = gold::load_gold_ids(std::path::Path::new(&path))?;
+    let (pairs, _, _) = gold::load_gold_ids(std::path::Path::new(&path))?;
     println!(
         "### prf on library gold ({} queries over {} pages)",
         pairs.questions.len(),
@@ -273,7 +300,7 @@ fn embed_cmd(rest: &[String]) -> Result<()> {
         .gold
         .clone()
         .unwrap_or_else(|| "target/library-gold.json".to_string());
-    let (pairs, ids) = gold::load_gold_ids(std::path::Path::new(&path))?;
+    let (pairs, ids, _) = gold::load_gold_ids(std::path::Path::new(&path))?;
     let docs = ese::encode(&pairs.answers);
     let queries = ese::encode(&pairs.questions);
     let out = args

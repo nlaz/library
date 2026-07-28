@@ -84,6 +84,7 @@ pub fn run() {
             commands::complete,
             commands::ready,
             commands::perf_searches,
+            commands::perf_memory,
             commands::perf_ingest,
             commands::atlas,
             docs::collections,

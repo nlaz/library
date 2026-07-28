@@ -313,6 +313,25 @@ async fn main() -> Result<()> {
                 }
             }
         }))
+        // memory provenance: where RAM goes (indexes, caches, models,
+        // stores) against process RSS, with an explicit unaccounted gap
+        .route("/api/perf/memory", get({
+            let app = app.clone();
+            move || {
+                let app = app.clone();
+                async move {
+                    let out = tokio::task::spawn_blocking(move || {
+                        let rss = memory_stats::memory_stats().map(|m| m.physical_mem as u64);
+                        let lib = app.lib.read().expect("library lock poisoned");
+                        let images = app.images.read().expect("images lock poisoned");
+                        library_core::perf::memory(&lib, &images, rss)
+                    })
+                    .await
+                    .expect("perf memory task panicked");
+                    Json(out)
+                }
+            }
+        }))
         // per-doc ingest metrics; lazily backfills legibility for docs from
         // before metrics existed (first call on a big library takes seconds)
         .route("/api/perf/ingest", get({

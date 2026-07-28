@@ -15,9 +15,12 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use fold::pipeline::terminal::search::HnswSinkStats;
+use fold::stream::DbStats;
+
 use crate::legibility::{NOISY_MIN, legibility, min_window};
 use crate::tools::BLANK_CHARS;
-use crate::{Hit, ImageHit, Word};
+use crate::{Hit, ImageHit, Images, Library, Word};
 
 /// Ring capacity: enough to cover a tuning session (instant-mode keystrokes
 /// included) without unbounded growth.
@@ -167,6 +170,189 @@ pub fn meta(chunks: usize, figures: usize, docs: usize) -> Value {
         "docs": docs,
         "now_ms": now_ms(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Memory provenance
+// ---------------------------------------------------------------------------
+
+/// Where the process's RAM goes, as well as Rust-side accounting can tell.
+///
+/// The line items are estimates and deliberately don't reconcile with
+/// `rss_bytes`: the CLIP ONNX arena is invisible to us, ese's weights are
+/// file-backed `.rodata` (resident only as touched pages), fjall memory-maps
+/// table files, and allocator retention plus per-thread search scratch are
+/// unaccounted. The signed `unaccounted_bytes` remainder carries that gap
+/// instead of hiding it.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryBreakdown {
+    pub now_ms: u64,
+    /// Host-provided resident set size; `None` means the probe failed.
+    pub rss_bytes: Option<u64>,
+    pub indexes: Vec<IndexMem>,
+    pub caches: Vec<CacheMem>,
+    pub models: Vec<ModelMem>,
+    pub stores: Vec<StoreMem>,
+    /// Sum of every RAM line item above (disk figures excluded).
+    pub accounted_bytes: u64,
+    /// `rss - accounted`; negative when capacity-based estimates exceed a
+    /// partially paged-out RSS.
+    pub unaccounted_bytes: Option<i64>,
+    /// A corpus-sized transient is in flight (all embeddings + chunk text).
+    pub atlas_building: bool,
+}
+
+/// One resident HNSW index: the anny graph plus the sink's id/key maps.
+#[derive(Debug, Clone, Serialize)]
+pub struct IndexMem {
+    pub name: String,
+    /// `graph_bytes + map_bytes`.
+    pub bytes: u64,
+    #[serde(flatten)]
+    pub stats: HnswSinkStats,
+    /// Dense per-slot cost: vector + layer-0 links + node meta.
+    pub per_vector_bytes: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CacheMem {
+    pub name: String,
+    pub bytes: u64,
+    pub entries: u64,
+    pub warmed: bool,
+}
+
+/// An embedding model. `bytes: None` marks a model opaque to Rust-side
+/// accounting (the CLIP ONNX session) — visible only in RSS.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelMem {
+    pub name: String,
+    pub bytes: Option<u64>,
+    pub residency: String,
+}
+
+/// One fjall store. `ram_bytes` is what the store holds resident
+/// (memtables + block cache + pinned filters/index blocks); the flattened
+/// [`DbStats`] carries the disk side, which is never summed into RAM.
+#[derive(Debug, Clone, Serialize)]
+pub struct StoreMem {
+    pub name: String,
+    pub ram_bytes: u64,
+    #[serde(flatten)]
+    pub db: DbStats,
+}
+
+fn index_mem(name: &str, stats: HnswSinkStats) -> IndexMem {
+    IndexMem {
+        name: name.into(),
+        bytes: (stats.graph_bytes + stats.map_bytes) as u64,
+        per_vector_bytes: (stats.dim * stats.dtype_bytes + stats.m0 * 4 + 8) as u32,
+        stats,
+    }
+}
+
+fn store_mem(name: &str, db: DbStats) -> StoreMem {
+    let pinned: u64 = db
+        .keyspaces
+        .iter()
+        .map(|k| k.pinned_filter_bytes + k.pinned_index_bytes)
+        .sum();
+    StoreMem {
+        name: name.into(),
+        ram_bytes: db.write_buffer_bytes + db.block_cache_bytes + pinned,
+        db,
+    }
+}
+
+/// Estimated heap held by the search ring: struct + string/vec heap per
+/// record. O([`SEARCH_LOG_CAP`]) — negligible next to a poll.
+fn search_log_bytes() -> (usize, usize) {
+    let log = SEARCH_LOG.lock().expect("search log lock poisoned");
+    let bytes = log
+        .iter()
+        .map(|r| {
+            size_of::<SearchRecord>()
+                + r.q.len()
+                + r.mode.len()
+                + r.kind.len()
+                + r.col.len()
+                + r.doc.len()
+                + r.stages
+                    .iter()
+                    .map(|(s, _)| size_of::<(String, u64)>() + s.len())
+                    .sum::<usize>()
+                + r.text_hits
+                    .iter()
+                    .map(|h| size_of::<HitProv>() + h.doc.len())
+                    .sum::<usize>()
+                + r.img_hits
+                    .iter()
+                    .map(|h| size_of::<ImgProv>() + h.doc.len())
+                    .sum::<usize>()
+        })
+        .sum();
+    (log.len(), bytes)
+}
+
+/// Assemble the breakdown: one read transaction per store for the sink
+/// stats, plus the stores' own fjall numbers. `rss_bytes` comes from the
+/// host so this crate stays platform-free.
+pub fn memory(lib: &Library, images: &Images, rss_bytes: Option<u64>) -> MemoryBreakdown {
+    let (lex_cache, vec_stats) = lib.rtx(|((lex, vec), _)| (lex.cache_stats(), vec.stats()));
+    let img_stats = images.rtx(|(vec, _)| vec.stats());
+    let (log_entries, log_bytes) = search_log_bytes();
+
+    let indexes = vec![
+        index_mem("text hnsw (vec)", vec_stats),
+        index_mem("image hnsw (imgvec)", img_stats),
+    ];
+    let caches = vec![
+        CacheMem {
+            name: "bm25 doclen cache".into(),
+            bytes: lex_cache.bytes as u64,
+            entries: lex_cache.entries as u64,
+            warmed: lex_cache.warmed,
+        },
+        CacheMem {
+            name: "search log ring".into(),
+            bytes: log_bytes as u64,
+            entries: log_entries as u64,
+            warmed: true,
+        },
+    ];
+    let models = vec![
+        ModelMem {
+            name: "ese (text)".into(),
+            bytes: Some(ese::MODEL_BYTES as u64),
+            residency: "rodata (file-backed)".into(),
+        },
+        ModelMem {
+            name: "clip (onnx)".into(),
+            bytes: None,
+            residency: "opaque (RSS only)".into(),
+        },
+    ];
+    let stores = vec![
+        store_mem("library.db", lib.db_stats()),
+        store_mem("images.db", images.db_stats()),
+    ];
+
+    let accounted_bytes = indexes.iter().map(|i| i.bytes).sum::<u64>()
+        + caches.iter().map(|c| c.bytes).sum::<u64>()
+        + models.iter().filter_map(|m| m.bytes).sum::<u64>()
+        + stores.iter().map(|s| s.ram_bytes).sum::<u64>();
+
+    MemoryBreakdown {
+        now_ms: now_ms(),
+        rss_bytes,
+        unaccounted_bytes: rss_bytes.map(|r| r as i64 - accounted_bytes as i64),
+        indexes,
+        caches,
+        models,
+        stores,
+        accounted_bytes,
+        atlas_building: crate::atlas::building().is_some(),
+    }
 }
 
 // ---------------------------------------------------------------------------

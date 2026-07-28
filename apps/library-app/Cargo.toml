@@ -23,6 +23,7 @@ anyhow = { workspace = true }
 fastembed = "4"
 image = "0.25"
 libc = "0.2"
+memory-stats = "1"
 percent-encoding = "2"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"

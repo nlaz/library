@@ -14,6 +14,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 fastembed = "4"
+memory-stats = "1"
 tokio = { version = "1", features = ["full"] }
 wtransport = { version = "0.6", features = ["self-signed"] }
 axum = "0.8"

@@ -77,6 +77,24 @@ pub(crate) async fn perf_searches(state: State<'_, AppState>) -> Result<serde_js
     .map_err(|e| e.to_string())
 }
 
+/// Memory provenance for the perf view: where RAM goes (indexes, caches,
+/// models, stores) against process RSS — the desktop analogue of the
+/// server's `/api/perf/memory` route.
+#[tauri::command]
+pub(crate) async fn perf_memory(
+    state: State<'_, AppState>,
+) -> Result<library_core::perf::MemoryBreakdown, String> {
+    let eng = engine(&state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let rss = memory_stats::memory_stats().map(|m| m.physical_mem as u64);
+        let lib = eng.lib.read().expect("library lock poisoned");
+        let images = eng.images.read().expect("images lock poisoned");
+        library_core::perf::memory(&lib, &images, rss)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Per-doc ingest metrics; lazily backfills legibility for docs from before
 /// metrics existed (first call on a big library takes seconds).
 #[tauri::command]

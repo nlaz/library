@@ -386,3 +386,34 @@
   font-size: var(--fs-meta);
   margin-top: var(--sp-1);
 }
+
+/* --- memory tab ---------------------------------------------------------- */
+
+/* group separators inside the one breakdown table */
+#perf tr.mem-group td {
+  padding-top: var(--sp-3);
+  color: var(--ink-dim);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  border-bottom: none;
+}
+
+/* the %-of-rss mini bar lives in a table cell, so it can't flex like the
+   waterfall's track — fixed width, inline with the number */
+#perf .mem-bar {
+  display: inline-block;
+  width: 90px;
+  height: 10px;
+  background: var(--well);
+  vertical-align: middle;
+  margin-right: var(--sp-1);
+}
+
+/* expanded per-keyspace rows read as children of their store row */
+#perf tr.ks td {
+  color: var(--ink-dim);
+}
+#perf tr[data-store] {
+  cursor: pointer;
+}

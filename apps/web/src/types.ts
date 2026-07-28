@@ -203,6 +203,65 @@ export type IngestRow = {
   metrics?: IngestMetrics;
 };
 
+/** One fjall keyspace's footprint (flattened fold::KeyspaceStats). */
+export type KeyspaceMem = {
+  name: string;
+  disk_bytes: number;
+  approx_len: number;
+  sealed_memtables: number;
+  pinned_filter_bytes: number;
+  pinned_index_bytes: number;
+};
+
+/** One resident HNSW index (IndexMem with HnswSinkStats flattened in). */
+export type IndexMem = {
+  name: string;
+  bytes: number;
+  live: number;
+  slots: number;
+  free_slots: number;
+  dim: number;
+  dtype_bytes: number;
+  m0: number;
+  graph_bytes: number;
+  map_entries: number;
+  map_bytes: number;
+  stale: boolean;
+  per_vector_bytes: number;
+};
+
+export type CacheMem = { name: string; bytes: number; entries: number; warmed: boolean };
+
+/** bytes null = opaque to Rust-side accounting (the CLIP ONNX session). */
+export type ModelMem = { name: string; bytes: number | null; residency: string };
+
+/** One fjall store (StoreMem with DbStats flattened in). ram_bytes is what
+ * the store holds resident; disk figures are never summed into RAM. */
+export type StoreMem = {
+  name: string;
+  ram_bytes: number;
+  disk_bytes: number;
+  journal_count: number;
+  write_buffer_bytes: number;
+  block_cache_capacity: number;
+  block_cache_bytes: number;
+  keyspaces: KeyspaceMem[];
+};
+
+/** Where the process's RAM goes. Estimates deliberately don't reconcile
+ * with rss_bytes; unaccounted_bytes carries the (signed) gap. */
+export type MemoryBreakdown = {
+  now_ms: number;
+  rss_bytes: number | null;
+  indexes: IndexMem[];
+  caches: CacheMem[];
+  models: ModelMem[];
+  stores: StoreMem[];
+  accounted_bytes: number;
+  unaccounted_bytes: number | null;
+  atlas_building: boolean;
+};
+
 export type IngestEvent = {
   doc: string;
   stage: "log" | "ocr" | "clean" | "embed" | "figures" | "clip" | "indexing" | "done" | "error";

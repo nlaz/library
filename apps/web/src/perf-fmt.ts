@@ -38,6 +38,21 @@ export function localStamp(ts: number): string {
   );
 }
 
+/** Human-readable bytes in binary units, one decimal past KiB. Negative
+ * values keep their sign (the unaccounted remainder can be negative). */
+export function bytes(n: number): string {
+  if (n < 0) return `-${bytes(-n)}`;
+  if (n < 1024) return `${n}B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(1)}${units[i]}`;
+}
+
 /** "—" for not-recorded, distinct from a real 0. */
 export function opt(v: number | undefined | null, f: (n: number) => string = String): string {
   return v === undefined || v === null ? "—" : f(v);

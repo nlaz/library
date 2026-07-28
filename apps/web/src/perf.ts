@@ -1,6 +1,7 @@
-// Hidden performance view (Cmd+.): three tabs over the subsystems worth
+// Hidden performance view (Cmd+.): four tabs over the subsystems worth
 // tuning — recent searches with per-stage timings and per-hit ranker
-// provenance, per-doc ingest metrics, and the chat agent's turn provenance.
+// provenance, per-doc ingest metrics, the chat agent's turn provenance,
+// and memory provenance (where RAM goes, against process RSS).
 // Dense and labeled for human tuning — and self-describing enough (grouped
 // constants header, absolute numbers with units) that a screenshot alone
 // carries the state an agent needs to troubleshoot.
@@ -12,10 +13,10 @@
 
 import { agentLog, agentVersion } from "./agent-log";
 import { renderAgent } from "./perf-agent";
-import { esc, hhmmss, localStamp, opt, term, us } from "./perf-fmt";
+import { bytes, esc, hhmmss, localStamp, opt, term, us } from "./perf-fmt";
 import { GLOSS, evidence } from "./perf-gloss";
 import { isTauri } from "./transport";
-import type { IngestRow, PerfMeta, SearchRecord } from "./types";
+import type { IngestRow, MemoryBreakdown, PerfMeta, SearchRecord, StoreMem } from "./types";
 
 const $perf = document.getElementById("perf")!;
 const $id = document.getElementById("perf-id")!;
@@ -24,29 +25,35 @@ const $facts = document.getElementById("perf-facts")!;
 const $searchBody = document.getElementById("perf-search-body")!;
 const $ingestBody = document.getElementById("perf-ingest-body")!;
 const $agentBody = document.getElementById("perf-agent-body")!;
+const $memoryBody = document.getElementById("perf-memory-body")!;
 const $pop = document.getElementById("perf-pop")!;
 
-type Tab = "search" | "ingest" | "agent";
+type Tab = "search" | "ingest" | "agent" | "memory";
 const PANES: Record<Tab, HTMLElement> = {
   search: $searchBody,
   ingest: $ingestBody,
   agent: $agentBody,
+  memory: $memoryBody,
 };
 
 const HEAD_TICK_MS = 1000;
 const SEARCH_POLL_MS = 1500;
 const INGEST_POLL_MS = 3000;
+// memory moves slowly and each poll takes read locks server-side
+const MEMORY_POLL_MS = 5000;
 
 let tab: Tab = "search";
 let headTimer = 0;
 let searchTimer = 0;
 let ingestTimer = 0;
+let memoryTimer = 0;
 // ts_ms of the manually expanded record; null = follow the newest
 let pinned: number | null = null;
 // last-rendered payloads, to skip DOM churn on unchanged polls
 let lastSearches = "";
 let lastIngest = "";
 let lastAgent = -1;
+let lastMemory = "";
 // ingest sort: column key + direction (numeric columns sort desc first)
 let sortKey = "doc";
 let sortDir = 1;
@@ -58,11 +65,14 @@ let srcFilter: SrcFilter = "all";
 let meta: PerfMeta | null = null;
 let searches: SearchRecord[] = [];
 let ingest: IngestRow[] = [];
+let mem: MemoryBreakdown | null = null;
+// store names whose per-keyspace rows are expanded
+const memOpen = new Set<string>();
 // client clock minus server clock at the last fetch; row timestamps are
 // server-stamped but rendered against the local clock, so drift matters
 let skewMs = 0;
 // per-tab header facts, written by the renderers
-const facts: Record<Tab, [string, string][]> = { search: [], ingest: [], agent: [] };
+const facts: Record<Tab, [string, string][]> = { search: [], ingest: [], agent: [], memory: [] };
 
 type SearchPayload = { meta: PerfMeta; searches: SearchRecord[] };
 
@@ -80,6 +90,14 @@ async function fetchIngest(): Promise<IngestRow[]> {
     return invoke<IngestRow[]>("perf_ingest");
   }
   return (await fetch("/api/perf/ingest")).json();
+}
+
+async function fetchMemory(): Promise<MemoryBreakdown> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<MemoryBreakdown>("perf_memory");
+  }
+  return (await fetch("/api/perf/memory")).json();
 }
 
 export function perfOpen(): boolean {
@@ -103,12 +121,16 @@ export function setPerfTab(t: Tab) {
   // only the visible tab polls; the head keeps ticking either way
   window.clearInterval(searchTimer);
   window.clearInterval(ingestTimer);
+  window.clearInterval(memoryTimer);
   if (t === "search") {
     void pollSearches();
     searchTimer = window.setInterval(() => void pollSearches(), SEARCH_POLL_MS);
   } else if (t === "ingest") {
     void pollIngest();
     ingestTimer = window.setInterval(() => void pollIngest(), INGEST_POLL_MS);
+  } else if (t === "memory") {
+    void pollMemory();
+    memoryTimer = window.setInterval(() => void pollMemory(), MEMORY_POLL_MS);
   } else {
     renderAgentPane();
   }
@@ -134,9 +156,11 @@ function openPerf() {
   (document.activeElement as HTMLElement | null)?.blur();
   $searchBody.textContent = "loading…";
   $ingestBody.textContent = "computing… (first open scores legibility for older docs)";
+  $memoryBody.textContent = "loading…";
   lastSearches = "";
   lastIngest = "";
   lastAgent = -1;
+  lastMemory = "";
   // both fire once regardless of tab: searches carry the only copy of
   // PerfMeta (the head would be blank without it), and the ingest endpoint
   // backfills legibility lazily, which is the slow part — paying it now
@@ -152,6 +176,7 @@ function closePerf() {
   window.clearInterval(headTimer);
   window.clearInterval(searchTimer);
   window.clearInterval(ingestTimer);
+  window.clearInterval(memoryTimer);
 }
 
 /** Cheap always-on tick: advances the clock and catches a chat turn that is
@@ -204,6 +229,25 @@ async function pollIngest() {
   renderHead();
 }
 
+async function pollMemory() {
+  let m: MemoryBreakdown;
+  try {
+    m = await fetchMemory();
+  } catch (e) {
+    $memoryBody.textContent = `perf endpoint unreachable: ${e}`;
+    return;
+  }
+  if (!perfOpen()) return;
+  mem = m;
+  // now_ms moves every poll; diff the rest so a quiet heap doesn't churn
+  // the DOM (and tear out text selection) every 5 s
+  const json = JSON.stringify({ ...m, now_ms: 0 });
+  if (json === lastMemory) return;
+  lastMemory = json;
+  renderMemory(m);
+  renderHead();
+}
+
 function renderAgentPane() {
   lastAgent = agentVersion();
   facts.agent = renderAgent($agentBody, agentLog(), pinSearch);
@@ -236,7 +280,7 @@ function renderHead() {
     (meta ? ` · ${term("debug", `debug=${meta.debug}`)}` : "") +
     ` · ${term("skew", `skew=${skew}`)}` +
     corpus +
-    ` · <kbd>Cmd+.</kbd>/<kbd>Esc</kbd> close · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> tabs`;
+    ` · <kbd>Cmd+.</kbd>/<kbd>Esc</kbd> close · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd> tabs`;
   if (id !== lastId) {
     lastId = id;
     $id.innerHTML = id;
@@ -248,6 +292,7 @@ function renderHead() {
     search: searches.length,
     ingest: ingest.length,
     agent: agentLog().length,
+    memory: mem ? mem.indexes.length + mem.caches.length + mem.models.length + mem.stores.length : 0,
   };
   for (const b of $tabs.querySelectorAll<HTMLElement>("button[data-tab]")) {
     const n = b.querySelector(".n");
@@ -576,6 +621,171 @@ function renderIngest(rows: IngestRow[]) {
       lastIngest = "";
       renderIngest(rows);
       renderHead();
+    });
+  }
+}
+
+// --- memory -----------------------------------------------------------------
+
+// Keyspaces the current graphs open. Anything else in a store is an orphan
+// left behind by an older pipeline shape — disk weight worth flagging.
+const KNOWN_KS: Record<string, string[]> = {
+  "library.db": ["sink_lex", "sink_vec", "sink_vec_graph", "sink_manifest", "sink_terms", "keyed_root"],
+  "images.db": ["sink_imgvec", "sink_imgvec_graph", "sink_imgmeta", "sink_imgmanifest", "keyed_root"],
+};
+
+function memoryFacts(m: MemoryBreakdown): [string, string][] {
+  const rss = m.rss_bytes;
+  const pct = rss ? ` (${Math.round((m.accounted_bytes / rss) * 100)}%)` : "";
+  return [
+    [
+      "resident",
+      `${term("rss", `rss=${opt(rss, bytes)}`)}` +
+        ` ${term("accounted", `accounted=${bytes(m.accounted_bytes)}${pct}`)}` +
+        ` ${term("unaccounted", `unaccounted=${opt(m.unaccounted_bytes, bytes)}`)}` +
+        (m.atlas_building ? ` <span class="flag">ATLAS BUILDING</span>` : ""),
+    ],
+    [
+      "caveat",
+      `estimates ≠ rss: ${term("onnx", "onnx arena")}, file-backed pages,` +
+        ` allocator retention, ${term("thread scratch", "thread scratch")}`,
+    ],
+  ];
+}
+
+/** "% of rss" cell with a mini bar; "—" when RSS is unknown. */
+function pctCell(part: number | null, rss: number | null): string {
+  if (part === null || !rss || rss <= 0) return `<td class="n">—</td>`;
+  const pct = (part / rss) * 100;
+  const w = Math.max(0.5, Math.min(100, pct));
+  return (
+    `<td class="n"><span class="mem-bar"><span class="bar" style="width:${w}%"></span></span>` +
+    `${pct.toFixed(1)}%</td>`
+  );
+}
+
+/** A store's summary row plus, when expanded, one dimmed row per keyspace
+ * (disk-heavy first) — where the orphans and the pinned RAM show up. */
+function storeRows(s: StoreMem, rss: number | null): string {
+  const open = memOpen.has(s.name);
+  const known = KNOWN_KS[s.name] ?? [];
+  const isOrphan = (name: string) => known.length > 0 && !known.includes(name);
+  const orphans = s.keyspaces.filter((k) => isOrphan(k.name)).length;
+  const pinned = s.keyspaces.reduce((a, k) => a + k.pinned_filter_bytes + k.pinned_index_bytes, 0);
+  const detail =
+    `${term("memtable", `memtable=${bytes(s.write_buffer_bytes)}`)}` +
+    ` · ${term("block cache", `cache ${bytes(s.block_cache_bytes)}/${bytes(s.block_cache_capacity)}`)}` +
+    ` · ${term("pinned filters", `pinned=${bytes(pinned)}`)}` +
+    ` · disk=${bytes(s.disk_bytes)} (${s.journal_count} journals)` +
+    (orphans ? ` <span class="flag">${term("orphan keyspace", `${orphans} ORPHAN`)}</span>` : "");
+  const main =
+    `<tr data-store="${esc(s.name)}"><td class="q"><span class="twist">${open ? "▾" : "▸"}</span> ${esc(s.name)}</td>` +
+    `<td class="n">${bytes(s.ram_bytes)}</td>` +
+    pctCell(s.ram_bytes, rss) +
+    `<td class="n">${s.keyspaces.length}</td>` +
+    `<td>${detail}</td></tr>`;
+  if (!open) return main;
+  const ks = [...s.keyspaces]
+    .sort((a, b) => b.disk_bytes - a.disk_bytes)
+    .map(
+      (k) =>
+        `<tr class="ks"><td class="q">· ${esc(k.name)}</td>` +
+        `<td class="n">${bytes(k.pinned_filter_bytes + k.pinned_index_bytes)}</td>` +
+        `<td class="n">pinned</td>` +
+        `<td class="n">${num(k.approx_len)}</td>` +
+        `<td>disk=${bytes(k.disk_bytes)}` +
+        ` · filters=${bytes(k.pinned_filter_bytes)} idx=${bytes(k.pinned_index_bytes)}` +
+        (k.sealed_memtables ? ` · sealed=${k.sealed_memtables}` : "") +
+        (isOrphan(k.name) ? ` <span class="flag">ORPHAN</span>` : "") +
+        `</td></tr>`,
+    )
+    .join("");
+  return main + ks;
+}
+
+function renderMemory(m: MemoryBreakdown) {
+  facts.memory = memoryFacts(m);
+  const rss = m.rss_bytes;
+  const group = (label: string) => `<tr class="mem-group"><td colspan="5">${esc(label)}</td></tr>`;
+  // `name`/`detail` arrive as HTML — callers escape their own data
+  const row = (name: string, resident: number | null, items: string, detail: string) =>
+    `<tr><td class="q">${name}</td>` +
+    `<td class="n">${resident === null ? "—" : bytes(resident)}</td>` +
+    pctCell(resident, rss) +
+    `<td class="n">${items}</td>` +
+    `<td>${detail}</td></tr>`;
+
+  const idx = m.indexes
+    .map((i) => {
+      const tomb = i.slots ? Math.round(((i.slots - i.live) / i.slots) * 100) : 0;
+      const detail =
+        `${term("slots", `live=${num(i.live)} slots=${num(i.slots)}`)}` +
+        (tomb ? ` (${tomb}% tombstoned)` : "") +
+        ` · ${term("per-vector bytes", `${num(i.per_vector_bytes)} B/vec`)}` +
+        ` · maps=${bytes(i.map_bytes)} (est.)` +
+        (i.stale ? ` <span class="flag">${term("stale", "STALE")}</span>` : "");
+      return row(esc(i.name), i.bytes, num(i.live), detail);
+    })
+    .join("");
+
+  const caches = m.caches
+    .map((c) => {
+      const doclen = c.name.includes("doclen");
+      const detail = c.warmed
+        ? doclen
+          ? term("doclen cache", "warm — one entry per chunk")
+          : ""
+        : `${term("doclen cache", "cold")} — warms on first search`;
+      return row(esc(c.name), c.bytes, num(c.entries), detail);
+    })
+    .join("");
+
+  const models = m.models
+    .map((x) =>
+      row(
+        esc(x.name),
+        x.bytes,
+        "—",
+        x.bytes === null
+          ? `${term("onnx", "opaque")} — visible only in rss`
+          : term("ese weights", esc(x.residency)),
+      ),
+    )
+    .join("");
+
+  const remainder =
+    m.unaccounted_bytes === null
+      ? ""
+      : group("remainder") +
+        row(
+          term("unaccounted", "unaccounted"),
+          m.unaccounted_bytes,
+          "—",
+          "rss − accounted: onnx arena, page cache, allocator retention, thread scratch",
+        );
+
+  $memoryBody.innerHTML =
+    `<table><thead><tr>` +
+    `<th>component</th><th>resident (est.)</th><th>% of rss</th><th>items</th><th>detail</th>` +
+    `</tr></thead><tbody>` +
+    group("indexes") +
+    idx +
+    group("caches") +
+    caches +
+    group("models") +
+    models +
+    group("stores") +
+    m.stores.map((s) => storeRows(s, rss)).join("") +
+    remainder +
+    `</tbody></table>`;
+
+  for (const tr of $memoryBody.querySelectorAll<HTMLElement>("tr[data-store]")) {
+    tr.addEventListener("click", () => {
+      const name = tr.dataset.store!;
+      if (memOpen.has(name)) memOpen.delete(name);
+      else memOpen.add(name);
+      lastMemory = ""; // force re-render on next poll
+      renderMemory(m);
     });
   }
 }

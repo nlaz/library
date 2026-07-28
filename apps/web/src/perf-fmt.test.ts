@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { median, ms, opt, us } from "./perf-fmt";
+import { bytes, median, ms, opt, us } from "./perf-fmt";
 
 describe("duration formatting", () => {
   it("rolls µs over to ms at 1000", () => {
@@ -15,6 +15,22 @@ describe("duration formatting", () => {
     expect(ms(999)).toBe("999ms");
     expect(ms(1000)).toBe("1.00s");
     expect(ms(12_340)).toBe("12.34s");
+  });
+});
+
+describe("bytes", () => {
+  it("uses binary units with one decimal past KiB", () => {
+    expect(bytes(0)).toBe("0B");
+    expect(bytes(1023)).toBe("1023B");
+    expect(bytes(1024)).toBe("1.0KiB");
+    expect(bytes(32 * 1024 * 1024)).toBe("32.0MiB");
+    expect(bytes(1_610_612_736)).toBe("1.5GiB");
+  });
+
+  // load-bearing: the unaccounted remainder can be negative and must not
+  // render as a giant positive number or NaN
+  it("keeps the sign on negative values", () => {
+    expect(bytes(-1024)).toBe("-1.0KiB");
   });
 });
 

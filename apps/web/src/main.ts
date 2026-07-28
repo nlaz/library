@@ -87,14 +87,14 @@ window.addEventListener(
       // innermost layer first: an active theme deselects before the view
       // closes (perf sits above the atlas, so its branch runs first)
       if (!dismissAtlasSelection()) toggleAtlas();
-    } else if (perfOpen() && !e.metaKey && !e.ctrlKey && !e.altKey && "123".includes(e.key)) {
+    } else if (perfOpen() && !e.metaKey && !e.ctrlKey && !e.altKey && "1234".includes(e.key)) {
       // this handler outranks inputs' stopPropagation, so it must not steal
       // digits from someone typing
       const t = (e.target as HTMLElement | null)?.tagName;
       if (t === "INPUT" || t === "TEXTAREA") return;
       e.preventDefault();
       e.stopPropagation();
-      setPerfTab((["search", "ingest", "agent"] as const)[Number(e.key) - 1]);
+      setPerfTab((["search", "ingest", "agent", "memory"] as const)[Number(e.key) - 1]);
     }
   },
   true,

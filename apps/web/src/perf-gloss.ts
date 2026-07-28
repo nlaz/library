@@ -84,6 +84,51 @@ export const GLOSS: Record<string, Gloss> = {
     what: "Where each page's words came from: the PDF's own text layer, Vision OCR, or a cached earlier run. Text-layer pages are free and exact; Vision pages are the slow, fallible ones.",
   },
 
+  // --- memory ---
+  rss: {
+    what: "Resident set size: the physical memory the OS currently attributes to this process. The one true total — everything else on this tab is an estimate trying to explain it.",
+  },
+  accounted: {
+    what: "The sum of every RAM line item below: indexes, caches, the ese weights, and the stores' memtables, block caches, and pinned blocks. Disk figures are never included.",
+  },
+  unaccounted: {
+    what: "rss minus accounted — memory we can see but not name. Mostly the CLIP ONNX runtime's arena, plus page cache for memory-mapped store files, allocator retention, and per-thread search scratch. Can go negative when capacity-based estimates exceed a partially paged-out RSS.",
+  },
+  slots: {
+    what: "The HNSW graph's high-water mark. Removals tombstone nodes onto a free list and never shrink the arrays, so a churned index costs slots × per-vector bytes, not live × — that's the gap between live and slots.",
+  },
+  "per-vector bytes": {
+    what: "The dense per-slot cost of the graph: the embedding itself plus layer-0 neighbor links plus node metadata. Multiply by slots for the graph's floor; the sink's id/key maps come on top.",
+  },
+  stale: {
+    what: "The in-memory graph has diverged from the store (a transaction aborted after a mid-transaction flush). The numbers describe the pre-rebuild graph; the next search pays a full rebuild from the persisted vectors.",
+  },
+  "doclen cache": {
+    what: "BM25's one resident structure: an in-memory mirror of every chunk's token count, so scoring never point-reads the store. Cold until the first search pays one sequential scan; postings themselves stay on disk.",
+  },
+  "ese weights": {
+    what: "The text-embedding model is compiled into the binary as read-only data. The pages are file-backed and shared, so they count toward RSS only as they're touched — a fixed, exactly-known ceiling.",
+  },
+  onnx: {
+    what: "The CLIP model runs inside ONNX Runtime, which allocates from its own arena that Rust-side accounting can't see. Its real cost shows up only in RSS — it's usually the biggest slice of unaccounted.",
+  },
+  memtable: {
+    what: "fjall's in-RAM write buffers (active + sealed) awaiting flush to disk. Uncapped under the current config, so a heavy ingest can grow this until the flush worker catches up.",
+  },
+  "block cache": {
+    what: "fjall's cache of recently read data blocks, shown as used/capacity. Capacity is per database — each store gets its own.",
+    range: "32 MiB default per store",
+  },
+  "pinned filters": {
+    what: "Bloom filters and index blocks pinned in RAM outside the block cache, per keyspace. Easy to miss and grows with the tree — expand a store row to see which keyspace holds it.",
+  },
+  "orphan keyspace": {
+    what: "A keyspace present in the store but not opened by the current graph — left behind by an older pipeline shape. Costs disk (and backup size), not RAM; safe to reclaim in principle but nothing here deletes data.",
+  },
+  "thread scratch": {
+    what: "Each thread that has ever searched an HNSW graph keeps a visited-set buffer of 4 bytes per slot. With a blocking pool answering searches, that's slots × 4 × threads — real memory no line item claims.",
+  },
+
   // --- agent ---
   ttft: {
     what: "Time to first token: submit until the first text arrives. Everything before it is routing and tool work, not generation.",

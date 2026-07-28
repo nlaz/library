@@ -634,6 +634,12 @@ const KNOWN_KS: Record<string, string[]> = {
   "images.db": ["sink_imgvec", "sink_imgvec_graph", "sink_imgmeta", "sink_imgmanifest", "keyed_root"],
 };
 
+/** Everything the corpus weighs on disk, across its sources. */
+function corpusDisk(m: MemoryBreakdown): number {
+  const c = m.corpus;
+  return c.pdf_bytes + c.page_bytes + c.ocr_bytes + c.chunk_table_bytes + c.figure_table_bytes;
+}
+
 function memoryFacts(m: MemoryBreakdown): [string, string][] {
   const rss = m.rss_bytes;
   const pct = rss ? ` (${Math.round((m.accounted_bytes / rss) * 100)}%)` : "";
@@ -644,6 +650,11 @@ function memoryFacts(m: MemoryBreakdown): [string, string][] {
         ` ${term("accounted", `accounted=${bytes(m.accounted_bytes)}${pct}`)}` +
         ` ${term("unaccounted", `unaccounted=${opt(m.unaccounted_bytes, bytes)}`)}` +
         (m.atlas_building ? ` <span class="flag">ATLAS BUILDING</span>` : ""),
+    ],
+    [
+      "corpus",
+      `docs=${num(m.corpus.docs)} chunks=${num(m.corpus.chunks)} figs=${num(m.corpus.figures)}` +
+        ` · ${term("corpus disk", `disk=${bytes(corpusDisk(m))}`)}`,
     ],
     [
       "caveat",
@@ -676,12 +687,13 @@ function storeRows(s: StoreMem, rss: number | null): string {
     `${term("memtable", `memtable=${bytes(s.write_buffer_bytes)}`)}` +
     ` · ${term("block cache", `cache ${bytes(s.block_cache_bytes)}/${bytes(s.block_cache_capacity)}`)}` +
     ` · ${term("pinned filters", `pinned=${bytes(pinned)}`)}` +
-    ` · disk=${bytes(s.disk_bytes)} (${s.journal_count} journals)` +
+    ` · ${s.journal_count} journal${s.journal_count === 1 ? "" : "s"}` +
     (orphans ? ` <span class="flag">${term("orphan keyspace", `${orphans} ORPHAN`)}</span>` : "");
   const main =
     `<tr data-store="${esc(s.name)}"><td class="q"><span class="twist">${open ? "▾" : "▸"}</span> ${esc(s.name)}</td>` +
     `<td class="n">${bytes(s.ram_bytes)}</td>` +
     pctCell(s.ram_bytes, rss) +
+    `<td class="n">${bytes(s.disk_bytes)}</td>` +
     `<td class="n">${s.keyspaces.length}</td>` +
     `<td>${detail}</td></tr>`;
   if (!open) return main;
@@ -692,9 +704,9 @@ function storeRows(s: StoreMem, rss: number | null): string {
         `<tr class="ks"><td class="q">· ${esc(k.name)}</td>` +
         `<td class="n">${bytes(k.pinned_filter_bytes + k.pinned_index_bytes)}</td>` +
         `<td class="n">pinned</td>` +
+        `<td class="n">${bytes(k.disk_bytes)}</td>` +
         `<td class="n">${num(k.approx_len)}</td>` +
-        `<td>disk=${bytes(k.disk_bytes)}` +
-        ` · filters=${bytes(k.pinned_filter_bytes)} idx=${bytes(k.pinned_index_bytes)}` +
+        `<td>filters=${bytes(k.pinned_filter_bytes)} idx=${bytes(k.pinned_index_bytes)}` +
         (k.sealed_memtables ? ` · sealed=${k.sealed_memtables}` : "") +
         (isOrphan(k.name) ? ` <span class="flag">ORPHAN</span>` : "") +
         `</td></tr>`,
@@ -703,18 +715,61 @@ function storeRows(s: StoreMem, rss: number | null): string {
   return main + ks;
 }
 
+// which store keyspaces persist each index, so its row can carry a real
+// disk figure (the vectors plus the checkpointed graph blob)
+const IDX_DISK: Record<string, [string, string[]]> = {
+  "text hnsw (vec)": ["library.db", ["sink_vec", "sink_vec_graph"]],
+  "image hnsw (imgvec)": ["images.db", ["sink_imgvec", "sink_imgvec_graph"]],
+};
+
 function renderMemory(m: MemoryBreakdown) {
   facts.memory = memoryFacts(m);
   const rss = m.rss_bytes;
-  const group = (label: string) => `<tr class="mem-group"><td colspan="5">${esc(label)}</td></tr>`;
+  const c = m.corpus;
+  const group = (label: string) => `<tr class="mem-group"><td colspan="6">${esc(label)}</td></tr>`;
   // `name`/`detail` arrive as HTML — callers escape their own data
-  const row = (name: string, resident: number | null, items: string, detail: string) =>
+  const row = (name: string, resident: number | null, disk: number | null, items: string, detail: string) =>
     `<tr><td class="q">${name}</td>` +
     `<td class="n">${resident === null ? "—" : bytes(resident)}</td>` +
     pctCell(resident, rss) +
+    `<td class="n">${disk === null ? "—" : bytes(disk)}</td>` +
     `<td class="n">${items}</td>` +
     `<td>${detail}</td></tr>`;
 
+  const docs =
+    row(
+      term("originals", "originals (pdfs)"),
+      null,
+      c.pdf_bytes,
+      num(c.docs),
+      "source documents — read at ingest, never held whole",
+    ) +
+    row(
+      term("page scans", "page scans"),
+      null,
+      c.page_bytes,
+      num(c.docs),
+      "rendered page images, streamed to the reader per request",
+    ) +
+    row(term("ocr text", "ocr text"), null, c.ocr_bytes, "—", "ocr output + clean overlays") +
+    row(
+      term("chunk records", "chunk records"),
+      null,
+      c.chunk_table_bytes + c.figure_table_bytes,
+      num(c.chunks + c.figures),
+      `words + embeddings per chunk · ${term("emb payload", `emb=${bytes(c.emb_bytes)}`)}` +
+        ` resident in the indexes below`,
+    );
+
+  const idxDisk = (name: string): number | null => {
+    const map = IDX_DISK[name];
+    if (!map) return null;
+    const store = m.stores.find((s) => s.name === map[0]);
+    if (!store) return null;
+    return store.keyspaces
+      .filter((k) => map[1].includes(k.name))
+      .reduce((a, k) => a + k.disk_bytes, 0);
+  };
   const idx = m.indexes
     .map((i) => {
       const tomb = i.slots ? Math.round(((i.slots - i.live) / i.slots) * 100) : 0;
@@ -724,19 +779,19 @@ function renderMemory(m: MemoryBreakdown) {
         ` · ${term("per-vector bytes", `${num(i.per_vector_bytes)} B/vec`)}` +
         ` · maps=${bytes(i.map_bytes)} (est.)` +
         (i.stale ? ` <span class="flag">${term("stale", "STALE")}</span>` : "");
-      return row(esc(i.name), i.bytes, num(i.live), detail);
+      return row(esc(i.name), i.bytes, idxDisk(i.name), num(i.live), detail);
     })
     .join("");
 
   const caches = m.caches
-    .map((c) => {
-      const doclen = c.name.includes("doclen");
-      const detail = c.warmed
+    .map((cc) => {
+      const doclen = cc.name.includes("doclen");
+      const detail = cc.warmed
         ? doclen
           ? term("doclen cache", "warm — one entry per chunk")
           : ""
         : `${term("doclen cache", "cold")} — warms on first search`;
-      return row(esc(c.name), c.bytes, num(c.entries), detail);
+      return row(esc(cc.name), cc.bytes, null, num(cc.entries), detail);
     })
     .join("");
 
@@ -745,6 +800,7 @@ function renderMemory(m: MemoryBreakdown) {
       row(
         esc(x.name),
         x.bytes,
+        x.bytes === null ? c.model_dir_bytes : null, // clip's files live in data/models
         "—",
         x.bytes === null
           ? `${term("onnx", "opaque")} — visible only in rss`
@@ -760,14 +816,17 @@ function renderMemory(m: MemoryBreakdown) {
         row(
           term("unaccounted", "unaccounted"),
           m.unaccounted_bytes,
+          null,
           "—",
           "rss − accounted: onnx arena, page cache, allocator retention, thread scratch",
         );
 
   $memoryBody.innerHTML =
     `<table><thead><tr>` +
-    `<th>component</th><th>resident (est.)</th><th>% of rss</th><th>items</th><th>detail</th>` +
+    `<th>component</th><th>resident (est.)</th><th>% of rss</th><th>disk</th><th>items</th><th>detail</th>` +
     `</tr></thead><tbody>` +
+    group("documents") +
+    docs +
     group("indexes") +
     idx +
     group("caches") +

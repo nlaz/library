@@ -324,7 +324,7 @@ async fn main() -> Result<()> {
                         let rss = memory_stats::memory_stats().map(|m| m.physical_mem as u64);
                         let lib = app.lib.read().expect("library lock poisoned");
                         let images = app.images.read().expect("images lock poisoned");
-                        library_core::perf::memory(&lib, &images, rss)
+                        library_core::perf::memory(&lib, &images, &app.data, rss)
                     })
                     .await
                     .expect("perf memory task panicked");

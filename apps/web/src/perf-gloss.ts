@@ -85,6 +85,24 @@ export const GLOSS: Record<string, Gloss> = {
   },
 
   // --- memory ---
+  "corpus disk": {
+    what: "Everything the documents weigh on disk, across sources: original pdfs, rendered page scans, OCR text, and the chunk/figure record tables. None of it is resident — content streams from disk on demand.",
+  },
+  originals: {
+    what: "The source PDFs as imported. Read once at ingest (and for re-ingest); serving the reader uses the rendered page scans, not these.",
+  },
+  "page scans": {
+    what: "Rendered page images, one per page — usually the biggest slice of the corpus on disk. Streamed to the reader per request, so they cost page cache at most, never heap.",
+  },
+  "ocr text": {
+    what: "OCR output and cleaned text overlays per document. Input to chunking and legibility scoring; not loaded at query time.",
+  },
+  "chunk records": {
+    what: "The primary table: every chunk's words (with positions) and its embedding, plus the figure records. This is what search hits resolve against — read per hit, not held in memory.",
+  },
+  "emb payload": {
+    what: "The exact bytes of all embeddings (chunks + figures × dimension × 4). Resident, but inside the HNSW index rows — listed here to show how much of the index cost is the vectors themselves versus graph links and maps.",
+  },
   rss: {
     what: "Resident set size: the physical memory the OS currently attributes to this process. The one true total — everything else on this tab is an estimate trying to explain it.",
   },

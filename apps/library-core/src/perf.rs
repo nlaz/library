@@ -189,6 +189,7 @@ pub struct MemoryBreakdown {
     pub now_ms: u64,
     /// Host-provided resident set size; `None` means the probe failed.
     pub rss_bytes: Option<u64>,
+    pub corpus: CorpusMem,
     pub indexes: Vec<IndexMem>,
     pub caches: Vec<CacheMem>,
     pub models: Vec<ModelMem>,
@@ -200,6 +201,31 @@ pub struct MemoryBreakdown {
     pub unaccounted_bytes: Option<i64>,
     /// A corpus-sized transient is in flight (all embeddings + chunk text).
     pub atlas_building: bool,
+}
+
+/// The document corpus itself: counts plus its on-disk footprint by source.
+/// Document content is streamed from disk on demand, so its resident cost
+/// shows up as the indexes and caches — never as a line item here.
+/// `emb_bytes` is the exact embedding payload (chunks + figures × dim × 4),
+/// resident *inside* the HNSW rows and already counted there.
+#[derive(Debug, Clone, Serialize)]
+pub struct CorpusMem {
+    pub docs: usize,
+    pub chunks: usize,
+    pub figures: usize,
+    pub emb_bytes: u64,
+    /// data/pdfs — the originals.
+    pub pdf_bytes: u64,
+    /// data/pages — rendered page scans (usually the biggest slice).
+    pub page_bytes: u64,
+    /// data/ocr + data/text + data/clean — OCR output and overlays.
+    pub ocr_bytes: u64,
+    /// keyed_root in library.db — the chunk records (words + embeddings).
+    pub chunk_table_bytes: u64,
+    /// keyed_root in images.db — the figure records.
+    pub figure_table_bytes: u64,
+    /// data/models — the CLIP model files fastembed loads.
+    pub model_dir_bytes: u64,
 }
 
 /// One resident HNSW index: the anny graph plus the sink's id/key maps.
@@ -264,6 +290,66 @@ fn store_mem(name: &str, db: DbStats) -> StoreMem {
     }
 }
 
+/// Total file bytes under `path`, walked iteratively; missing dirs are 0.
+fn dir_bytes(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(e.path());
+            } else if let Ok(md) = e.metadata() {
+                total += md.len();
+            }
+        }
+    }
+    total
+}
+
+#[derive(Clone, Copy)]
+struct DiskScan {
+    at: std::time::Instant,
+    docs: usize,
+    pdf: u64,
+    pages: u64,
+    ocr: u64,
+    models: u64,
+}
+
+// A full walk of data/pages costs ~1 s cold on a big library — far too much
+// for a 5 s poll — and the numbers move only on ingest. One cached scan,
+// refreshed on a TTL. Assumes a single data dir per process (true of both
+// hosts; the library-core test uses one fixture dir).
+static DISK_SCAN: Mutex<Option<DiskScan>> = Mutex::new(None);
+const DISK_SCAN_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn disk_scan(data: &Path) -> DiskScan {
+    let mut cached = DISK_SCAN.lock().expect("disk scan lock poisoned");
+    if let Some(s) = *cached
+        && s.at.elapsed() < DISK_SCAN_TTL
+    {
+        return s;
+    }
+    let s = DiskScan {
+        at: std::time::Instant::now(),
+        docs: std::fs::read_dir(data.join("pages"))
+            .map(|d| d.filter_map(|e| e.ok()).count())
+            .unwrap_or(0),
+        pdf: dir_bytes(&data.join("pdfs")),
+        pages: dir_bytes(&data.join("pages")),
+        ocr: dir_bytes(&data.join("ocr"))
+            + dir_bytes(&data.join("text"))
+            + dir_bytes(&data.join("clean")),
+        models: dir_bytes(&data.join("models")),
+    };
+    *cached = Some(s);
+    s
+}
+
 /// Estimated heap held by the search ring: struct + string/vec heap per
 /// record. O([`SEARCH_LOG_CAP`]) — negligible next to a poll.
 fn search_log_bytes() -> (usize, usize) {
@@ -295,12 +381,14 @@ fn search_log_bytes() -> (usize, usize) {
 }
 
 /// Assemble the breakdown: one read transaction per store for the sink
-/// stats, plus the stores' own fjall numbers. `rss_bytes` comes from the
-/// host so this crate stays platform-free.
-pub fn memory(lib: &Library, images: &Images, rss_bytes: Option<u64>) -> MemoryBreakdown {
+/// stats, the stores' own fjall numbers, and a TTL-cached walk of the
+/// corpus dirs under `data`. `rss_bytes` comes from the host so this crate
+/// stays platform-free.
+pub fn memory(lib: &Library, images: &Images, data: &Path, rss_bytes: Option<u64>) -> MemoryBreakdown {
     let (lex_cache, vec_stats) = lib.rtx(|((lex, vec), _)| (lex.cache_stats(), vec.stats()));
     let img_stats = images.rtx(|(vec, _)| vec.stats());
     let (log_entries, log_bytes) = search_log_bytes();
+    let scan = disk_scan(data);
 
     let indexes = vec![
         index_mem("text hnsw (vec)", vec_stats),
@@ -337,6 +425,28 @@ pub fn memory(lib: &Library, images: &Images, rss_bytes: Option<u64>) -> MemoryB
         store_mem("images.db", images.db_stats()),
     ];
 
+    let table_bytes = |store: &StoreMem| {
+        store
+            .db
+            .keyspaces
+            .iter()
+            .find(|k| k.name == "keyed_root")
+            .map_or(0, |k| k.disk_bytes)
+    };
+    let corpus = CorpusMem {
+        docs: scan.docs,
+        chunks: vec_stats.live,
+        figures: img_stats.live,
+        emb_bytes: ((vec_stats.live * crate::EMB_DIM + img_stats.live * crate::CLIP_DIM) * 4)
+            as u64,
+        pdf_bytes: scan.pdf,
+        page_bytes: scan.pages,
+        ocr_bytes: scan.ocr,
+        chunk_table_bytes: table_bytes(&stores[0]),
+        figure_table_bytes: table_bytes(&stores[1]),
+        model_dir_bytes: scan.models,
+    };
+
     let accounted_bytes = indexes.iter().map(|i| i.bytes).sum::<u64>()
         + caches.iter().map(|c| c.bytes).sum::<u64>()
         + models.iter().filter_map(|m| m.bytes).sum::<u64>()
@@ -346,6 +456,7 @@ pub fn memory(lib: &Library, images: &Images, rss_bytes: Option<u64>) -> MemoryB
         now_ms: now_ms(),
         rss_bytes,
         unaccounted_bytes: rss_bytes.map(|r| r as i64 - accounted_bytes as i64),
+        corpus,
         indexes,
         caches,
         models,

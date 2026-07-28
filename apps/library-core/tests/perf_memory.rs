@@ -48,6 +48,14 @@ fn figure(doc: &str, idx: u32, hot: usize) -> ImageRec {
 fn memory_breakdown_covers_indexes_caches_and_stores() {
     let dir = std::env::temp_dir().join("library-core-perf-memory");
     let _ = std::fs::remove_dir_all(&dir);
+    // a corpus on disk: one original, two page scans, one ocr artifact
+    std::fs::create_dir_all(dir.join("pdfs")).unwrap();
+    std::fs::create_dir_all(dir.join("pages/doc-a")).unwrap();
+    std::fs::create_dir_all(dir.join("ocr")).unwrap();
+    std::fs::write(dir.join("pdfs/doc-a.pdf"), vec![0u8; 1000]).unwrap();
+    std::fs::write(dir.join("pages/doc-a/1.jpeg"), vec![0u8; 300]).unwrap();
+    std::fs::write(dir.join("pages/doc-a/2.jpeg"), vec![0u8; 300]).unwrap();
+    std::fs::write(dir.join("ocr/doc-a.json"), vec![0u8; 50]).unwrap();
     let mut lib = open(dir.join("library.db"));
     let mut images = open_images(dir.join("images.db"));
 
@@ -65,7 +73,14 @@ fn memory_breakdown_covers_indexes_caches_and_stores() {
     });
 
     let rss = 1u64 << 30;
-    let m = memory(&lib, &images, Some(rss));
+    let m = memory(&lib, &images, &dir, Some(rss));
+
+    // the corpus section: counts, exact embedding payload, per-source disk
+    assert_eq!((m.corpus.docs, m.corpus.chunks, m.corpus.figures), (1, 5, 3));
+    assert_eq!(m.corpus.emb_bytes, ((5 * EMB_DIM + 3 * CLIP_DIM) * 4) as u64);
+    assert_eq!(m.corpus.pdf_bytes, 1000);
+    assert_eq!(m.corpus.page_bytes, 600);
+    assert_eq!(m.corpus.ocr_bytes, 50);
 
     // both HNSW indexes, with live counts matching what was inserted
     assert_eq!(m.indexes.len(), 2);
@@ -106,7 +121,7 @@ fn memory_breakdown_covers_indexes_caches_and_stores() {
         m.unaccounted_bytes,
         Some(rss as i64 - m.accounted_bytes as i64)
     );
-    assert_eq!(memory(&lib, &images, None).unaccounted_bytes, None);
+    assert_eq!(memory(&lib, &images, &dir, None).unaccounted_bytes, None);
 
     // ese is priced, clip is opaque
     assert!(m.models.iter().any(|x| x.bytes == Some(ese::MODEL_BYTES as u64)));
@@ -125,4 +140,7 @@ fn memory_breakdown_covers_indexes_caches_and_stores() {
     }
     assert!(!v["caches"][0]["warmed"].is_null());
     assert!(v["atlas_building"].is_boolean());
+    for field in ["docs", "emb_bytes", "pdf_bytes", "page_bytes", "ocr_bytes", "chunk_table_bytes", "model_dir_bytes"] {
+        assert!(!v["corpus"][field].is_null(), "corpus field {field}");
+    }
 }

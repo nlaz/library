@@ -213,6 +213,22 @@ export type KeyspaceMem = {
   pinned_index_bytes: number;
 };
 
+/** The document corpus: counts plus on-disk footprint by source. Content is
+ * streamed from disk; its resident cost appears as the indexes and caches.
+ * emb_bytes is the exact embedding payload, resident inside the HNSW rows. */
+export type CorpusMem = {
+  docs: number;
+  chunks: number;
+  figures: number;
+  emb_bytes: number;
+  pdf_bytes: number;
+  page_bytes: number;
+  ocr_bytes: number;
+  chunk_table_bytes: number;
+  figure_table_bytes: number;
+  model_dir_bytes: number;
+};
+
 /** One resident HNSW index (IndexMem with HnswSinkStats flattened in). */
 export type IndexMem = {
   name: string;
@@ -253,6 +269,7 @@ export type StoreMem = {
 export type MemoryBreakdown = {
   now_ms: number;
   rss_bytes: number | null;
+  corpus: CorpusMem;
   indexes: IndexMem[];
   caches: CacheMem[];
   models: ModelMem[];

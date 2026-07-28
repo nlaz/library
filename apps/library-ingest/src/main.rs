@@ -91,6 +91,18 @@ enum Cli {
         #[arg(long)]
         hot: bool,
     },
+    /// Re-embed every ingested doc's text chunks from the cached OCR —
+    /// the migration owed whenever the ese encoder changes (its vectors are
+    /// baked at build time, so stored embeddings are snapshots of the
+    /// encoder that wrote them). Text path only: figures, CLIP vectors, and
+    /// markdown editions are untouched. Stop the app/server first — the
+    /// store is single-process.
+    Reembed {
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+        #[arg(long)]
+        hot: bool,
+    },
     /// Rank ingested docs by OCR legibility, worst first — the shortlist
     /// for `re-ocr`. Scores what search/chat actually serve (cached OCR
     /// with clean overlays applied).
@@ -296,6 +308,12 @@ fn main() -> Result<()> {
                 be_gentle();
             }
             reindex(&doc, &data)
+        }
+        Cli::Reembed { data, hot } => {
+            if !hot {
+                be_gentle();
+            }
+            reembed(&data)
         }
         Cli::Audit { data, col, worst } => audit(&data, col.as_deref(), worst),
         Cli::ReOcr {
@@ -700,6 +718,54 @@ fn reocr(doc: &str, data: &Path, width: u32) -> Result<()> {
         a.scored,
         a.total
     );
+    Ok(())
+}
+
+/// Re-embed every doc's text chunks through the current ese build — the
+/// same faithful path as `reindex` (prepare from cached OCR, commit),
+/// minus the figure and markdown work an embedding migration doesn't
+/// need. One store session for the whole pass; per-doc failures are
+/// reported and skipped so one damaged cache can't strand the rest.
+fn reembed(data: &Path) -> Result<()> {
+    let ctx = ctx(data, 1600);
+    let mut docs: Vec<String> = std::fs::read_dir(data.join("text"))
+        .context("read data/text — is this the data dir?")?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
+    docs.sort();
+    println!("re-embedding {} docs", docs.len());
+
+    let t = Instant::now();
+    let mut st = library_core::open(data.join("library.db"));
+    let (mut done, mut failed, mut chunks) = (0usize, 0usize, 0usize);
+    for doc in &docs {
+        match library_ingest::prepare_text_cached(&ctx, doc, None, &mut |_| {}) {
+            Ok((recs, _pages)) => {
+                let (removed, added) = library_ingest::commit_text(&mut st, doc, &recs);
+                chunks += added;
+                done += 1;
+                println!(
+                    "[{}/{}] {doc}: -{removed} +{added} chunks",
+                    done + failed,
+                    docs.len()
+                );
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("[{}/{}] {doc}: SKIPPED — {e:#}", done + failed, docs.len());
+            }
+        }
+    }
+    drop(st);
+    println!(
+        "re-embed complete: {done} docs, {chunks} chunks in {:?} ({failed} skipped)",
+        t.elapsed()
+    );
+    if failed > 0 {
+        anyhow::bail!("{failed} docs failed — rerun or reindex them individually");
+    }
     Ok(())
 }
 

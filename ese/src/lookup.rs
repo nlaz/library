@@ -41,3 +41,18 @@ fn hash(key: &[u8], seed: u64) -> u64 {
     }
     h ^ (h >> 32)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Pins MODEL_BYTES to the statics actually baked into the binary, so
+    // the constant tracks any feature-set change to the table shape.
+    #[test]
+    fn model_bytes_matches_statics() {
+        assert_eq!(
+            crate::MODEL_BYTES,
+            size_of_val(&ALIGNED_SLOTS.0) + size_of_val(&ALIGNED_S.0)
+        );
+    }
+}

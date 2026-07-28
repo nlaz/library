@@ -13,6 +13,12 @@ mod wordpiece;
 /// ```
 pub const DIMENSIONS: usize = lookup::DIMENSIONS;
 
+/// Bytes of model weights compiled into the binary's read-only data (the
+/// slot table plus the per-bucket seeds). This varies with the `dim-*` and
+/// `quant-*` crate features. The pages are file-backed, so they count
+/// toward resident memory only once touched.
+pub const MODEL_BYTES: usize = lookup::TABLE_SIZE * lookup::SLOT_SIZE + lookup::NUM_BUCKETS * 4;
+
 /// Encodes a batch of texts into embedding vectors.
 ///
 /// Each input string is independently normalized, tokenized, and encoded.

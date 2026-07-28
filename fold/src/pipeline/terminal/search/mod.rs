@@ -279,6 +279,17 @@ where
     }
 }
 
+/// State of a [`Bm25`] sink's shared doc-length cache — the one resident,
+/// full-corpus structure BM25 keeps (postings stay on disk). `bytes` is an
+/// estimate (key heap + hash-table overhead); zero until the first search
+/// warms the cache.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Bm25CacheStats {
+    pub warmed: bool,
+    pub entries: usize,
+    pub bytes: usize,
+}
+
 /// Read handle for [`Bm25`], pinned to one snapshot.
 pub struct Bm25Reader<'tx, R: Readable, K, T> {
     tx: &'tx R,
@@ -308,6 +319,31 @@ impl<'tx, R: Readable, K: DeserializeOwned, T: Fn(&str, &mut Vec<u8>)> Bm25Reade
     /// The number of live documents.
     pub fn doc_count(&self) -> i64 {
         self.stats().0
+    }
+
+    /// Snapshot of the doc-length cache; see [`Bm25CacheStats`].
+    ///
+    /// Read-only by contract: a cold cache is reported cold, never warmed
+    /// here — paying the full DOCLEN scan is the first search's job, not a
+    /// memory poll's.
+    pub fn cache_stats(&self) -> Bm25CacheStats {
+        let guard = self
+            .doc_len_cache
+            .read()
+            .expect("bm25 doc-length cache lock poisoned by an earlier panic; reopen the store");
+        match guard.as_ref() {
+            Some(map) => Bm25CacheStats {
+                warmed: true,
+                entries: map.len(),
+                bytes: map.keys().map(|k| k.len()).sum::<usize>()
+                    + map.capacity() * (size_of::<(Vec<u8>, i64)>() + 1),
+            },
+            None => Bm25CacheStats {
+                warmed: false,
+                entries: 0,
+                bytes: 0,
+            },
+        }
     }
 
     /// Length (in tokens) of the document under encoded `doclen_key`

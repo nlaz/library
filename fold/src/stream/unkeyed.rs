@@ -108,6 +108,12 @@ impl<D: Clone, P: Push<D>> Stream<D, P> {
             .expect("store fsync failed");
     }
 
+    /// Memory/disk stats for the backing store and every keyspace in it;
+    /// see [`DbStats`](super::DbStats).
+    pub fn db_stats(&self) -> super::DbStats {
+        super::stats::db_stats(&self.store)
+    }
+
     pub(crate) fn store(&self) -> &fjall::SingleWriterTxDatabase {
         &self.store
     }

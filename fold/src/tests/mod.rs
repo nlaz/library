@@ -21,6 +21,9 @@ mod rtx;
 mod scored;
 
 #[cfg(test)]
+mod stats;
+
+#[cfg(test)]
 mod terminals;
 
 /// A path in the system temp dir, cleared of any previous test run's state.

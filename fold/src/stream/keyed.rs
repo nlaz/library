@@ -107,6 +107,12 @@ where
         self.inner.rtx(f)
     }
 
+    /// Memory/disk stats for the backing store and every keyspace in it;
+    /// see [`Stream::db_stats`].
+    pub fn db_stats(&self) -> super::DbStats {
+        self.inner.db_stats()
+    }
+
     /// The committed record under `key`, if any.
     pub fn get(&self, key: &K) -> Option<D> {
         use fjall::Readable;

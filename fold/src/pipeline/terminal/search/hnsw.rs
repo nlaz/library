@@ -488,6 +488,28 @@ where
     }
 }
 
+/// Memory/shape snapshot of an [`Hnsw`] sink: the anny graph plus the two
+/// id/key maps that tie persisted rows to graph nodes.
+///
+/// `slots` is the graph's high-water mark — removals tombstone, arrays never
+/// shrink — so resident cost tracks `slots`, not `live`. `map_bytes` is an
+/// estimate (key heap + hash-table overhead). When `stale` is set the graph
+/// has diverged from the store and the numbers describe the pre-rebuild
+/// state.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct HnswSinkStats {
+    pub live: usize,
+    pub slots: usize,
+    pub free_slots: usize,
+    pub dim: usize,
+    pub dtype_bytes: usize,
+    pub m0: usize,
+    pub graph_bytes: usize,
+    pub map_entries: usize,
+    pub map_bytes: usize,
+    pub stale: bool,
+}
+
 /// Read handle for [`Hnsw`], pinned to one snapshot.
 pub struct HnswReader<
     'tx,
@@ -624,5 +646,37 @@ where
     /// Whether the index holds no embeddings.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Memory/shape snapshot; see [`HnswSinkStats`].
+    ///
+    /// One read-lock acquisition, deliberately NOT routed through the
+    /// stale-rebuild path of [`with_state`](Self::with_state): a memory
+    /// poll must never pay a corpus-sized rebuild. A stale graph is
+    /// reported as-is with `stale: true`.
+    pub fn stats(&self) -> HnswSinkStats {
+        let state = self
+            .state
+            .read()
+            .expect("hnsw index lock poisoned by an earlier panic; reopen the store");
+        let g = state.index.stats();
+        let key_heap: usize = state.ids.keys().map(|k| k.len()).sum();
+        HnswSinkStats {
+            live: g.live,
+            slots: g.slots,
+            free_slots: g.free_slots,
+            dim: g.dim,
+            dtype_bytes: g.dtype_bytes,
+            m0: g.m0,
+            graph_bytes: g.heap_bytes,
+            map_entries: state.ids.len(),
+            // ids owns the encoded keys; the keys map's K heap holds
+            // roughly the same content again (postcard(K) ≈ K's heap),
+            // plus hashbrown's per-bucket entry + control byte.
+            map_bytes: 2 * key_heap
+                + state.ids.capacity() * (size_of::<(Vec<u8>, u32)>() + 1)
+                + state.keys.capacity() * (size_of::<(u32, K)>() + 1),
+            stale: state.stale,
+        }
     }
 }

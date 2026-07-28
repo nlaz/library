@@ -16,6 +16,9 @@ pub use unkeyed::*;
 mod keyed;
 pub use keyed::*;
 
+mod stats;
+pub use stats::{DbStats, KeyspaceStats};
+
 use crate::pipeline::Push;
 
 /// Write handle passed to [`Stream::wtx`] closures.

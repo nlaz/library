@@ -88,6 +88,148 @@ pub const LEX_FETCH: usize = 512;
 /// Nearest real terms substituted per unknown query word.
 pub(crate) const FUZZ_CANDIDATES: usize = 3;
 
+/// How many top fused hits the MaxSim late-interaction re-rank rescores.
+/// Matches the reranker spike's candidate depth; recall@20 on the library
+/// gold set is 0.91, so the right answer is almost always inside the pool
+/// and the win comes from ordering it.
+pub(crate) const RERANK_POOL: usize = 20;
+/// MaxSim share of the reranked score: `w·maxsim + (1−w)·fused`, both
+/// min-max normalized over the pool. Chosen by the 2026-07 reranker spike
+/// (tools/retrieval-eval README): 0.7 scored 0.813 NDCG@10 / recall@1 0.73
+/// on the library gold set vs 0.768/0.68 unreranked, with every setting in
+/// 0.3–0.9 an improvement.
+pub(crate) const RERANK_WEIGHT: f32 = 0.7;
+/// Query-token cap for the re-rank — keeps agent-length queries bounded.
+const RERANK_MAX_QUERY_TOKENS: usize = 32;
+
+/// Normalize in place; returns the original norm (0.0 leaves `v` untouched).
+fn normalize(v: &mut Emb) -> f32 {
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if n > 0.0 {
+        for x in v.iter_mut() {
+            *x /= n;
+        }
+    }
+    n
+}
+
+/// The query's wordpiece tokens as (unit direction, weight). The baked
+/// table pre-scales each row by its SIF rarity weight, so the row's norm
+/// *is* the token's importance and its direction carries the meaning.
+fn query_token_dirs(query: &str) -> Vec<(Emb, f32)> {
+    let mut out: Vec<(Emb, f32)> = Vec::new();
+    ese::for_each_token_vector(query, |v| {
+        if out.len() >= RERANK_MAX_QUERY_TOKENS {
+            return;
+        }
+        let mut dir = *v;
+        let w = normalize(&mut dir);
+        if w > 0.0 {
+            out.push((dir, w));
+        }
+    });
+    out
+}
+
+/// MaxSim late-interaction re-rank of the fused top [`RERANK_POOL`]: each
+/// query token takes its best cosine against the chunk's token vectors
+/// (word-level interaction the pooled bi-encoder averages away), the
+/// rarity-weighted mean of those best matches is blended with the fused
+/// score, and the pool is re-sorted. Hits past the pool keep fused order,
+/// and reranked scores are rescaled into the pool's original score range so
+/// the full list stays monotonic. Static-table arithmetic only (~30M mults
+/// for 20 chunks — sub-millisecond), so it runs on every search.
+pub(crate) fn maxsim_rerank(
+    mut fused: Vec<(f32, ChunkKey)>,
+    query: &str,
+    resolve: &impl Fn(&ChunkKey) -> Option<ChunkRec>,
+) -> Vec<(f32, ChunkKey)> {
+    let pool = fused.len().min(RERANK_POOL);
+    if pool <= 1 {
+        return fused;
+    }
+    let qtok = query_token_dirs(query);
+    let wsum: f32 = qtok.iter().map(|(_, w)| w).sum();
+    if qtok.is_empty() || wsum <= 0.0 {
+        return fused;
+    }
+
+    let maxsim: Vec<f32> = fused[..pool]
+        .iter()
+        .map(|(_, key)| {
+            let Some(rec) = resolve(key) else {
+                return 0.0;
+            };
+            // dedup words — repeats add nothing to a max
+            let mut seen: FxHashSet<&str> = FxHashSet::default();
+            let mut doc_dirs: Vec<Emb> = Vec::new();
+            for w in &rec.words {
+                if seen.insert(w.t.as_str()) {
+                    ese::for_each_token_vector(&w.t, |v| {
+                        let mut dir = *v;
+                        if normalize(&mut dir) > 0.0 {
+                            doc_dirs.push(dir);
+                        }
+                    });
+                }
+            }
+            if doc_dirs.is_empty() {
+                return 0.0;
+            }
+            let mut acc = 0.0f32;
+            for (qd, w) in &qtok {
+                let mut best = -1.0f32;
+                for dd in &doc_dirs {
+                    let mut dot = 0.0f32;
+                    for i in 0..EMB_DIM {
+                        dot += qd[i] * dd[i];
+                    }
+                    best = best.max(dot);
+                }
+                acc += w * best;
+            }
+            acc / wsum
+        })
+        .collect();
+
+    // min-max both signals over the pool, blend, and rescale into the
+    // pool's fused-score range (keeps the boundary to the un-reranked tail
+    // monotonic). Ties keep fused order via the original-index tiebreak.
+    let minmax = |xs: &[f32]| -> (f32, f32) {
+        xs.iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &x| {
+                (lo.min(x), hi.max(x))
+            })
+    };
+    let mm = |x: f32, (lo, hi): (f32, f32)| if hi > lo { (x - lo) / (hi - lo) } else { 0.0 };
+    let ms_range = minmax(&maxsim);
+    let fused_scores: Vec<f32> = fused[..pool].iter().map(|(s, _)| *s).collect();
+    let f_range = minmax(&fused_scores);
+    let mut order: Vec<usize> = (0..pool).collect();
+    let blended: Vec<f32> = (0..pool)
+        .map(|i| {
+            RERANK_WEIGHT * mm(maxsim[i], ms_range)
+                + (1.0 - RERANK_WEIGHT) * mm(fused_scores[i], f_range)
+        })
+        .collect();
+    order.sort_by(|&a, &b| blended[b].total_cmp(&blended[a]).then(a.cmp(&b)));
+
+    let (lo_f, hi_f) = f_range;
+    let reranked: Vec<(f32, ChunkKey)> = order
+        .into_iter()
+        .map(|i| {
+            let score = if hi_f > lo_f {
+                lo_f + blended[i] * (hi_f - lo_f)
+            } else {
+                fused[i].0
+            };
+            (score, fused[i].1.clone())
+        })
+        .collect();
+    fused.splice(..pool, reranked);
+    fused
+}
+
 /// Cosine similarity of two embeddings (0 if either is degenerate).
 pub(crate) fn cosine(a: &Emb, b: &Emb) -> f32 {
     let (mut dot, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
@@ -326,6 +468,9 @@ pub fn search<R: Readable>(
         })
         .collect();
     let fused = fuse(&lex_list, &sem_list);
+    // late-interaction re-rank of the top pool: word-level matching the
+    // pooled embeddings can't see. Cheap enough for every keystroke.
+    let fused = maxsim_rerank(fused, query, &resolve);
     // diversity: demote near-duplicates (same book/edition) among the top
     // hits. Full queries only — the per-keystroke path can't afford the
     // embedding reads, and doc-scoped browser-find must keep full coverage.
@@ -436,6 +581,84 @@ mod fuzzy_mmr_tests {
         assert_eq!(fused[0].1.doc, "gold");
         // 0.5·0.08 + 0.5·1.0 = 0.54 vs 0.5·0.3 + 0.5·0.3 = 0.3
         assert!((fused[0].0 - 0.54).abs() < 1e-6);
+    }
+
+    fn word(t: &str) -> Word {
+        Word {
+            t: t.to_string(),
+            x: 0.0,
+            y: 0.0,
+            w: 0.1,
+            h: 0.1,
+        }
+    }
+
+    fn rec_with_words(doc: &str, words: &[&str]) -> ChunkRec {
+        ChunkRec {
+            key: key(doc),
+            words: words.iter().map(|w| word(w)).collect(),
+            emb: [0.0; EMB_DIM],
+        }
+    }
+
+    #[test]
+    fn maxsim_promotes_the_chunk_containing_the_query_words() {
+        // "match" contains the query's words verbatim; "other" is unrelated
+        // prose. Fused order has "other" ahead — the reranker's word-level
+        // matching must flip them (0.7·maxsim outweighs 0.3·fused).
+        let fused = vec![(0.9f32, key("other")), (0.5, key("match"))];
+        let resolve = |k: &ChunkKey| match k.doc.as_str() {
+            "match" => Some(rec_with_words("match", &["mignonette", "sauce", "recipe"])),
+            "other" => Some(rec_with_words(
+                "other",
+                &["quantum", "chromodynamics", "lattice"],
+            )),
+            _ => None,
+        };
+        let out: Vec<String> = maxsim_rerank(fused, "mignonette sauce", &resolve)
+            .into_iter()
+            .map(|(_, k)| k.doc)
+            .collect();
+        assert_eq!(out, vec!["match", "other"]);
+    }
+
+    #[test]
+    fn maxsim_degenerate_inputs_keep_fused_order() {
+        // no query tokens → untouched
+        let fused = vec![(0.9f32, key("a")), (0.8, key("b"))];
+        let resolve = |_: &ChunkKey| -> Option<ChunkRec> { None };
+        let out = maxsim_rerank(fused.clone(), "", &resolve);
+        assert_eq!(out, fused);
+        // unresolvable chunks / empty word lists → identical maxsim for all,
+        // so fused order must survive the re-sort (index tiebreak)
+        let out = maxsim_rerank(fused.clone(), "mignonette sauce", &resolve);
+        assert_eq!(
+            out.iter().map(|(_, k)| &k.doc).collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        // single hit: nothing to rerank
+        let one = vec![(0.9f32, key("a"))];
+        assert_eq!(maxsim_rerank(one.clone(), "query", &resolve), one);
+    }
+
+    #[test]
+    fn maxsim_scores_stay_monotonic_and_in_pool_range() {
+        // reranked scores are rescaled into the pool's original score range,
+        // so the head block never scores below the un-reranked tail
+        let fused: Vec<(f32, ChunkKey)> = (0..25)
+            .map(|i| (1.0 - i as f32 * 0.02, key(&format!("d{i:02}"))))
+            .collect();
+        let resolve = |k: &ChunkKey| Some(rec_with_words(&k.doc, &["filler", "words"]));
+        let out = maxsim_rerank(fused, "some query text", &resolve);
+        assert_eq!(out.len(), 25);
+        for w in out.windows(2) {
+            assert!(
+                w[0].0 >= w[1].0 - 1e-6,
+                "scores must stay monotonic: {} then {}",
+                w[0].0,
+                w[1].0
+            );
+        }
     }
 
     #[test]

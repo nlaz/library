@@ -33,10 +33,32 @@ Two layers, deliberately separated:
 ```sh
 cargo run --release -p retrieval-eval -- encoder --docs 10000 --queries 1000 --out /tmp/ese.json
 cargo run --release -p retrieval-eval -- encoder --encoder potion:minishlab/potion-retrieval-32M
-cargo run --release -p retrieval-eval -- pipeline --docs 10000
+cargo run --release -p retrieval-eval -- encoder --doc-encoder potion:<id> --query-encoder ese
+cargo run --release -p retrieval-eval -- pipeline --docs 10000 --seed 42,43,44
 cargo run --release -p retrieval-eval -- fusion --docs 10000
 cargo run -p retrieval-eval -- smoke     # offline, asserted floors, exit 1 on fail
 ```
+
+Statistical hygiene, built in:
+
+- **Multi-seed**: `--seed` takes a comma list. Each seed resamples the
+  corpus and query set; the table reports the macro average over the union
+  of queries, followed by a per-seed ndcg@10 spread (with sd) so a delta
+  can be judged against sampling noise before believing it. Rule of thumb:
+  a difference smaller than the seed sd is not a result.
+- **Paired win/loss**: `pipeline` and `fusion` print, for each config
+  against the baseline (`hybrid`, resp. the shipping fusion), how many
+  queries it ranked the gold strictly higher (W), lower (L), or tied (T)
+  on reciprocal rank. All configs see the same queries over the same
+  corpus, so a lopsided W/L split is meaningful even when the averages
+  differ by a fraction of a point.
+
+Asymmetric encoding: `--doc-encoder`/`--query-encoder` (defaulting to
+`--encoder`) embed the corpus and the queries with different models — the
+"smart embeddings at ingest, fast embeddings at query" scheme. The two
+models must produce the same dimension *and be trained into the same
+space* (a model2vec student vs. its teacher); mixing two unrelated models
+of equal dimension will run but score garbage, by design.
 
 - `encoder`/`pipeline` use GooAQ question→answer pairs; the first run
   downloads ~500 MB of parquet into `target/gooaq/` (shared with the ese
@@ -53,6 +75,31 @@ cargo run -p retrieval-eval -- smoke     # offline, asserted floors, exit 1 on f
   the mix separately. Floors sit ~5 points under the values observed when
   they were set; they catch collapses, not noise. Rebaseline them on
   purpose, not by accident.
+
+## The in-domain gold set (`gen-gold` / `library`)
+
+GooAQ measures retrieval over clean web snippets; the actual library is
+OCR'd book pages. The `gen-gold` subcommand builds a labeled eval set from
+the real corpus: it samples pages from `data/text/*.md` (strictly
+read-only — no fjall store is opened, so it runs alongside the app), asks
+the librarian sidecar (`probe`, toolless, schema-constrained, no server
+needed) to write the search query a reader would type to find each page,
+and freezes corpus + queries into a JSON file:
+
+```sh
+swift build -c release --package-path apps/librarian   # once, if not built
+cargo run -p retrieval-eval -- gen-gold --docs 2000 --queries 100 --out target/library-gold.json
+cargo run -p retrieval-eval -- library --gold target/library-gold.json --out /tmp/library.json
+```
+
+`library` runs the encoder-level eval plus all four pipeline configs over
+the frozen set, with paired stats. Generation is model-driven and not
+reproducible — the frozen JSON is the artifact; keep it, diff eval runs
+against it, and regenerate deliberately. It contains excerpts of the
+personal library, so it lives under `target/` (untracked), not in git.
+Guardrail refusals are skipped during generation (the page stays in the
+corpus as a distractor). When GooAQ and the library set disagree about a
+change, trust the library set — it is the deployment distribution.
 
 ## Comparing compile-time ese variants
 

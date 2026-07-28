@@ -5,7 +5,7 @@
 //! the real pipeline eval.
 
 use crate::data::Pairs;
-use crate::encoder_eval::{EvalResult, average};
+use crate::encoder_eval::EvalResult;
 use crate::metrics;
 use crate::pipeline_eval::{build_library, doc_index};
 use fxhash::FxHashSet;
@@ -153,10 +153,7 @@ pub fn run(pairs: &Pairs, ks: &[usize]) -> Vec<(String, EvalResult)> {
                 .collect();
             (
                 name.to_string(),
-                EvalResult {
-                    metrics: average(ks, &per_query),
-                    wall_ms: search_ms,
-                },
+                EvalResult::from_rows(ks, per_query, search_ms),
             )
         })
         .collect();

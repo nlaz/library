@@ -5,7 +5,7 @@
 //! candidate cap (K=40 in store.rs), MMR.
 
 use crate::data::Pairs;
-use crate::encoder_eval::{EvalResult, average};
+use crate::encoder_eval::EvalResult;
 use crate::metrics;
 use fxhash::FxHashSet;
 use library_core::{ChunkKey, ChunkRec, Emb, Library, Word, open, search};
@@ -152,10 +152,7 @@ pub fn run(pairs: &Pairs, ks: &[usize]) -> Vec<(String, EvalResult)> {
             .collect();
         out.push((
             cfg.name.to_string(),
-            EvalResult {
-                metrics: average(ks, &per_query),
-                wall_ms: start.elapsed().as_millis() as u64,
-            },
+            EvalResult::from_rows(ks, per_query, start.elapsed().as_millis() as u64),
         ));
     }
 

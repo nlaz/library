@@ -84,7 +84,7 @@ pub fn load_gooaq() -> Result<Vec<(String, String)>> {
     Ok(all)
 }
 
-fn splitmix64(state: &mut u64) -> u64 {
+pub(crate) fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E3779B97F4A7C15);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
@@ -97,30 +97,34 @@ fn splitmix64(state: &mut u64) -> u64 {
 /// above the paired one would count as a miss), seeded shuffle, take
 /// `n_docs` pairs as the corpus with the first `n_queries` as queries.
 pub fn sample_pairs(
-    all: Vec<(String, String)>,
+    all: &[(String, String)],
     n_docs: usize,
     n_queries: usize,
     seed: u64,
 ) -> Result<Pairs> {
     ensure!(n_queries <= n_docs, "need n_queries <= n_docs");
     let mut seen = fxhash::FxHashSet::default();
-    let mut pairs: Vec<(String, String)> = all
-        .into_iter()
-        .filter(|(q, a)| !q.trim().is_empty() && !a.trim().is_empty() && seen.insert(a.clone()))
+    // shuffle indices, not pairs — multi-seed runs resample from the same
+    // loaded set without cloning millions of strings per seed
+    let mut idx: Vec<usize> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, (q, a))| !q.trim().is_empty() && !a.trim().is_empty() && seen.insert(a))
+        .map(|(i, _)| i)
         .collect();
     ensure!(
-        pairs.len() >= n_docs,
+        idx.len() >= n_docs,
         "only {} unique pairs, need {n_docs}",
-        pairs.len()
+        idx.len()
     );
     let mut s = seed ^ 0x243F6A8885A308D3;
-    for i in (1..pairs.len()).rev() {
+    for i in (1..idx.len()).rev() {
         let j = (splitmix64(&mut s) as usize) % (i + 1);
-        pairs.swap(i, j);
+        idx.swap(i, j);
     }
-    pairs.truncate(n_docs);
-    let questions = pairs[..n_queries].iter().map(|(q, _)| q.clone()).collect();
-    let answers = pairs.into_iter().map(|(_, a)| a).collect();
+    idx.truncate(n_docs);
+    let questions = idx[..n_queries].iter().map(|&i| all[i].0.clone()).collect();
+    let answers = idx.into_iter().map(|i| all[i].1.clone()).collect();
     Ok(Pairs { questions, answers })
 }
 
@@ -232,8 +236,8 @@ mod tests {
         let all: Vec<(String, String)> = (0..100)
             .map(|i| (format!("q{i}"), format!("a{}", i % 50))) // every answer twice
             .collect();
-        let a = sample_pairs(all.clone(), 20, 5, 42).unwrap();
-        let b = sample_pairs(all, 20, 5, 42).unwrap();
+        let a = sample_pairs(&all, 20, 5, 42).unwrap();
+        let b = sample_pairs(&all, 20, 5, 42).unwrap();
         assert_eq!(a.questions, b.questions);
         assert_eq!(a.answers, b.answers);
         let uniq: fxhash::FxHashSet<&String> = a.answers.iter().collect();

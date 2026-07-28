@@ -1,17 +1,24 @@
 //! Retrieval-quality eval harness — recall@k / MRR / NDCG for the search
 //! stack. Two layers: `encoder` isolates embedding quality (exact cosine, no
-//! ANN), `pipeline` measures the app's real ranker (BM25 + HNSW + RRF + MMR)
-//! on a temp-dir library. `smoke` runs the offline paraphrase fixture with
-//! asserted floors (exit 1 on regression).
+//! ANN), `pipeline` measures the app's real ranker (BM25 + HNSW + fusion +
+//! MMR) on a temp-dir library. `smoke` runs the offline paraphrase fixture
+//! with asserted floors (exit 1 on regression).
 //!
 //! ```text
-//! retrieval-eval encoder  [--encoder ese|potion:<hf-id>] [--docs N]
-//!                         [--queries M] [--seed S] [--label STR] [--out FILE]
-//! retrieval-eval pipeline [--docs N] [--queries M] [--seed S]
+//! retrieval-eval encoder  [--encoder ese|potion:<hf-id>]
+//!                         [--doc-encoder SPEC] [--query-encoder SPEC]
+//!                         [--docs N] [--queries M] [--seed S1,S2,...]
+//!                         [--label STR] [--out FILE]
+//! retrieval-eval pipeline [--docs N] [--queries M] [--seed S1,S2,...]
+//!                         [--label STR] [--out FILE]
+//! retrieval-eval fusion   [--docs N] [--queries M] [--seed S1,S2,...]
 //!                         [--label STR] [--out FILE]
 //! retrieval-eval smoke
 //! ```
 //!
+//! `--seed` takes a comma list; multiple seeds resample the corpus per seed
+//! and merge the per-query rows (macro average over the union), with a
+//! per-seed spread printout so deltas can be judged against seed noise.
 //! GooAQ subcommands download ~500 MB of parquet into target/gooaq/ on
 //! first run. Never touches data/.
 
@@ -19,6 +26,7 @@ mod data;
 mod encoder_eval;
 mod encoders;
 mod fusion;
+mod gold;
 mod metrics;
 mod pipeline_eval;
 mod report;
@@ -27,24 +35,32 @@ use anyhow::{Context, Result, bail};
 use report::RunMeta;
 
 const KS: &[usize] = &[1, 5, 10, 20];
+/// column of the per-query reciprocal rank in the metric rows
+const MRR_COL: usize = KS.len();
 
 struct Args {
     encoder: String,
+    doc_encoder: Option<String>,
+    query_encoder: Option<String>,
     docs: usize,
     queries: usize,
-    seed: u64,
+    seeds: Vec<u64>,
     label: String,
     out: Option<String>,
+    gold: Option<String>,
 }
 
-fn parse_args(rest: &[String]) -> Result<Args> {
+fn parse_args(rest: &[String], default_docs: usize, default_queries: usize) -> Result<Args> {
     let mut args = Args {
         encoder: "ese".to_string(),
-        docs: 10_000,
-        queries: 1_000,
-        seed: 42,
+        doc_encoder: None,
+        query_encoder: None,
+        docs: default_docs,
+        queries: default_queries,
+        seeds: vec![42],
         label: String::new(),
         out: None,
+        gold: None,
     };
     let mut it = rest.iter();
     while let Some(flag) = it.next() {
@@ -55,50 +71,103 @@ fn parse_args(rest: &[String]) -> Result<Args> {
         };
         match flag.as_str() {
             "--encoder" => args.encoder = val()?,
+            "--doc-encoder" => args.doc_encoder = Some(val()?),
+            "--query-encoder" => args.query_encoder = Some(val()?),
             "--docs" => args.docs = val()?.parse().context("--docs")?,
             "--queries" => args.queries = val()?.parse().context("--queries")?,
-            "--seed" => args.seed = val()?.parse().context("--seed")?,
+            "--seed" => {
+                args.seeds = val()?
+                    .split(',')
+                    .map(|s| s.trim().parse().context("--seed"))
+                    .collect::<Result<Vec<u64>>>()?;
+                anyhow::ensure!(!args.seeds.is_empty(), "--seed needs at least one value");
+            }
             "--label" => args.label = val()?,
             "--out" => args.out = Some(val()?),
+            "--gold" => args.gold = Some(val()?),
             _ => bail!("unknown flag {flag:?}"),
         }
     }
     Ok(args)
 }
 
-fn gooaq_pairs(args: &Args) -> Result<data::Pairs> {
-    data::sample_pairs(data::load_gooaq()?, args.docs, args.queries, args.seed)
+/// One resampled corpus per seed from a single GooAQ load.
+fn gooaq_per_seed(args: &Args) -> Result<Vec<data::Pairs>> {
+    let all = data::load_gooaq()?;
+    args.seeds
+        .iter()
+        .map(|&s| data::sample_pairs(&all, args.docs, args.queries, s))
+        .collect()
 }
 
 fn encoder_cmd(rest: &[String]) -> Result<()> {
-    let args = parse_args(rest)?;
-    let enc = encoders::make(&args.encoder)?;
-    let pairs = gooaq_pairs(&args)?;
-    let result = encoder_eval::run(enc.as_ref(), &pairs, KS);
-    let results = vec![(enc.name(), result)];
+    let args = parse_args(rest, 10_000, 1_000)?;
+    let doc_spec = args
+        .doc_encoder
+        .clone()
+        .unwrap_or_else(|| args.encoder.clone());
+    let query_spec = args
+        .query_encoder
+        .clone()
+        .unwrap_or_else(|| args.encoder.clone());
+    let doc_enc = encoders::make(&doc_spec)?;
+    // don't load the same model twice for the symmetric case
+    let query_enc = if query_spec == doc_spec {
+        None
+    } else {
+        Some(encoders::make(&query_spec)?)
+    };
+    let query_ref: &dyn encoders::Encoder = query_enc.as_deref().unwrap_or(doc_enc.as_ref());
+    let name = if query_enc.is_none() {
+        doc_enc.name()
+    } else {
+        format!("docs={} queries={}", doc_enc.name(), query_ref.name())
+    };
+
+    let per_seed: Vec<Vec<(String, encoder_eval::EvalResult)>> = gooaq_per_seed(&args)?
+        .iter()
+        .map(|pairs| {
+            vec![(
+                name.clone(),
+                encoder_eval::run(doc_enc.as_ref(), query_ref, pairs, KS),
+            )]
+        })
+        .collect();
+    let results = encoder_eval::merge_named(KS, &per_seed);
     report::print_table(&results);
-    finish(&args, "encoder", &enc.name(), &results)
+    if args.seeds.len() > 1 {
+        report::print_seed_spread("ndcg@10", &args.seeds, &per_seed);
+    }
+    finish(&args, "encoder", "gooaq", &name, &results)
 }
 
 fn pipeline_cmd(rest: &[String]) -> Result<()> {
-    let args = parse_args(rest)?;
-    let pairs = gooaq_pairs(&args)?;
-    let results = pipeline_eval::run(&pairs, KS);
+    let args = parse_args(rest, 10_000, 1_000)?;
+    let per_seed: Vec<Vec<(String, encoder_eval::EvalResult)>> = gooaq_per_seed(&args)?
+        .iter()
+        .map(|pairs| pipeline_eval::run(pairs, KS))
+        .collect();
+    let results = encoder_eval::merge_named(KS, &per_seed);
     report::print_table(&results);
-    finish(&args, "pipeline", "ese", &results)
+    report::print_paired("hybrid", &results, MRR_COL);
+    if args.seeds.len() > 1 {
+        report::print_seed_spread("ndcg@10", &args.seeds, &per_seed);
+    }
+    finish(&args, "pipeline", "gooaq", "ese", &results)
 }
 
 fn finish(
     args: &Args,
     subcommand: &str,
+    dataset: &str,
     encoder: &str,
     results: &[(String, encoder_eval::EvalResult)],
 ) -> Result<()> {
     if let Some(out) = &args.out {
         let meta = RunMeta {
             subcommand: subcommand.to_string(),
-            dataset: "gooaq".to_string(),
-            seed: args.seed,
+            dataset: dataset.to_string(),
+            seeds: args.seeds.clone(),
             n_docs: args.docs,
             n_queries: args.queries,
             encoder: encoder.to_string(),
@@ -109,16 +178,69 @@ fn finish(
     Ok(())
 }
 
+/// Generate the synthetic in-domain gold set from real library pages
+/// (read-only) via the librarian sidecar. `--docs` = corpus pages sampled,
+/// `--queries` = pages that get a generated query. The output file is the
+/// frozen artifact — see gold.rs.
+fn gen_gold_cmd(rest: &[String]) -> Result<()> {
+    let args = parse_args(rest, 2_000, 100)?;
+    let out = args
+        .out
+        .clone()
+        .unwrap_or_else(|| "target/library-gold.json".to_string());
+    let seed = *args.seeds.first().expect("seeds never empty");
+    gold::generate(args.docs, args.queries, seed, std::path::Path::new(&out))
+}
+
+/// Eval the frozen in-domain gold set: encoder-level plus the full
+/// pipeline configs, with paired stats. This is the only workload with the
+/// real corpus's text distribution — trust it over GooAQ when they
+/// disagree.
+fn library_cmd(rest: &[String]) -> Result<()> {
+    let args = parse_args(rest, 0, 0)?;
+    let path = args
+        .gold
+        .clone()
+        .unwrap_or_else(|| "target/library-gold.json".to_string());
+    let pairs = gold::load_gold(std::path::Path::new(&path))?;
+    println!(
+        "### library gold ({} queries over {} pages)",
+        pairs.questions.len(),
+        pairs.answers.len()
+    );
+    let enc_result = encoder_eval::run(&encoders::Ese, &encoders::Ese, &pairs, KS);
+    let mut results = vec![("encoder".to_string(), enc_result)];
+    results.extend(pipeline_eval::run(&pairs, KS));
+    report::print_table(&results);
+    report::print_paired("hybrid", &results, MRR_COL);
+    if let Some(out) = &args.out {
+        let meta = RunMeta {
+            subcommand: "library".to_string(),
+            dataset: path.clone(),
+            seeds: args.seeds.clone(),
+            n_docs: pairs.answers.len(),
+            n_queries: pairs.questions.len(),
+            encoder: "ese".to_string(),
+            label: args.label.clone(),
+        };
+        report::write_json(out, &meta, &results)?;
+    }
+    Ok(())
+}
+
+/// The shipping fusion — the paired-stats baseline in the fusion sweep.
+const SHIPPING_FUSION: &str = "score-blend α=0.5 (ships today)";
+
 /// Offline fusion sweep: candidate fusion functions scored on the raw
 /// ranker lists, per fixture workload and (if sampled before or network is
 /// available) GooAQ.
 fn fusion_cmd(rest: &[String]) -> Result<()> {
-    let args = parse_args(rest)?;
-    let gooaq = gooaq_pairs(&args)?;
+    let args = parse_args(rest, 10_000, 1_000)?;
+    let gooaq_seeds = gooaq_per_seed(&args)?;
     // known-item at scale: for each gold answer, the query is its three
     // longest distinct words — a proxy for "remembered distinctive phrase".
     // Guards against a fusion that trades lexical precision away.
-    let known_at_scale = data::Pairs {
+    let known_at_scale = |gooaq: &data::Pairs| data::Pairs {
         questions: gooaq
             .answers
             .iter()
@@ -136,28 +258,40 @@ fn fusion_cmd(rest: &[String]) -> Result<()> {
             .collect(),
         answers: gooaq.answers.clone(),
     };
-    for (label, pairs) in [
+    let known_seeds: Vec<data::Pairs> = gooaq_seeds.iter().map(&known_at_scale).collect();
+    let workloads: Vec<(&str, Vec<data::Pairs>)> = vec![
+        // the fixture has no sampling — one run regardless of seed count
         (
             "fixture/paraphrase",
-            data::load_fixture(Some("paraphrase"))?,
+            vec![data::load_fixture(Some("paraphrase"))?],
         ),
         (
             "fixture/known-item",
-            data::load_fixture(Some("known-item"))?,
+            vec![data::load_fixture(Some("known-item"))?],
         ),
-        ("gooaq", gooaq),
-        ("gooaq/known-item", known_at_scale),
-    ] {
-        println!("\n### {label} ({} queries)", pairs.questions.len());
-        let results = fusion::run(&pairs, KS);
+        ("gooaq", gooaq_seeds),
+        ("gooaq/known-item", known_seeds),
+    ];
+    for (label, seed_pairs) in workloads {
+        let n_queries: usize = seed_pairs.iter().map(|p| p.questions.len()).sum();
+        println!("\n### {label} ({n_queries} queries)");
+        let per_seed: Vec<Vec<(String, encoder_eval::EvalResult)>> = seed_pairs
+            .iter()
+            .map(|pairs| fusion::run(pairs, KS))
+            .collect();
+        let results = encoder_eval::merge_named(KS, &per_seed);
         report::print_table(&results);
+        report::print_paired(SHIPPING_FUSION, &results, MRR_COL);
+        if per_seed.len() > 1 {
+            report::print_seed_spread("ndcg@10", &args.seeds, &per_seed);
+        }
         if let Some(out) = &args.out {
             let meta = RunMeta {
                 subcommand: "fusion".to_string(),
                 dataset: label.to_string(),
-                seed: args.seed,
-                n_docs: pairs.answers.len(),
-                n_queries: pairs.questions.len(),
+                seeds: args.seeds.clone(),
+                n_docs: seed_pairs.first().map(|p| p.answers.len()).unwrap_or(0),
+                n_queries,
                 encoder: "ese".to_string(),
                 label: args.label.clone(),
             };
@@ -184,7 +318,7 @@ fn smoke_cmd() -> Result<()> {
     ] {
         let pairs = data::load_fixture(kind)?;
         println!("\n### {label} ({} queries)", pairs.questions.len());
-        let enc_result = encoder_eval::run(&encoders::Ese, &pairs, KS);
+        let enc_result = encoder_eval::run(&encoders::Ese, &encoders::Ese, &pairs, KS);
         let mut results = vec![(format!("{label}/encoder"), enc_result)];
         results.extend(
             pipeline_eval::run(&pairs, KS)
@@ -235,15 +369,21 @@ fn main() -> Result<()> {
         Some("encoder") => encoder_cmd(&args[2..]),
         Some("pipeline") => pipeline_cmd(&args[2..]),
         Some("fusion") => fusion_cmd(&args[2..]),
+        Some("gen-gold") => gen_gold_cmd(&args[2..]),
+        Some("library") => library_cmd(&args[2..]),
         Some("smoke") => smoke_cmd(),
         _ => {
             eprintln!(
-                "usage: retrieval-eval encoder [--encoder ese|potion:<hf-id>] [--docs N] \
-                 [--queries M] [--seed S] [--label STR] [--out FILE]\n\
-                 \x20      retrieval-eval pipeline [--docs N] [--queries M] [--seed S] \
+                "usage: retrieval-eval encoder [--encoder ese|potion:<hf-id>] \
+                 [--doc-encoder SPEC] [--query-encoder SPEC] [--docs N] \
+                 [--queries M] [--seed S1,S2,...] [--label STR] [--out FILE]\n\
+                 \x20      retrieval-eval pipeline [--docs N] [--queries M] [--seed S1,S2,...] \
                  [--label STR] [--out FILE]\n\
-                 \x20      retrieval-eval fusion [--docs N] [--queries M] [--seed S] \
+                 \x20      retrieval-eval fusion [--docs N] [--queries M] [--seed S1,S2,...] \
                  [--label STR] [--out FILE]\n\
+                 \x20      retrieval-eval gen-gold [--docs PAGES] [--queries M] [--seed S] \
+                 [--out FILE]\n\
+                 \x20      retrieval-eval library [--gold FILE] [--label STR] [--out FILE]\n\
                  \x20      retrieval-eval smoke"
             );
             std::process::exit(1);

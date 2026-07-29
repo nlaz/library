@@ -266,7 +266,7 @@ async function linkTo(neighborId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// one ledger entry: time in the margin, whitespace instead of a box
+// one ledger entry: the stamp beside its title, whitespace instead of a box
 // ---------------------------------------------------------------------------
 
 function entryEl(c: CardRec): HTMLElement {
@@ -277,16 +277,18 @@ function entryEl(c: CardRec): HTMLElement {
   if (active) el.classList.add("active");
   if (c.filed) el.classList.add("filed");
 
-  const when = document.createElement("div");
-  when.className = "lwhen";
-  when.textContent = fmtWhen(c.created);
-
   const content = document.createElement("div");
   content.className = "lcontent";
+  const head = document.createElement("div");
+  head.className = "ltitlerow";
   const title = document.createElement("div");
   title.className = "ltitle";
   title.textContent = c.title;
-  content.append(title);
+  const when = document.createElement("div");
+  when.className = "lwhen";
+  when.textContent = fmtWhen(c.created);
+  head.append(title, when);
+  content.append(head);
 
   if (c.body) {
     const body = document.createElement("div");
@@ -325,7 +327,7 @@ function entryEl(c: CardRec): HTMLElement {
   // the open entry carries the suggestion rail
   if (active && !c.filed) content.append(relatedEl(c));
 
-  el.append(when, content);
+  el.append(content);
   el.addEventListener("click", () => {
     selected = active ? null : c.id;
     render();

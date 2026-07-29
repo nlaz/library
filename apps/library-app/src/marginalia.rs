@@ -5,7 +5,7 @@
 //! running between saves. Handlers return errors — a poisoned write
 //! lock would outlive any panic here.
 
-use library_core::notes::{self, CardRec, NeighborCard, NewCard};
+use library_core::notes::{self, CardRec, NewCard};
 use tauri::State;
 
 use crate::engine::{AppState, engine};
@@ -50,20 +50,4 @@ pub(crate) async fn update_card(
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub(crate) async fn card_neighbors(
-    state: State<'_, AppState>,
-    id: String,
-    k: Option<usize>,
-) -> Result<Vec<NeighborCard>, String> {
-    let eng = engine(&state)?;
-    let data = state.settings.data.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let lib = eng.lib.read().expect("library lock poisoned");
-        notes::card_neighbors(&lib, &data, &id, k.unwrap_or(8))
-    })
-    .await
-    .map_err(|e| e.to_string())
 }

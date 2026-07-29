@@ -3,15 +3,14 @@
 // reading under the app's one header: entries hang in whitespace instead
 // of boxes, a floating document rail filters by source (multi-select),
 // and the header's collection tabs scope both. The selected entry opens
-// in place: body, evidence, links, and the related-but-unlinked rail
-// folded in beneath it.
+// in place: body, evidence, and its links.
 
 import { ensureDocTitles } from "./doc-titles";
 import { $main } from "./dom";
 import { evidenceEl } from "./evidence-el";
 import { docTitle } from "./format";
 import { getCol } from "./home";
-import { cardNeighbors, listCards, updateCard } from "./marginalia-api";
+import { listCards } from "./marginalia-api";
 import {
   backlinks,
   cardShown,
@@ -24,7 +23,6 @@ import {
 } from "./notebox-model";
 import { sheetOpen, startCreate, startEdit } from "./sheet";
 import { transport } from "./state";
-import { notify } from "./toast";
 import type { CardRec, Collections } from "./types";
 
 const $notes = document.getElementById("notes")!;
@@ -204,68 +202,6 @@ function docRailEl(docs: string[], counts: Map<string, number>): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// the related rail: near-but-unlinked cards, folded into the open entry
-// ---------------------------------------------------------------------------
-
-let railToken = 0;
-
-function relatedEl(me: CardRec): HTMLElement {
-  const box = document.createElement("div");
-  box.className = "railbox";
-  const lab = document.createElement("div");
-  lab.className = "rail-lab";
-  lab.textContent = "related · unlinked";
-  const list = document.createElement("div");
-  list.className = "rail-list";
-  list.textContent = "…";
-  box.append(lab, list);
-
-  const token = ++railToken;
-  cardNeighbors(me.id, 6)
-    .then((ns) => {
-      if (token !== railToken) return;
-      list.replaceChildren();
-      if (!ns.length) {
-        list.textContent = "nothing near yet";
-        return;
-      }
-      for (const n of ns) {
-        const row = document.createElement("div");
-        row.className = "rail-row";
-        const t = document.createElement("span");
-        t.className = "rail-title";
-        t.textContent = n.title;
-        t.addEventListener("click", () => {
-          const c = cards.find((x) => x.id === n.id);
-          if (c) jumpToCard(c);
-        });
-        const add = document.createElement("button");
-        add.className = "rail-add";
-        add.textContent = "link";
-        add.addEventListener("click", () => void linkTo(n.id));
-        row.append(t, add);
-        list.append(row);
-      }
-    })
-    .catch(() => {
-      if (token === railToken) list.textContent = "";
-    });
-  return box;
-}
-
-/** One click in the rail = a relates-link from the active card. */
-async function linkTo(neighborId: string) {
-  const me = selectedCard();
-  if (!me) return;
-  try {
-    await updateCard({ ...me, links: [...me.links, { to: neighborId, kind: "relates" }] });
-    await reload();
-  } catch (e) {
-    notify(`couldn't link: ${e instanceof Error ? e.message : e}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // one ledger entry: the stamp beside its title, whitespace instead of a box
 // ---------------------------------------------------------------------------
 
@@ -323,9 +259,6 @@ function entryEl(c: CardRec): HTMLElement {
     for (const b of back) foot.append(linkChip("←", b));
     content.append(foot);
   }
-
-  // the open entry carries the suggestion rail
-  if (active && !c.filed) content.append(relatedEl(c));
 
   el.append(content);
   el.addEventListener("click", () => {

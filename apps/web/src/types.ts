@@ -102,8 +102,6 @@ export type NewCard = {
   links: CardLink[];
 };
 
-export type NeighborCard = { id: string; title: string; score: number };
-
 // --- hidden perf view (Cmd+.) ---------------------------------------------
 
 /** Constants + live corpus counts framing every perf-view screenshot. */

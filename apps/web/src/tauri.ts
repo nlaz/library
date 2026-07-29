@@ -13,7 +13,6 @@ import type {
   Collections,
   DocInfo,
   IngestEvent,
-  NeighborCard,
   NewCard,
   QueryMsg,
   WireResponse,
@@ -154,10 +153,6 @@ export function createCard(input: NewCard): Promise<CardRec> {
 
 export function updateCard(card: CardRec): Promise<CardRec> {
   return invoke<CardRec>("update_card", { card });
-}
-
-export function cardNeighbors(id: string, k?: number): Promise<NeighborCard[]> {
-  return invoke<NeighborCard[]>("card_neighbors", { id, k });
 }
 
 // --- corpus atlas ------------------------------------------------------------

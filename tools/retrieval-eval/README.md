@@ -260,7 +260,7 @@ reference models — all contestants scored by identical metric code.
 | bge-small-en-v1.5 | 0.627 | transformer, 33M params |
 | **ours: BM25 + SIF-ese fusion + MaxSim** | **0.591** | static + lexical |
 | all-MiniLM-L6-v2 | 0.563 | transformer, 22M params |
-| BM25 | 0.543 | lexical |
+| BM25 | 0.542 | lexical |
 | potion-retrieval-32M | 0.511 | best published static |
 | ese pre-SIF / SIF (encoder alone) | 0.494 / 0.486 | static |
 

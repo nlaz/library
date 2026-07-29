@@ -51,12 +51,6 @@
   color: var(--ink-dim);
 }
 
-.nb-tools {
-  display: flex;
-  align-items: baseline;
-  gap: 18px;
-}
-
 /* the surface's one bezel — creating is an act, not a crumb */
 .nb-new {
   font-family: var(--font-mono);
@@ -85,10 +79,6 @@
   grid-template-columns: 224px minmax(0, 1fr);
   gap: 0 44px;
   align-items: start;
-}
-
-.nb-content.railless {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 .nb-empty {

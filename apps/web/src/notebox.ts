@@ -35,7 +35,6 @@ let cards: CardRec[] = [];
 let selected: string | null = null;
 let sel = new Set<string>(); // the rail's multi-select
 let colMap: Collections = {};
-let railHidden = localStorage.getItem("notes:rail") === "hidden";
 /** The ledger as last rendered (filters applied) — what j/k walk over. */
 let visibleLive: CardRec[] = [];
 
@@ -101,29 +100,16 @@ function render() {
   back.addEventListener("click", () => {
     location.hash = "#/";
   });
-  const filterToggle = document.createElement("button");
-  filterToggle.className = "nb-crumb";
-  filterToggle.textContent = railHidden ? "show filter" : "hide filter";
-  filterToggle.setAttribute("aria-pressed", String(!railHidden));
-  filterToggle.addEventListener("click", () => {
-    railHidden = !railHidden;
-    localStorage.setItem("notes:rail", railHidden ? "hidden" : "shown");
-    render();
-  });
   const newBtn = document.createElement("button");
   newBtn.className = "nb-new";
   newBtn.textContent = "+ note";
   newBtn.title = "New note (c)";
   newBtn.addEventListener("click", () => startCreate());
-  const tools = document.createElement("div");
-  tools.className = "nb-tools";
-  tools.append(filterToggle, newBtn);
-  crumbs.append(back, tools);
+  crumbs.append(back, newBtn);
 
   const content = document.createElement("div");
   content.className = "nb-content";
-  if (railHidden) content.classList.add("railless");
-  else content.append(docRailEl(railDocs, counts));
+  content.append(docRailEl(railDocs, counts));
 
   const ledger = document.createElement("div");
   ledger.className = "ledger";

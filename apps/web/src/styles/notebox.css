@@ -153,8 +153,6 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   min-width: 0;
-  border-bottom: 1.5px solid transparent;
-  padding-bottom: 1px;
 }
 
 .docitem .n {
@@ -165,13 +163,13 @@
   flex: none;
 }
 
-/* selection is the pen's mark, never a fill */
+/* selection is weight and ink, never a fill or a rule */
 .docitem.sel {
   color: var(--ink);
 }
 
 .docitem.sel .t {
-  border-bottom-color: var(--hl-line);
+  font-weight: 500;
 }
 
 /* --- the ledger: time in the margin, whitespace instead of boxes --------- */
@@ -206,18 +204,9 @@
   cursor: pointer;
 }
 
-.lentry:hover {
+.lentry:hover,
+.lentry.active {
   background: var(--surface);
-}
-
-/* the open entry: a settle-line in the margin, not an outline */
-.lentry.active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 16px;
-  bottom: 18px;
-  border-left: 2px solid var(--hl-line);
 }
 
 .lentry.filed {
@@ -340,7 +329,10 @@
 
 .nlink {
   cursor: pointer;
-  border-bottom: 1px solid var(--hl-line);
+}
+
+.nlink:hover {
+  color: var(--ink);
 }
 
 .nb-filedrule {

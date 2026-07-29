@@ -258,76 +258,102 @@ reference models — all contestants scored by identical metric code.
 | system | avg | class |
 |---|---|---|
 | bge-small-en-v1.5 | 0.627 | transformer, 33M params |
-| **ours: BM25 + SIF-ese fusion + MaxSim** | **0.577** | static + lexical |
+| **ours: BM25 + SIF-ese fusion + MaxSim** | **0.591** | static + lexical |
 | all-MiniLM-L6-v2 | 0.563 | transformer, 22M params |
 | BM25 | 0.543 | lexical |
 | potion-retrieval-32M | 0.511 | best published static |
 | ese pre-SIF / SIF (encoder alone) | 0.494 / 0.486 | static |
 
-**These numbers supersede the first run's.** That run recorded ours 0.588
-and bge 0.609 (a 2.1-point gap); the real gap is 5.0. The error was on
-bge's side — it was scored without the retrieval query prefix BAAI
-specifies, which it needs to perform correctly. Four of seven systems
-reproduce across the two independently-written harnesses to within 0.001
-(potion 0.511, ese 0.494/0.486, MiniLM 0.563), which is what makes the
-bge discrepancy diagnosable rather than ambient noise. MiniLM must be
-scored at its native max_seq_length=256: at 512 it loses 1.4 points
-(FEVER −5.4, FiQA −3.7) and our margin over it is inflated.
+Per-dataset (ours / bge / MiniLM): ArguAna .416/.628/.553 ·
+ClimateFEVER .348/.348/.296 · DBPedia .640/.612/.550 · FEVER
+.870/.942/.793 · FiQA .407/.488/.477 · HotpotQA .853/.840/.596 · MSMARCO
+.516/.632/.554 · NFCorpus .360/.358/.332 · NQ .561/.593/.590 · Quora
+.933/.962/.937 · SCIDOCS .310/.430/.433 · SciFact .727/.762/.727 ·
+Touché .743/.551/.475.
 
-The system beats the models, but by less than we claimed: the pipeline
-outscores MiniLM-L6 — the most widely deployed transformer embedder —
-with no neural net in the query path, and beats the best static model by
-6.7 points, at ~100× less query compute. It remains 5.0 points behind
-bge-small. Wins outright on 2/13 (DBPedia, NFCorpus), beats both
-transformers on 3 (adding Touché, where BM25 alone also beats both), and
-is the best non-transformer on 9/13. Transformers keep an irreducible
-edge on reasoning-shaped tasks where relevance isn't carried by shared
-vocabulary at any weighting — ArguAna (−20.8 vs bge, the query's answer
-argues the *opposite* by construction), SCIDOCS (−12.3), FEVER (−11.1),
-FiQA (−9.8) account for most of the average gap.
+**Correction to the first run's headline.** It recorded a 2.1-point gap
+to bge (ours 0.588, bge 0.609); the real gap is 3.6. Our own score
+reproduces (0.591 vs 0.588) — the error was bge being scored without the
+retrieval query prefix BAAI specifies. Six of seven systems now agree
+across two independently-written harnesses, which is what localized the
+disagreement rather than leaving it as noise. Two fidelity traps found
+and fixed in the rerun: MiniLM must be scored at its native
+max_seq_length=256 (512 costs it 1.4 points and inflates our margin),
+and **MaxSim's weight is the NORM of the baked row, not the SIF factor**
+— using the factor alone understates the pipeline by 1.4 points.
+
+Wins outright on 5/13 (Touché, DBPedia, HotpotQA, NFCorpus,
+ClimateFEVER — though three of those margins are under a point and are
+ties in practice), beats MiniLM on 7/13, best non-transformer on 11/13.
+Losses concentrate where relevance isn't carried by shared vocabulary:
+ArguAna −21.1 (the answer argues the *opposite* by construction),
+SCIDOCS −12.0, MSMARCO −11.6, FiQA −8.1.
 
 The load-bearing internal number: the encoder alone scores 0.486, last
-in this field, while the pipeline built on it scores 0.577. That **+9.1
-points is architecture** — hybrid fusion plus late interaction — and it
-is why a last-place encoder finishes ahead of a mainstream transformer.
-Encoder quality, not pipeline design, is where the remaining headroom
-is. SIF alone measures slightly below plain mean out-of-domain (0.486 vs
-0.494, consistent with the GooAQ cost); its value is in-domain and
-inside MaxSim's weights.
+in this field, while the pipeline built on it scores 0.591. That **+10.5
+is architecture** — hybrid fusion plus late interaction — and it is why
+a last-place encoder finishes ahead of a mainstream transformer. Encoder
+quality, not pipeline design, is where the remaining headroom is.
 
 Raw per-dataset results: session scratchpad `nanobeir-results.json`,
-scripts `nanobeir.py` (main) and `minilm_check.py` (truncation
-fidelity). Shareable writeup with glossary and per-dataset table
-published as an artifact 2026-07-29.
+scripts `nanobeir.py`, `minilm_check.py`, `ours_fixed.py`. Shareable
+writeup published as an artifact 2026-07-29.
 
-### SIF ablation: the weights earn it, the pooling doesn't (2026-07-29)
+### Root cause: the rarity signal lives in the row norms, not in SIF
 
-SIF enters the pipeline in two independent roles and the standalone
-encoder number conflates them: it scales the rows averaged into the
-**pooled vectors**, and it supplies the per-token **weights MaxSim uses**.
-(MaxSim *directions* are unaffected — scaling a row by a positive scalar
-doesn't move it — so the two roles are cleanly separable.) 2×2 ablation,
-everything else held at production settings:
+SIF looked like a wart (weighted encoder 0.486 vs plain 0.494), so we
+ablated it. The finding is more fundamental than SIF.
 
-| SIF's role | NanoBEIR (13 sets) | gold v2, paired bootstrap |
+Decomposing the encoder's pooling into "implicit" (the table's own row
+norms, which mean-pooling preserves) and "explicit" (SIF's frequency
+formula), on 649 NanoBEIR queries:
+
+| rarity signal | NDCG@10 | reading |
 |---|---|---|
-| MaxSim token weights | **+1.7 / +2.0** | **+2.0**, CI [+1.2,+2.9], P=1.000 |
-| pooled vectors | −0.3 (raw wins 9/13) | +0.5, CI [−0.7,+1.6], P=0.77 |
+| implicit only — plain `mean(RAW)` | **0.496** | the norms alone are strongest |
+| explicit only — `mean(unit·sif)` | 0.397 | SIF is a *worse* signal, by 9.8 |
+| neither — `mean(unit)` | 0.313 | rarity weighting is worth **18 points** |
+| both — `mean(RAW·sif)`, ships | 0.486 | rarity counted twice, −1.0 |
 
-Out-of-domain averages: raw-pooled + SIF-weights 0.580, shipped
-sif+sif 0.577, sif-pooled + uniform 0.561, raw+uniform 0.561.
+**The table already weights by rarity through vector length.**
+corr(log frequency, row norm) = −0.40; the rarest 5,000 tokens average
+norm 495 against 164 for the 100 most frequent. So mean-pooling is
+already a rarity-weighted mean and SIF is a second, weaker copy of the
+same correction — redundant where the norms survive, and mildly
+over-correcting when stacked.
 
-The whole of SIF's measured value is in MaxSim's weights — worth ~2
-points in both settings, and in-domain the gain concentrates in
-paraphrase (+2.4) and question (+3.6) while known-item stays flat (0.879
-vs 0.880), i.e. exactly where lexical evidence runs out. Its effect on
-the pooled vectors is indistinguishable from zero in both directions.
-This supersedes the earlier framing that SIF is "a cost paid
-out-of-domain for an in-domain benefit": there is no measured cost to
-pay, only a benefit that lives in one of the two roles. Switching the
-pooled vectors to the raw table would force a full re-embed for no
-measured gain, so the shipped configuration stands. Scripts:
-`sif_ablation.py` (out-of-domain), `sif_indomain.py` (gold v2).
+**MaxSim is the mirror image, which is why it needs SIF.** It normalizes
+each token vector to a unit direction before taking the max, discarding
+the norms and the free weighting with them, so the weight must be handed
+back explicitly. Full pipeline, same 649 queries:
+
+| MaxSim weight | NDCG@10 | vs unweighted |
+|---|---|---|
+| unweighted | 0.560 | — |
+| SIF factor alone | 0.577 | +1.7 |
+| row norm alone | 0.586 | +2.6 |
+| **row norm × SIF** (ships) | **0.591** | **+3.1** |
+
+In-domain (gold v2) agrees on direction: MaxSim weighting +2.0
+(CI [+1.2,+2.9], P=1.000), concentrated in paraphrase (+2.4) and
+question (+3.6) with known-item flat — exactly where lexical evidence
+runs out. SIF pooling in-domain is +0.5, CI [−0.7,+1.6], not
+significant.
+
+So rarity weighting is one of the most valuable properties in the
+system, and **SIF is not where most of it comes from** — the embedding
+table supplied it all along. SIF's marginal contribution is −1.0 in
+pooling and +0.5 on top of the norms in MaxSim. Keeping it is justified
+but marginal; the previous framing that SIF carried the weighting was
+wrong.
+
+**Action item this implies:** the row norms are inherited from the
+source model, not designed, and they carry an 18-point signal across two
+pipeline stages. Any future change that unit-normalizes rows — new base
+model, re-quantization, a distillation step — would delete that
+silently. This deserves a regression test in `ese`, not just a note.
+Scripts: `sif_ablation.py`, `sif_indomain.py`, `sif_rootcause.py`,
+`sif_rootcause2.py`, `sif_mechanism.py`, `maxsim_weights.py`.
 
 ## Contextual doc-token prototype (2026-07): closed, and what it opened
 

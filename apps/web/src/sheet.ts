@@ -10,6 +10,7 @@ import { $main } from "./dom";
 import { evidenceEl } from "./evidence-el";
 import { createCard, listCards, updateCard } from "./marginalia-api";
 import { impliedTitle, SPLIT_WORDS, splitPoint } from "./notebox-model";
+import { sheetKey } from "./sheet-keys";
 import { notify } from "./toast";
 import type { CardLink, CardRec, QuoteAnchor } from "./types";
 
@@ -310,11 +311,24 @@ $file.addEventListener("click", async () => {
 for (const el of [$title, $body] as HTMLElement[]) {
   el.addEventListener("keydown", (e: KeyboardEvent) => {
     e.stopPropagation(); // reader/notes hotkeys must not fire while writing
-    if (e.key === "Escape") void leave();
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void leave();
-    if (e.key === "Enter" && el === $title && !e.shiftKey) {
-      e.preventDefault();
-      $body.focus();
+    const action = sheetKey(e.key, {
+      field: el === $title ? "title" : "body",
+      acOpen: !$ac.hidden,
+      mod: e.metaKey || e.ctrlKey,
+      shift: e.shiftKey,
+    });
+    switch (action) {
+      case "dismiss-completions":
+        e.preventDefault();
+        $ac.hidden = true;
+        break;
+      case "leave":
+        void leave();
+        break;
+      case "focus-body":
+        e.preventDefault();
+        $body.focus();
+        break;
     }
   });
 }

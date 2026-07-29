@@ -300,6 +300,35 @@ scripts `nanobeir.py` (main) and `minilm_check.py` (truncation
 fidelity). Shareable writeup with glossary and per-dataset table
 published as an artifact 2026-07-29.
 
+### SIF ablation: the weights earn it, the pooling doesn't (2026-07-29)
+
+SIF enters the pipeline in two independent roles and the standalone
+encoder number conflates them: it scales the rows averaged into the
+**pooled vectors**, and it supplies the per-token **weights MaxSim uses**.
+(MaxSim *directions* are unaffected — scaling a row by a positive scalar
+doesn't move it — so the two roles are cleanly separable.) 2×2 ablation,
+everything else held at production settings:
+
+| SIF's role | NanoBEIR (13 sets) | gold v2, paired bootstrap |
+|---|---|---|
+| MaxSim token weights | **+1.7 / +2.0** | **+2.0**, CI [+1.2,+2.9], P=1.000 |
+| pooled vectors | −0.3 (raw wins 9/13) | +0.5, CI [−0.7,+1.6], P=0.77 |
+
+Out-of-domain averages: raw-pooled + SIF-weights 0.580, shipped
+sif+sif 0.577, sif-pooled + uniform 0.561, raw+uniform 0.561.
+
+The whole of SIF's measured value is in MaxSim's weights — worth ~2
+points in both settings, and in-domain the gain concentrates in
+paraphrase (+2.4) and question (+3.6) while known-item stays flat (0.879
+vs 0.880), i.e. exactly where lexical evidence runs out. Its effect on
+the pooled vectors is indistinguishable from zero in both directions.
+This supersedes the earlier framing that SIF is "a cost paid
+out-of-domain for an in-domain benefit": there is no measured cost to
+pay, only a benefit that lives in one of the two roles. Switching the
+pooled vectors to the raw table would force a full re-embed for no
+measured gain, so the shipped configuration stands. Scripts:
+`sif_ablation.py` (out-of-domain), `sif_indomain.py` (gold v2).
+
 ## Contextual doc-token prototype (2026-07): closed, and what it opened
 
 The proposed ceiling-raiser: store the teacher transformer's PER-OCCURRENCE

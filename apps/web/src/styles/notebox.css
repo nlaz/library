@@ -21,10 +21,10 @@
   padding: 0 clamp(16px, 5vw, 64px) 80px;
 }
 
-/* breadcrumbs live in the content, not the chrome */
+/* breadcrumbs live in the content, not the chrome — full bleed, so the
+   crumb sits over the rail and the one bezel over the right margin */
 .nb-crumbs {
-  max-width: 860px;
-  margin: 22px auto 0;
+  margin: 22px 0 0;
   display: flex;
   justify-content: space-between;
   align-items: baseline;
@@ -51,12 +51,6 @@
   color: var(--ink-dim);
 }
 
-.nb-tools {
-  display: flex;
-  align-items: baseline;
-  gap: 18px;
-}
-
 /* the surface's one bezel — creating is an act, not a crumb */
 .nb-new {
   font-family: var(--font-mono);
@@ -77,18 +71,22 @@
   transform: translate(1px, 1px);
 }
 
-/* the two-column body: rail + ledger as one centered unit */
+/* the rail floats in the left margin; the ledger owns the page's center.
+   The empty third track mirrors the rail so track 2 — and the ledger
+   centered inside it — lands on true page center, not right of it. */
 .nb-content {
-  max-width: 860px;
-  margin: 18px auto 0;
+  margin: 18px 0 0;
   display: grid;
-  grid-template-columns: 224px minmax(0, 1fr);
+  grid-template-columns: 224px minmax(0, 1fr) 224px;
   gap: 0 44px;
   align-items: start;
 }
 
-.nb-content.railless {
-  grid-template-columns: minmax(0, 1fr);
+/* narrow enough and the phantom track only starves the ledger */
+@media (max-width: 1100px) {
+  .nb-content {
+    grid-template-columns: 224px minmax(0, 1fr);
+  }
 }
 
 .nb-empty {
@@ -163,8 +161,6 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   min-width: 0;
-  border-bottom: 1.5px solid transparent;
-  padding-bottom: 1px;
 }
 
 .docitem .n {
@@ -175,19 +171,25 @@
   flex: none;
 }
 
-/* selection is the pen's mark, never a fill */
+/* selection is weight and ink, never a fill or a rule */
 .docitem.sel {
   color: var(--ink);
 }
 
 .docitem.sel .t {
-  border-bottom-color: var(--hl-line);
+  font-weight: 500;
 }
 
-/* --- the ledger: time in the margin, whitespace instead of boxes --------- */
+/* --- the ledger: one centered column, whitespace instead of boxes -------- */
 
+/* the auto margins center it, but they also drop the grid's stretch — so
+   width:100% is what keeps the column a stable 560px instead of shrink-
+   wrapping to whatever the current filter left in it */
 .ledger {
   min-width: 0;
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
 }
 
 /* day labels are the only grouping — no rule line, the whitespace is it */
@@ -208,30 +210,34 @@
 
 .lentry {
   position: relative;
-  display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
-  gap: 0 16px;
   padding: 14px 10px 16px;
   margin: 0 -10px;
   cursor: pointer;
 }
 
-.lentry:hover {
+.lentry:hover,
+.lentry.active {
   background: var(--surface);
-}
-
-/* the open entry: a settle-line in the margin, not an outline */
-.lentry.active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 16px;
-  bottom: 18px;
-  border-left: 2px solid var(--hl-line);
 }
 
 .lentry.filed {
   opacity: 0.55;
+}
+
+.lcontent {
+  min-width: 0;
+}
+
+/* the stamp rides beside the title rather than in a margin gutter */
+.ltitlerow {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.ltitle {
+  font-weight: 600;
+  font-size: var(--fs-title);
 }
 
 .lwhen {
@@ -240,17 +246,7 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-faint);
-  padding-top: 3px;
-  text-align: right;
-}
-
-.lcontent {
-  min-width: 0;
-}
-
-.ltitle {
-  font-weight: 600;
-  font-size: var(--fs-title);
+  flex: none;
 }
 
 .lbody {
@@ -350,7 +346,10 @@
 
 .nlink {
   cursor: pointer;
-  border-bottom: 1px solid var(--hl-line);
+}
+
+.nlink:hover {
+  color: var(--ink);
 }
 
 .nb-filedrule {
@@ -362,75 +361,6 @@
   border-top: 1px solid var(--line);
   padding-top: var(--sp-2);
   margin-top: var(--sp-5);
-}
-
-/* --- the related rail, folded into the open entry ------------------------ */
-
-.railbox {
-  margin-top: 10px;
-  padding-top: var(--sp-2);
-  border-top: 1px dashed var(--line);
-}
-
-.rail-lab {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  font-weight: 500;
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
-  color: var(--ink-dim);
-  margin-bottom: 6px;
-}
-
-.rail-list {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  color: var(--ink-faint);
-}
-
-.rail-row {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 3px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.rail-row:last-child {
-  border-bottom: none;
-}
-
-.rail-title {
-  flex: 1;
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui);
-  color: var(--ink-dim);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-
-.rail-title:hover {
-  color: var(--ink);
-}
-
-.rail-add {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-dim);
-  background: none;
-  border: 1px solid var(--line-strong);
-  padding: 0 5px;
-  cursor: pointer;
-  flex: none;
-}
-
-.rail-add:hover {
-  background: var(--ink);
-  color: var(--bg);
 }
 
 /* --- search results: a note-box hit is an index card, not a page crop ---- */

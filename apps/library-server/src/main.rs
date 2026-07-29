@@ -71,11 +71,6 @@ struct TextParams {
 }
 
 #[derive(Deserialize)]
-struct NeighborParams {
-    k: Option<usize>,
-}
-
-#[derive(Deserialize)]
 struct AtlasParams {
     /// Force a rebuild even when the sidecar reads as fresh — the escape
     /// hatch for the fingerprint's blind spot (content changed, counts
@@ -528,22 +523,6 @@ async fn main() -> Result<()> {
                     })
                     .await
                     .expect("update card task panicked")
-                }
-            }
-        }))
-        .route("/api/cards/{id}/neighbors", get({
-            let app = app.clone();
-            move |UrlPath(id): UrlPath<String>,
-                  axum::extract::Query(p): axum::extract::Query<NeighborParams>| {
-                let app = app.clone();
-                async move {
-                    let out = tokio::task::spawn_blocking(move || {
-                        let lib = app.lib.read().expect("library lock poisoned");
-                        library_core::notes::card_neighbors(&lib, &app.data, &id, p.k.unwrap_or(8))
-                    })
-                    .await
-                    .expect("neighbors task panicked");
-                    Json(out)
                 }
             }
         }))

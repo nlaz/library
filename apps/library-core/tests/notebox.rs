@@ -1,15 +1,12 @@
 //! Cards and annotations as search citizens: save → findable, edit →
-//! stale terms retracted, filed/deleted → gone, plus the embedding
-//! neighborhood used by the related rail. Hand-built embeddings — the
-//! bucket is the first word of the text, so same-topic fixtures are
-//! exact neighbors and everything is deterministic.
+//! stale terms retracted, filed/deleted → gone. Hand-built embeddings —
+//! the bucket is the first word of the text, so same-topic fixtures land
+//! in the same bucket and everything is deterministic.
 
 use std::path::PathBuf;
 
 use library_core::annots::{AnnotKind, AnnotRec, annot_doc, store_annots};
-use library_core::notes::{
-    AnchorKind, NewCard, QuoteAnchor, card_neighbors, create_card, load_cards, update_card,
-};
+use library_core::notes::{AnchorKind, NewCard, QuoteAnchor, create_card, load_cards, update_card};
 use library_core::{ChunkKey, ChunkRec, EMB_DIM, Emb, Library, Word, open, search};
 
 fn one_hot(hot: usize) -> Emb {
@@ -242,42 +239,4 @@ fn migration_moves_noted_marks_into_cards() {
     // second run is a no-op
     assert_eq!(migrate_annots_to_cards(&mut lib, &data, &embed).unwrap(), 0);
     assert_eq!(load_cards(&data).len(), 3);
-}
-
-#[test]
-fn neighbors_stay_in_the_card_namespace() {
-    let (mut lib, data) = fixture("neighbors");
-
-    let a = create_card(&mut lib, &data, new_card("gears mesh finely"), &embed).unwrap();
-    let b = create_card(&mut lib, &data, new_card("gears wear down"), &embed).unwrap();
-    let mut linked = new_card("gears sing");
-    linked.links.push(library_core::notes::CardLink {
-        to: a.id.clone(),
-        kind: library_core::notes::LinkKind::Relates,
-    });
-    let c = create_card(&mut lib, &data, linked, &embed).unwrap();
-    let far = create_card(&mut lib, &data, new_card("cooking stock"), &embed).unwrap();
-
-    // a stray reserved chunk (a not-yet-migrated legacy mark) in the
-    // same embedding bucket must never appear as a card neighbor
-    commit_legacy_annot_chunk(&mut lib, "a9", "gears note");
-
-    let n = card_neighbors(&lib, &data, &a.id, 8);
-    let ids: Vec<&str> = n.iter().map(|x| x.id.as_str()).collect();
-    assert!(
-        ids.contains(&b.id.as_str()),
-        "unlinked same-bucket card is a neighbor"
-    );
-    assert!(!ids.contains(&a.id.as_str()), "self excluded");
-    assert!(!ids.contains(&c.id.as_str()), "linked (incoming) excluded");
-    assert!(n.iter().all(|x| !x.id.is_empty() && !x.title.is_empty()));
-
-    // filed cards have no neighborhood
-    let mut filed = load_cards(&data)
-        .into_iter()
-        .find(|x| x.id == far.id)
-        .unwrap();
-    filed.filed = true;
-    update_card(&mut lib, &data, filed, &embed).unwrap();
-    assert!(card_neighbors(&lib, &data, &far.id, 8).is_empty());
 }

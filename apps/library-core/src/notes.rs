@@ -285,57 +285,6 @@ pub fn update_card(
     Ok(saved)
 }
 
-/// A near-but-unlinked card for the related rail.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NeighborCard {
-    pub id: String,
-    pub title: String,
-    /// Cosine distance (smaller = nearer).
-    pub score: f32,
-}
-
-/// Embedding neighbors of `id` among live cards, excluding itself and
-/// anything already linked in either direction.
-pub fn card_neighbors(lib: &Library, data: &Path, id: &str, k: usize) -> Vec<NeighborCard> {
-    let Some(rec) = lib.get(&card_key(id)) else {
-        return Vec::new(); // filed or unknown: no chunk, no neighborhood
-    };
-    let cards = load_cards(data);
-    let Some(me) = cards.iter().find(|c| c.id == id) else {
-        return Vec::new();
-    };
-    let linked: crate::FxHashSet<&str> = me
-        .links
-        .iter()
-        .map(|l| l.to.as_str())
-        .chain(
-            cards
-                .iter()
-                .filter(|c| c.links.iter().any(|l| l.to == id))
-                .map(|c| c.id.as_str()),
-        )
-        .collect();
-    let scored = lib.rtx(|((_, vec), _)| {
-        vec.search_filtered(&rec.emb, |key: &ChunkKey| key.doc.starts_with("~card/"))
-    });
-    scored
-        .into_iter()
-        .filter_map(|s| {
-            let nid = s.val.doc.strip_prefix("~card/")?;
-            if nid == id || linked.contains(nid) {
-                return None;
-            }
-            let c = cards.iter().find(|c| c.id == nid && !c.filed)?;
-            Some(NeighborCard {
-                id: c.id.clone(),
-                title: c.title.clone(),
-                score: s.score,
-            })
-        })
-        .take(k)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

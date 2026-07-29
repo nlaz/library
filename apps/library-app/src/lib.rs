@@ -101,7 +101,6 @@ pub fn run() {
             marginalia::list_cards,
             marginalia::create_card,
             marginalia::update_card,
-            marginalia::card_neighbors,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

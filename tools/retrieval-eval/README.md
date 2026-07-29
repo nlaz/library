@@ -249,38 +249,56 @@ lexical-semantic gap, strengthening the case for the ceiling-raiser
 roads. v1 stays frozen for cross-checking; v2 is the referee for all
 future decisions.
 
-## External calibration: NanoBEIR (2026-07-29)
+## External calibration: NanoBEIR (2026-07-29, rerun and corrected)
 
 The shipped recipe replicated faithfully in Python and run on NanoBEIR
 (13 public datasets × 50 queries, NDCG@10 averaged) against the industry
-reference models — all contestants scored identically. Validation
-anchor: our pre-SIF ese replica scored 0.494 vs the published 0.5032 for
-the same base model, so these are leaderboard-comparable.
+reference models — all contestants scored by identical metric code.
 
 | system | avg | class |
 |---|---|---|
-| bge-small-en-v1.5 | 0.609 | transformer, 33M params |
-| **ours: BM25 + SIF-ese fusion + MaxSim** | **0.588** | static + lexical |
+| bge-small-en-v1.5 | 0.627 | transformer, 33M params |
+| **ours: BM25 + SIF-ese fusion + MaxSim** | **0.577** | static + lexical |
 | all-MiniLM-L6-v2 | 0.563 | transformer, 22M params |
-| BM25 | 0.537 | lexical |
+| BM25 | 0.543 | lexical |
 | potion-retrieval-32M | 0.511 | best published static |
 | ese pre-SIF / SIF (encoder alone) | 0.494 / 0.486 | static |
 
-The system beats the models: the pipeline outscores MiniLM-L6 — the most
-widely deployed transformer embedder — with no neural net in the query
-path, beats the best static model by ~8 points, and closes to 2.1 points
-of bge-small at ~100× less query compute. Wins outright on 4/13 datasets
-(ClimateFEVER, DBPedia, HotpotQA, Touché — beating both transformers on
-three); best non-transformer on 11/13. Transformers keep an irreducible
-edge only on reasoning-shaped tasks (ArguAna, SCIDOCS) where relevance
-isn't carried by shared vocabulary at any weighting. SIF alone measures
-slightly below plain mean out-of-domain (0.486 vs 0.494, consistent with
-the GooAQ cost) — its value is in-domain and inside MaxSim's weights, and
-the 0.588 recipe already carries that trade. The 2.1-point gap to
-bge-small is the measured value of contextual encoding — the in-domain
-training road is the identified way to close it without transformer
-compute. Raw per-dataset results: session scratchpad
-`nanobeir-results.json` / `nanobeir.py`.
+**These numbers supersede the first run's.** That run recorded ours 0.588
+and bge 0.609 (a 2.1-point gap); the real gap is 5.0. The error was on
+bge's side — it was scored without the retrieval query prefix BAAI
+specifies, which it needs to perform correctly. Four of seven systems
+reproduce across the two independently-written harnesses to within 0.001
+(potion 0.511, ese 0.494/0.486, MiniLM 0.563), which is what makes the
+bge discrepancy diagnosable rather than ambient noise. MiniLM must be
+scored at its native max_seq_length=256: at 512 it loses 1.4 points
+(FEVER −5.4, FiQA −3.7) and our margin over it is inflated.
+
+The system beats the models, but by less than we claimed: the pipeline
+outscores MiniLM-L6 — the most widely deployed transformer embedder —
+with no neural net in the query path, and beats the best static model by
+6.7 points, at ~100× less query compute. It remains 5.0 points behind
+bge-small. Wins outright on 2/13 (DBPedia, NFCorpus), beats both
+transformers on 3 (adding Touché, where BM25 alone also beats both), and
+is the best non-transformer on 9/13. Transformers keep an irreducible
+edge on reasoning-shaped tasks where relevance isn't carried by shared
+vocabulary at any weighting — ArguAna (−20.8 vs bge, the query's answer
+argues the *opposite* by construction), SCIDOCS (−12.3), FEVER (−11.1),
+FiQA (−9.8) account for most of the average gap.
+
+The load-bearing internal number: the encoder alone scores 0.486, last
+in this field, while the pipeline built on it scores 0.577. That **+9.1
+points is architecture** — hybrid fusion plus late interaction — and it
+is why a last-place encoder finishes ahead of a mainstream transformer.
+Encoder quality, not pipeline design, is where the remaining headroom
+is. SIF alone measures slightly below plain mean out-of-domain (0.486 vs
+0.494, consistent with the GooAQ cost); its value is in-domain and
+inside MaxSim's weights.
+
+Raw per-dataset results: session scratchpad `nanobeir-results.json`,
+scripts `nanobeir.py` (main) and `minilm_check.py` (truncation
+fidelity). Shareable writeup with glossary and per-dataset table
+published as an artifact 2026-07-29.
 
 ## Contextual doc-token prototype (2026-07): closed, and what it opened
 

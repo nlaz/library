@@ -34,13 +34,14 @@ const FRAME_MS = 1000 / FPS;          //   frame is a hard cut when quantized
 // a proportional font, breaking the grid.
 const POOL = " .'`,:;-~_=+ilrtcvxznuoseCLEZS0OQGD#%8B&@$";
 
-// Exposure and lighting for this scene, measured from its own luminance
-// histogram rather than guessed: black at the 20th percentile of lit pixels,
-// white at the 97.5th, so roughly a fifth of the frame sits at ground level
-// and the top of the ramp is reserved for the alcove windows.
+// Exposure and lighting. black/white are the ends of the window the scene's
+// luminance is mapped through, and their SPREAD is the contrast control: the
+// wider the window, the fewer cells clip at either end and the flatter the
+// result. Deliberately wider than the measured histogram here, so the hero
+// stays quiet behind the type.
 const SCENE = {
   tan: Math.tan((50 * 0.5 * Math.PI) / 180),
-  far: 46, fog: 0.016, black: 0.290, white: 0.643,
+  far: 46, fog: 0.016, black: 0.235, white: 0.800,
   key: [0.38, 0.72, -0.30], head: 0.44,
   steps: 180, scale: 0.88, shadow: 0,
   pose: 4.1,                          // the frame reduced-motion rests on
@@ -126,11 +127,16 @@ void main(){
   // signal makes the image read as flat plateaus, like a chart.
   //
   // The gamma is what keeps the accent honest. Glyph selection wants the full
-  // range so structure reads, but tint must not: at gamma 2.4 a mid-tone of
-  // 0.6 lands at 0.30 (stone) while 0.92 lands at 0.81 (the turn into brass),
+  // range so structure reads, but tint must not: at gamma 2.9 a mid-tone of
+  // 0.6 lands at 0.23 (stone) while 0.94 lands at 0.83 (the turn into brass),
   // so only genuine highlights ever reach the accent.
-  float hueT = pow(lum, 2.4) * (1.0 - 0.40 * depth);
-  fragColor = vec4(mix(BG, brass(hueT), ink), 1.0);
+  float hueT = pow(lum, 2.9) * (1.0 - 0.40 * depth);
+
+  // DIM pulls the whole field back toward the page ground. The hero sits
+  // behind type, so it wants to read as texture at the edge of vision rather
+  // than as an image competing with the masthead.
+  const float DIM = 0.72;
+  fragColor = vec4(mix(BG, brass(hueT), ink * DIM), 1.0);
 }`;
 
 const PRELUDE = `#version 300 es
@@ -298,9 +304,10 @@ float naveShade(int id, vec3 p, vec3 n, float lum){
   return lum;
 }
 
-// the axial dolly, identical in all three
+// the axial dolly. Speed only sets how long a cycle takes — the wrap is on
+// BAY, so any speed loops exactly and this can be tuned purely by feel.
 void camera(vec2 uv, out vec3 ro, out vec3 rd){
-  float z = mod(uTime * 0.130, BAY);
+  float z = mod(uTime * 0.072, BAY);        // ~32s a bay
   vec3 o = vec3(0.0, 1.72, -8.0 + z);
   lookAt(uv, o, o + vec3(0.0, 0.30, 6.0), ro, rd);
 }

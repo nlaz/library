@@ -123,7 +123,7 @@ function card(hit: WireHit): { el: HTMLElement; place: () => void } {
   const img = document.createElement("img");
   img.src = pageUrl(hit.img);
   img.loading = "lazy";
-  // an image card's crop IS the figure — an amber wash over the whole
+  // an image card's crop IS the figure — a brass wash over the whole
   // preview would just be noise, so boxes only decorate text cards
   inner.append(img, ...(isImage ? [] : hlBoxes(hit.boxes)));
   pv.append(inner);

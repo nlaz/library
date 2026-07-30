@@ -78,9 +78,11 @@
   display: none;
 }
 
+/* shared with the reader's .hlayer .hl — both sit on the page scan, so the
+   outline takes the theme-constant --hl-ink (see tokens.css §2) */
 .hl {
   position: absolute;
-  outline: 2px solid var(--hl-line);
+  outline: 2px solid var(--hl-ink);
   background: var(--hl-wash);
   pointer-events: none;
 }

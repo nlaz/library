@@ -146,10 +146,12 @@ header {
   z-index: 1;
 }
 
+/* solid fills take --hl-line, not --hl: the wash colour is lighter than the
+   shelf it sits on and reads at 2.1:1 there — see tokens.css §2 */
 .progress .fill {
   height: 100%;
   width: 0%;
-  background: var(--hl);
+  background: var(--hl-line);
   transition: width 0.25s;
 }
 

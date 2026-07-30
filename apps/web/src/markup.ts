@@ -148,7 +148,7 @@ export function toggleMarks() {
 
 // ---------------------------------------------------------------------------
 // scroll-rail ticks: one square per mark, settle-line colored — the find
-// rail's yellow slivers stay ephemeral, these are the kept marks
+// rail's brass slivers stay ephemeral, these are the kept marks
 // ---------------------------------------------------------------------------
 
 function layoutMarkTicks() {

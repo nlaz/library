@@ -452,6 +452,28 @@ was not too expensive, it was happening at the wrong time.
 
 [rca]: docs/rca-bm25-doclen-point-reads.md
 
+## Installing
+
+Download [`TheLibrary-macos-arm64.dmg`][dmg] from the latest release and
+drag the app to `/Applications`. It needs macOS 26 or newer on Apple
+silicon.
+
+The build is signed ad-hoc rather than notarized, so the first launch is
+blocked: macOS reports that it cannot verify the app is free of malware.
+That check keys off the quarantine attribute the browser attached to the
+download, so removing it is enough:
+
+```sh
+xattr -dr com.apple.quarantine '/Applications/The Library.app'
+```
+
+The GUI equivalent is to launch the app once, let it be refused, then open
+**System Settings → Privacy & Security**, where an *Open Anyway* button
+appears for it. Control-clicking the app and choosing *Open* no longer
+works — macOS 15 removed that bypass.
+
+[dmg]: https://github.com/nlaz/library/releases/latest/download/TheLibrary-macos-arm64.dmg
+
 ## Working on this
 
 [`AGENTS.md`](AGENTS.md) covers building, testing, and the conventions

@@ -12,7 +12,8 @@ body {
 }
 
 body {
-  background: var(--bg);
+  --divot-ground: var(--bg);
+  background: var(--divot-ground);
   color: var(--ink);
   font: var(--fs-body) / 1.5 var(--font-ui);
   display: flex;
@@ -62,40 +63,13 @@ main {
   padding: 24px 4px;
 }
 
-/* --- §4 bezel primitives ---------------------------------------------------
-   Interactive = bezel, structural = hairline. Raised buttons press in on
-   :active — that translate(1px,1px) is the tactile click. */
-
-#reader-back,
-#reader-meta,
-#reader-pen,
-#viewer-read,
-#viewer-close,
-#search-prev,
-#search-next,
-#notes-toggle,
-#chat-toggle,
-.bmenu {
-  border: 1px solid;
-  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
-  background: var(--surface);
-  color: var(--ink);
-  cursor: pointer;
-}
-
-#reader-back:active,
-#reader-meta:active,
-#reader-pen:active,
-#viewer-read:active,
-#viewer-close:active,
-#search-prev:active,
-#search-next:active,
-#notes-toggle:active,
-#chat-toggle:active,
-.bmenu:active {
-  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
-  transform: translate(1px, 1px);
-}
+/* --- §4 edges --------------------------------------------------------------
+   Interactive = divot, structural = hairline. Buttons carry `.divot` and
+   their role class; the primitive itself lives in divot.css §5. What is
+   left here is the other half of the pair — the sunken well that means
+   "type into me". That inversion is the whole reason the language reads:
+   a groove around a face is a button, a well you can see into is a field.
+   Never let a button and an input share a treatment. */
 
 /* both header toggles are icon-only dithered glyphs; notes pushes the
    pair to the right edge of the header */
@@ -111,13 +85,6 @@ main {
 #notes-toggle svg,
 #chat-toggle svg {
   display: block;
-}
-
-/* on the notes surfaces the toggle stays pressed in — state by bezel,
-   never inversion */
-#notes-toggle.on {
-  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
-  background: var(--well);
 }
 
 #q,

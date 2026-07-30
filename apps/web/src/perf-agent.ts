@@ -177,7 +177,7 @@ function toolsCol(t: AgentTurn): string {
         .map(([k, v]) => `${k}=${String(v)}`)
         .join(" ");
       const jump = c.perf_ts
-        ? `<button class="jump" data-perf-ts="${c.perf_ts}" title="show this search in the search tab">↗</button>`
+        ? `<button class="jump divot quiet" data-perf-ts="${c.perf_ts}" title="show this search in the search tab">↗</button>`
         : "";
       return (
         `<tr><td class="n">${i}</td><td>${esc(c.name)}${jump}</td>` +

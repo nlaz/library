@@ -4,7 +4,8 @@
 #reader {
   position: fixed;
   inset: 0;
-  background: var(--well);
+  --divot-ground: var(--well);
+  background: var(--divot-ground);
   display: flex;
   flex-direction: column;
   z-index: 8;
@@ -19,7 +20,8 @@
   align-items: center;
   gap: 14px;
   padding: 10px 20px;
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   border-bottom: 1px solid var(--line);
   flex: none;
 }
@@ -179,7 +181,8 @@
   bottom: 0;
   width: var(--drawer-w);
   z-index: 2;
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   border-left: 1px solid var(--line-strong);
   overflow-y: auto;
   padding: var(--sp-4);

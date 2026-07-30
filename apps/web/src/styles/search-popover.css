@@ -12,7 +12,8 @@
   flex-direction: column;
   gap: var(--sp-2);
   padding: 6px;
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   border: 1px solid var(--line-strong);
 }
 

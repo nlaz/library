@@ -17,6 +17,7 @@
 
 import { findPoint, fitView, hitTest, toScreen, trailFor } from "./atlas-model";
 import type { View } from "./atlas-model";
+import { setPressed } from "./dom";
 import { esc } from "./perf-fmt";
 import { desktop } from "./state";
 import { isTauri } from "./transport";
@@ -129,7 +130,7 @@ function refit() {
 function select(id: number) {
   sel = sel === id ? -1 : id;
   for (const b of $rail.querySelectorAll<HTMLElement>("button[data-theme]")) {
-    b.classList.toggle("on", Number(b.dataset.theme) === sel);
+    setPressed(b, Number(b.dataset.theme) === sel);
   }
   renderPanel();
   draw();
@@ -152,7 +153,8 @@ function renderRail() {
     `<div class="a-rail-head">recurring themes<span>${themes.length}</span></div>` +
     themes
       .map(
-        (t) => `<button data-theme="${t.id}" class="${t.id === sel ? "on" : ""}">
+        (t) => `<button data-theme="${t.id}" class="divot bare ${t.id === sel ? "on" : ""}"
+          aria-pressed="${t.id === sel}">
           <span class="a-title">${esc(themeTitle(t))}</span>
           ${badges(t.terms, 3)}
           <span class="a-count">${t.size} passages · ${t.ndocs} books</span>

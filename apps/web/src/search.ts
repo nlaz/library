@@ -140,7 +140,7 @@ function marginaliaCard(hit: WireHit): { el: HTMLElement; place: () => void } {
   const c = hit.card;
   if (c?.doc && c.page != null) {
     const jump = document.createElement("button");
-    jump.className = "nf-jump";
+    jump.className = "nf-jump divot quiet";
     jump.textContent = `${docTitle(c.doc)} · p.${c.page} ↗`;
     jump.addEventListener("click", (e) => {
       e.stopPropagation();

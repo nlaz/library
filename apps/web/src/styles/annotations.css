@@ -101,15 +101,11 @@
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   color: var(--ink-faint);
-  background: none;
-  border: none;
-  cursor: pointer;
   padding: 0 2px;
 }
 
 .mnotes .mdel:hover {
-  background: var(--ink);
-  color: var(--bg);
+  color: var(--ink);
 }
 
 /* markup mode: the pen owns the pointer; the cursor is the live mode
@@ -127,17 +123,20 @@
   pointer-events: none; /* drag over text without native selection */
 }
 
-/* bezel from base.css §4; markup mode inverts it — state by inversion,
-   never hue */
+/* divot from divot.css §5. Markup mode still inverts — state by inversion,
+   never hue — but as a ground swap rather than a background: the walls then
+   re-derive against ink on their own. The sunk face the primitive would
+   otherwise give it is far too quiet for a mode that takes over the cursor
+   for the whole document. */
 #reader-pen {
   font-family: var(--font-mono);
   padding: 4px 10px;
 }
 
 #reader-pen.active {
-  background: var(--ink);
+  --divot-ground: var(--ink);
+  --divot-src-hi: var(--ink-dim);
   color: var(--bg);
-  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
 }
 
 /* the margin card: a pending mark asks for its note, an existing mark
@@ -146,7 +145,8 @@
   position: absolute;
   z-index: 12;
   width: 260px;
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   border: 1px solid var(--line-strong);
   padding: var(--sp-2) var(--sp-3) var(--sp-3);
 }
@@ -185,15 +185,11 @@
   letter-spacing: var(--track-label);
   text-transform: uppercase;
   color: var(--ink-faint);
-  background: none;
-  border: none;
-  cursor: pointer;
   padding: 0 2px;
 }
 
 #mark-pop .mp-actions button:hover {
-  background: var(--ink);
-  color: var(--bg);
+  color: var(--ink);
 }
 
 /* both verbs wait behind ⋯ — the header stays date-only */
@@ -210,7 +206,8 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   border: 1px solid var(--line-strong);
   padding: 2px;
 }
@@ -264,28 +261,18 @@
 
 #mark-pop .mp-cancel {
   color: var(--ink-faint);
-  background: none;
-  border: none;
   padding: 3px 6px;
 }
 
 #mark-pop .mp-cancel:hover {
-  background: var(--ink);
-  color: var(--bg);
+  color: var(--ink);
 }
 
 #mark-pop .mp-comment {
-  color: var(--bg);
-  background: var(--ink);
-  border: none;
   padding: 3px 10px;
 }
 
 #mark-pop .mp-comment:disabled {
   opacity: 0.4;
   cursor: default;
-}
-
-#mark-pop .mp-comment:not(:disabled):active {
-  translate: 1px 1px;
 }

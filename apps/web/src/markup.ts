@@ -190,7 +190,10 @@ function setMarkupMode(on: boolean) {
   if (markupMode === on) return;
   markupMode = on;
   $scroll.classList.toggle("markup-mode", on);
+  // .active, not .on — markup mode is a document-wide mode, and the pen's
+  // own rule keys off it. The attribute is for screen readers.
   $pen.classList.toggle("active", on);
+  $pen.setAttribute("aria-pressed", String(on));
   if (on) {
     onEnter?.(currentDoc);
   } else {
@@ -347,17 +350,17 @@ popover.innerHTML = `
   <div class="mp-head">
     <span class="mp-addr"></span>
     <span class="mp-actions">
-      <button class="mp-more" aria-haspopup="menu" aria-expanded="false" aria-label="mark actions">⋯</button>
+      <button class="mp-more divot quiet" aria-haspopup="menu" aria-expanded="false" aria-label="mark actions">⋯</button>
       <div class="mp-menu" role="menu" hidden>
-        <button class="mp-open" role="menuitem">open in notes ↗</button>
-        <button class="mp-file-away" role="menuitem">file away</button>
+        <button class="mp-open divot quiet" role="menuitem">open in notes ↗</button>
+        <button class="mp-file-away divot quiet" role="menuitem">file away</button>
       </div>
     </span>
   </div>
   <textarea class="mp-note" rows="3" placeholder="note…"></textarea>
   <div class="mp-foot">
-    <button class="mp-cancel">cancel</button>
-    <button class="mp-comment">comment</button>
+    <button class="mp-cancel divot quiet">cancel</button>
+    <button class="mp-comment divot raise accent">comment</button>
   </div>
 `;
 $reader.append(popover);

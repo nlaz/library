@@ -27,3 +27,11 @@ export const $searchCount = document.getElementById("search-count")!;
 export const $searchPrev = document.getElementById("search-prev")!;
 export const $searchNext = document.getElementById("search-next")!;
 export const $toast = document.getElementById("toast")!;
+
+/** Latch a toggle. The class is what the divot's pressed selector matches;
+ *  the attribute is what a screen reader reads. Both from one call so they
+ *  can never drift apart. */
+export function setPressed(el: Element, on: boolean) {
+  el.classList.toggle("on", on);
+  el.setAttribute("aria-pressed", String(on));
+}

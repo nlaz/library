@@ -6,7 +6,8 @@ header {
   align-items: center;
   gap: var(--sp-4);
   padding: 8px 20px;
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   border-bottom: 1px solid var(--line);
   flex: none;
 }
@@ -16,13 +17,14 @@ header {
   gap: var(--sp-1);
 }
 
+/* quiet, not ghost: with no "Everything" tab, nothing selected IS
+   everything, so a row of permanently cut tabs would claim a state the
+   header does not have. Silent until hovered; the latched one keeps its
+   walls (divot.css §5) so it holds while the pointer is elsewhere. */
 #cols button {
-  background: none;
-  border: 1px solid transparent;
   color: var(--ink-dim);
   font-size: var(--fs-ui);
   padding: 6px 10px;
-  cursor: pointer;
   white-space: nowrap;
 }
 
@@ -31,8 +33,6 @@ header {
 }
 
 #cols button.on {
-  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
-  background: var(--bg);
   color: var(--ink);
 }
 
@@ -86,7 +86,8 @@ header {
 .book .cover {
   position: relative;
   aspect-ratio: 3 / 4;
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   border: 1px solid var(--line);
   overflow: hidden;
   transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
@@ -177,6 +178,11 @@ header {
   color: var(--ink);
 }
 
+/* The other button with no ground: it sits centred on a dithered, grey-
+   scaled cover, so "the face is the plane" has no answer here either — it
+   carries an opaque --surface plate and the firmest walls in the set.
+   The transform is layout, not decoration: it is what centres the button,
+   which is exactly why nothing in this system translates on press. */
 .bretry {
   position: absolute;
   left: 50%;
@@ -185,6 +191,8 @@ header {
   z-index: 1;
   font-family: var(--font-mono);
   font-size: var(--fs-ui);
+  padding: 4px 10px;
+  --divot-ground: var(--surface);
 }
 
 /* text_ready: readable now, figures still indexing — just the sub hints */
@@ -194,6 +202,10 @@ header {
 
 /* --- §7 book-card "⋯" menu: rename / collections / delete ------------------ */
 
+/* The one place "the face is the plane" has no answer: this sits on top of
+   a cover photograph, so there is no ground to be flush with. It gets an
+   opaque --surface plate of its own and the firmest walls in the set —
+   over an arbitrary image, a soft cut is no cut at all. */
 .bmenu {
   position: absolute;
   top: 6px;
@@ -205,6 +217,7 @@ header {
   line-height: 1;
   opacity: 0;
   transition: opacity 0.12s;
+  --divot-ground: var(--surface);
 }
 
 .book:hover .bmenu,
@@ -223,7 +236,8 @@ header {
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   border: 1px solid var(--line-strong);
   cursor: default;
 }
@@ -256,21 +270,17 @@ header {
 
 .book-menu button {
   padding: 5px 8px;
-  border: none;
-  background: none;
   color: var(--ink);
   font-size: var(--fs-ui);
   text-align: left;
-  cursor: pointer;
 }
 
-.book-menu button:hover {
-  background: var(--well);
-}
-
-/* severity by inversion, not hue */
+/* severity by inversion, not hue. Swapping the ground rather than the
+   background is what keeps the walls derived — they re-mix against ink on
+   their own, so the cut survives the inversion. */
 .book-menu button.danger:hover {
-  background: var(--ink);
+  --divot-ground: var(--ink);
+  --divot-src-hi: var(--ink-dim);
   color: var(--bg);
 }
 

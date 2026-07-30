@@ -368,7 +368,7 @@ function renderSearches(all: SearchRecord[]) {
   const chips = (["all", "ui", "agent"] as const)
     .map(
       (k) =>
-        `<button class="chip ${k === srcFilter ? "on" : ""}" data-src="${k}">${k}` +
+        `<button class="chip divot ghost ${k === srcFilter ? "on" : ""}" data-src="${k}">${k}` +
         `<span class="n">${k === "all" ? all.length : k === "agent" ? agentN : all.length - agentN}</span>` +
         `</button>`,
     )

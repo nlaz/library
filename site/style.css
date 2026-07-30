@@ -56,7 +56,9 @@ body {
   font-family: var(--font-ui);
   font-size: 15px;
   line-height: 1.6;
-  min-height: 100vh;
+  /* svh, not vh: on mobile vh is the tallest the viewport ever gets, so the
+     page would run past the hero and show a band of ground under it */
+  min-height: 100svh;
   overflow-x: hidden;
 }
 
@@ -141,61 +143,6 @@ h1 {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--ink-dim);
-}
-
-/* --- below the fold ------------------------------------------------------- */
-
-main {
-  width: 100%;
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 0 24px 120px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.firstrun {
-  margin-top: 72px;
-  width: 100%;
-  max-width: 52ch;
-  text-align: left;
-  border-top: 1px solid var(--line);
-  padding-top: 24px;
-}
-
-.firstrun h2 {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--ink-dim);
-}
-
-.firstrun p {
-  margin-top: 12px;
-  color: var(--ink-dim);
-}
-
-.firstrun em {
-  color: var(--ink);
-  font-style: normal;
-  font-weight: 600;
-}
-
-.firstrun pre {
-  margin-top: 12px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  padding: 12px 14px;
-  overflow-x: auto;
-}
-
-.firstrun code {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--ink);
 }
 
 @media (max-width: 600px) {

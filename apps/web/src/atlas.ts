@@ -238,7 +238,9 @@ function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   const ink = css("--ink");
-  const hl = css("--hl");
+  // --hl-line, not --hl: a bare dot has no outline to delimit it, and the
+  // wash colour only reaches 2.1:1 against the light ground
+  const hl = css("--hl-line");
   for (const p of atlas.points) {
     const [x, y] = toScreen(view, p.x, p.y);
     const lit = sel >= 0 && p.c === sel;

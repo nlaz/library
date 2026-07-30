@@ -32,33 +32,46 @@
 /* --- §2 tokens ------------------------------------------------------------
    :root is the light theme (warm paper-gray, fluorescent-lit stacks);
    prefers-color-scheme: dark is the stacks after hours, followed
-   automatically — there's no manual toggle. Chrome is grayscale; the
-   single accent is a highlighter pen and nothing else. */
+   automatically — there's no manual toggle. Both grounds are warm
+   neutrals — bister brown once the lights are off — and the single
+   accent is a brass highlighter and nothing else.
+
+   Two tokens deliberately do NOT follow the theme. --paper, because a
+   page scan is white whatever the hour; and --hl-ink, the settle line
+   drawn on top of it. --hl-line brightens for dark chrome, and that
+   brightened value all but disappears on a white page — so marks on
+   paper take --hl-ink and keep the light value in both themes. */
 
 :root {
   color-scheme: light;
 
   /* surfaces */
-  --bg: #e6e3db;
-  --surface: #efece4;
-  --well: #dbd6ca;
-  --paper: #ffffff;
+  --bg: #e8e4d9;
+  --surface: #f1eee5;
+  --well: #dcd6c7;
+  --paper: #fffdf8;
 
   /* lines & bezels */
-  --line: #c9c4b7;
-  --line-strong: #8f8a7b;
-  --edge-hi: #fbfaf6;
-  --edge-lo: #a29d8f;
+  --line: #c9c3b1;
+  --line-strong: #8e8977;
+  --edge-hi: #fbf9f2;
+  --edge-lo: #a29c89;
 
   /* ink */
-  --ink: #1f1e19;
-  --ink-dim: #63604f; /* ≥4.5:1 on --bg for the 11px mono metadata */
-  --ink-faint: #98937f;
+  --ink: #1e1c16;
+  --ink-dim: #605c4b; /* ≥4.5:1 on --bg for the 11px mono metadata */
+  --ink-faint: #97917c;
 
-  /* the one accent — highlighter only */
-  --hl: #facc15;
-  --hl-wash: rgba(250, 204, 21, 0.32);
-  --hl-line: #d9a800;
+  /* the one accent — highlighter only. --hl is the wash colour, and it is
+     lighter than the grounds it would sit on, so unringed solid fills
+     (progress, perf bars, rail ticks, atlas dots) take --hl-line instead:
+     it is the only one of the two that clears 3:1 in the light theme. The
+     current find tick is the exception — it carries a --hl-line ring, so
+     the ring does that work and the fill stays light. */
+  --hl: #c39649;
+  --hl-wash: rgba(195, 150, 73, 0.3);
+  --hl-line: #996917;
+  --hl-ink: #996917; /* theme-constant: the pen on a white scan */
 
   /* type */
   --font-ui: "Instrument Sans", system-ui, -apple-system, sans-serif;
@@ -87,25 +100,28 @@
   --dither-50: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='2' height='2'%3E%3Crect width='1' height='1'/%3E%3Crect x='1' y='1' width='1' height='1'/%3E%3C/svg%3E");
 }
 
+/* the same ramp walked in Lab at fixed lightness, tinted toward bister —
+   contrast against --bg is identical to the neutral it replaces (ink 15.0:1,
+   ink-dim 5.6:1). --paper and --hl-ink are absent on purpose: see §2. */
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
 
-    --bg: #0d0d0d;
-    --surface: #151515;
-    --well: #080808;
-    --paper: #ffffff;
+    --bg: #110e0a;
+    --surface: #191613;
+    --well: #0c0906;
 
-    --line: #262626;
-    --line-strong: #464646;
-    --edge-hi: #2f2f2f;
+    --line: #2a2521;
+    --line-strong: #4c443d;
+    --edge-hi: #322c28;
     --edge-lo: #000000;
 
-    --ink: #e5e5e5;
-    --ink-dim: #8c8c8c;
-    --ink-faint: #5a5a5a;
+    --ink: #e7e2de;
+    --ink-dim: #8d8a87;
+    --ink-faint: #5a5856;
 
-    --hl-line: #facc15;
-    --hl-wash: rgba(250, 204, 21, 0.28);
+    --hl: #daaf6b;
+    --hl-line: #ebc385;
+    --hl-wash: rgba(218, 175, 107, 0.24);
   }
 }

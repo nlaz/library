@@ -2,7 +2,9 @@
 
 /* persistent marks: wash + a darker settle line along the baseline — the
    ink a real highlighter leaves where it pools. Find hits stay pure wash
-   (outline style, .hlayer): kept marks vs ephemeral hits at a glance. */
+   (outline style, .hlayer): kept marks vs ephemeral hits at a glance.
+   The line is --hl-ink, not --hl-line: it lies on the page scan, which is
+   white in both themes, so it must not brighten with the chrome. */
 /* purely visual — clicks are hit-tested geometrically in markup.ts,
    so the text layer above stays selectable through the wash */
 .alayer,
@@ -20,13 +22,13 @@
 .glayer .mark {
   position: absolute;
   background: var(--hl-wash);
-  border-bottom: 2px solid var(--hl-line);
+  border-bottom: 2px solid var(--hl-ink);
 }
 
 .alayer .mark.region,
 .glayer .mark.region {
   background: var(--hl-wash);
-  border: 2px solid var(--hl-line);
+  border: 2px solid var(--hl-ink);
 }
 
 /* a frozen gesture awaiting its note: heavier wash, it isn't kept yet */

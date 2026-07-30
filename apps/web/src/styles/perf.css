@@ -243,8 +243,7 @@
 #perf .bar {
   display: block;
   height: 100%;
-  background: var(--hl);
-  outline: 1px solid var(--hl-line);
+  background: var(--hl-line);
 }
 
 #perf .bar-us {

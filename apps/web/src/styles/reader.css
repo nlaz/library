@@ -161,6 +161,10 @@
   cursor: pointer;
 }
 
+/* the current hit keeps the lighter --hl, unlike the other solid fills: it is
+   the only one ringed by --hl-line, so the ring carries the contrast against
+   the rail, and swapping the fill would leave .cur and .tick the same colour
+   with nothing but 2px of height to tell them apart */
 #reader-ticks .tick.cur {
   height: 5px;
   background: var(--hl);

@@ -154,7 +154,7 @@ function marginaliaRow(m: Mark): HTMLElement {
   t.className = "mtext";
   t.textContent = m.card.title;
   const del = document.createElement("button");
-  del.className = "mdel";
+  del.className = "mdel divot quiet";
   del.title = "File away";
   del.textContent = "✕";
   del.addEventListener("click", async (e) => {

@@ -13,7 +13,7 @@
   <body>
     <header>
       <nav id="cols" role="group" title="Collections"></nav>
-      <button id="notes-toggle" title="Notes" aria-label="Notes">
+      <button id="notes-toggle" class="divot" title="Notes" aria-label="Notes" aria-pressed="false">
         <!-- typewriter in the same 2×2 Bayer 50% tile as the chat burst:
              paper, carriage, body, feet — all currentColor -->
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
@@ -34,7 +34,7 @@
           </g>
         </svg>
       </button>
-      <button id="chat-toggle" title="Ask the librarian" aria-label="Ask the librarian">
+      <button id="chat-toggle" class="divot" title="Ask the librarian" aria-label="Ask the librarian">
         <!-- star burst filled with the 2×2 Bayer 50% tile from tokens.css §2,
              in currentColor so it follows --ink across themes -->
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
@@ -62,11 +62,11 @@
     </main>
     <section id="reader" hidden>
       <div id="reader-top">
-        <button id="reader-back" title="Back (Esc)">←</button>
+        <button id="reader-back" class="divot" title="Back (Esc)">←</button>
         <div id="reader-title"></div>
         <div id="reader-pageno"></div>
-        <button id="reader-pen" title="Markup mode (⌘U)">✎</button>
-        <button id="reader-meta" title="Document info">ⓘ</button>
+        <button id="reader-pen" class="divot" title="Markup mode (⌘U)" aria-pressed="false">✎</button>
+        <button id="reader-meta" class="divot" title="Document info">ⓘ</button>
       </div>
       <div id="reader-body">
         <div id="reader-scroll">
@@ -82,7 +82,7 @@
     </section>
     <section id="sheet" hidden>
       <div id="sheet-top">
-        <button id="sheet-back">← notes</button>
+        <button id="sheet-back" class="divot quiet">← notes</button>
         <span id="sheet-state"></span>
       </div>
       <div id="sheet-scroll">
@@ -96,8 +96,8 @@
         </div>
       </div>
       <div id="sheet-foot">
-        <button id="sheet-file" hidden>file away</button>
-        <button id="sheet-keep">keep</button>
+        <button id="sheet-file" class="divot quiet" hidden>file away</button>
+        <button id="sheet-keep" class="divot raise accent">keep</button>
       </div>
     </section>
     <div id="overlay" hidden>
@@ -105,8 +105,8 @@
         <div id="viewer-top">
           <div id="viewer-label"></div>
           <div class="viewer-actions">
-            <button id="viewer-read">Open in reader</button>
-            <button id="viewer-close" title="Close (Esc)">✕</button>
+            <button id="viewer-read" class="divot raise accent">Open in reader</button>
+            <button id="viewer-close" class="divot" title="Close (Esc)">✕</button>
           </div>
         </div>
         <div id="page-wrap">
@@ -119,21 +119,26 @@
       <div class="dz-inner">Drop PDFs to add them to the library</div>
     </div>
     <div id="search-pop" hidden>
-      <input id="q" type="search" placeholder="Search the library…" autocomplete="off" />
-      <ul id="ac" hidden></ul>
+      <div id="q-wrap">
+        <input id="q" type="search" placeholder="Search the library…" autocomplete="off" />
+        <!-- inline completion. The two spans MUST stay on one line: #q-ghost
+             is white-space: pre, so a newline between them renders as a space
+             and shifts every suggestion to the right. -->
+        <div id="q-ghost" aria-hidden="true"><span id="q-typed"></span><span id="q-tail"></span></div>
+      </div>
       <div id="search-nav" hidden>
         <span id="search-count"></span>
-        <button id="search-prev" title="Previous match (Shift+Enter)">↑</button>
-        <button id="search-next" title="Next match (Enter)">↓</button>
+        <button id="search-prev" class="divot" title="Previous match (Shift+Enter)">↑</button>
+        <button id="search-next" class="divot" title="Next match (Enter)">↓</button>
       </div>
     </div>
     <aside id="chat" hidden aria-label="Librarian chat">
       <div id="chat-top">
         <span>librarian</span>
         <div class="chat-actions">
-          <button id="chat-stop" title="Stop generating" hidden>stop</button>
-          <button id="chat-clear" title="Clear conversation">clear</button>
-          <button id="chat-close" title="Close (Esc)">✕</button>
+          <button id="chat-stop" class="divot" title="Stop generating" hidden>stop</button>
+          <button id="chat-clear" class="divot" title="Clear conversation">clear</button>
+          <button id="chat-close" class="divot" title="Close (Esc)">✕</button>
         </div>
       </div>
       <div id="chat-log" aria-live="polite"></div>
@@ -145,16 +150,16 @@
       <div id="perf-head">
         <div id="perf-id"></div>
         <nav id="perf-tabs" role="tablist" aria-label="Perf sections">
-          <button data-tab="search" role="tab" aria-selected="true" class="on" aria-controls="perf-search-body">
+          <button data-tab="search" role="tab" aria-selected="true" class="divot quiet on" aria-controls="perf-search-body">
             search<span class="n"></span>
           </button>
-          <button data-tab="ingest" role="tab" aria-selected="false" aria-controls="perf-ingest-body">
+          <button data-tab="ingest" class="divot quiet" role="tab" aria-selected="false" aria-controls="perf-ingest-body">
             ingest<span class="n"></span>
           </button>
-          <button data-tab="agent" role="tab" aria-selected="false" aria-controls="perf-agent-body">
+          <button data-tab="agent" class="divot quiet" role="tab" aria-selected="false" aria-controls="perf-agent-body">
             agent<span class="n"></span>
           </button>
-          <button data-tab="memory" role="tab" aria-selected="false" aria-controls="perf-memory-body">
+          <button data-tab="memory" class="divot quiet" role="tab" aria-selected="false" aria-controls="perf-memory-body">
             memory<span class="n"></span>
           </button>
         </nav>
@@ -170,7 +175,7 @@
       <div id="atlas-head">
         <div id="atlas-title">corpus atlas</div>
         <div id="atlas-status"></div>
-        <button id="atlas-refresh" title="Recompute the atlas">rebuild</button>
+        <button id="atlas-refresh" class="divot" title="Recompute the atlas">rebuild</button>
       </div>
       <div id="atlas-body">
         <aside id="atlas-rail" aria-label="Recurring themes"></aside>

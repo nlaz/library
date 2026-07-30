@@ -1,9 +1,11 @@
 // ---------------------------------------------------------------------------
 // page viewer overlay (opened from a result card) + the search popover /
-// in-book find bar: Cmd+F opens it (right side, clear of the results),
-// Escape closes it — and only it. In the library views query text and
-// results survive a close; in the reader, dismissing the find bar clears
-// the filter too, browser-find style.
+// in-book find bar: Cmd+F opens it (right side, clear of the results) and
+// every press after that steps the unlabelled result-kind cycle. Escape
+// ends the search — it closes the popover and clears the query, which takes
+// the library views back to the shelves and the reader back to an
+// unfiltered page (browser-find style). It still unwinds exactly one layer
+// per press.
 // ---------------------------------------------------------------------------
 
 import { pageUrl } from "./assets";
@@ -24,7 +26,7 @@ import {
 import { docTitle } from "./format";
 import { hlBoxes } from "./highlights";
 import { onHitStep, readerOpen, stepHit } from "./reader";
-import { sendQuery } from "./search";
+import { cycleKind, resetGhost, resetKind, sendQuery } from "./search";
 import type { WireHit } from "./types";
 
 let viewerHit: WireHit | null = null;
@@ -67,20 +69,40 @@ document.addEventListener("keydown", (e) => {
 export function openSearchPop() {
   $searchPop.hidden = false;
   $searchNav.hidden = !readerOpen();
+  resetKind(); // every session starts on everything; Cmd+F again narrows
+  resetGhost(); // a completion painted for the old value must not survive
   $q.focus();
   $q.select(); // retyping replaces, browser-find style
 }
 
 function closeSearchPop() {
   $searchPop.hidden = true;
+  resetGhost();
 }
 
-document.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === "f") {
-    e.preventDefault(); // the popover replaces native find in the web build
-    openSearchPop();
-  }
-});
+// capture phase, like the perf hotkey: opening the popover focuses $q, and
+// $q swallows every keydown it sees (stopPropagation, so the reader's
+// scroll keys can't fire while typing) — a bubble-phase listener here would
+// therefore see the *first* Cmd+F and never another, leaving the cycle stuck
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === "f") {
+      e.preventDefault(); // the popover replaces native find in the web build
+      e.stopPropagation();
+      // the first press opens the bar on everything; each press after that
+      // steps the cycle: everything → figures → text/notes.
+      // The reader's find has only page text to offer, so it never cycles.
+      if ($searchPop.hidden) {
+        openSearchPop();
+      } else if (!readerOpen()) {
+        cycleKind();
+        $q.focus();
+      }
+    }
+  },
+  true,
+);
 
 // capture phase: the reader's own Escape (registered earlier, bubble phase)
 // would exit the reader before the popover saw the key — each press must
@@ -92,10 +114,11 @@ document.addEventListener(
       e.preventDefault();
       e.stopImmediatePropagation();
       closeSearchPop();
-      // in the reader the query is a find filter — dismissing the bar
-      // clears the highlights/ticks through the normal empty-query path
-      // (which also seq-guards any answer still in flight)
-      if (readerOpen() && $q.value) {
+      // Escape ends the search session rather than just hiding the box: the
+      // query clears and the empty-query path puts the library views back
+      // on the shelves (and, in the reader, drops the find highlights and
+      // ticks). It also seq-guards any answer still in flight.
+      if ($q.value) {
         $q.value = "";
         sendQuery();
       }

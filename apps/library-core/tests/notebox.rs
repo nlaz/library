@@ -32,6 +32,7 @@ fn fixture(name: &str) -> (Library, PathBuf) {
     (open(dir.join("library.db")), dir)
 }
 
+/// Docs of the lexical hits for `query`, in rank order.
 fn lexical_docs(lib: &Library, query: &str) -> Vec<String> {
     lib.rtx(|r| {
         search(
@@ -59,6 +60,31 @@ fn new_card(title: &str) -> NewCard {
         evidence: vec![],
         links: vec![],
     }
+}
+
+/// One real page chunk, so a card has page text to be ranked against
+/// (cards are indexed alongside page text in the one text index).
+fn commit_page_chunk(lib: &mut Library, doc: &str, page: u32, text: &str) {
+    let words = text
+        .split_whitespace()
+        .map(|t| Word {
+            t: t.to_string(),
+            x: 0.0,
+            y: 0.0,
+            w: 0.1,
+            h: 0.1,
+        })
+        .collect();
+    let chunk = ChunkRec {
+        key: ChunkKey {
+            doc: doc.to_string(),
+            page,
+            idx: 0,
+        },
+        words,
+        emb: embed(text),
+    };
+    library_core::store::commit_chunks(lib, doc, &[chunk]);
 }
 
 /// What the old pen's save path used to index for a noted mark: one
@@ -134,6 +160,22 @@ fn card_lifecycle_in_search() {
     back.filed = false;
     update_card(&mut lib, &data, back, &embed).unwrap();
     assert_eq!(lexical_docs(&lib, "ceiling"), vec![doc]);
+}
+
+/// A card outranks a page chunk carrying the same lexical evidence — the
+/// NOTE_BOOST end to end. Identical text on both sides, so nothing but the
+/// boost can order them (and without it the `~` doc id would sort last).
+#[test]
+fn cards_outrank_pages_on_equal_evidence() {
+    let (mut lib, data) = fixture("note-boost");
+    let text = "gear train sketch";
+    commit_page_chunk(&mut lib, "moxon", 215, text);
+    let card = create_card(&mut lib, &data, new_card(text), &embed).unwrap();
+
+    assert_eq!(
+        lexical_docs(&lib, "gear train"),
+        vec![format!("~card/{}", card.id), "moxon".to_string()]
+    );
 }
 
 #[test]

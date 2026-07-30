@@ -8,7 +8,8 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  --divot-ground: var(--bg);
+  background: var(--divot-ground);
 }
 
 #notes[hidden] {
@@ -37,10 +38,7 @@
   letter-spacing: var(--track-label);
   text-transform: uppercase;
   color: var(--ink-faint);
-  background: none;
-  border: none;
   padding: 2px 0;
-  cursor: pointer;
 }
 
 .nb-crumb:hover {
@@ -51,7 +49,9 @@
   color: var(--ink-dim);
 }
 
-/* the surface's one bezel — creating is an act, not a crumb */
+/* the surface's one raised thing — creating is an act, not a crumb. It
+   shares a baseline row with .nb-crumb, so if it went flush the two would
+   be indistinguishable; the lift is what carries the difference. */
 .nb-new {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
@@ -59,16 +59,6 @@
   letter-spacing: var(--track-label);
   text-transform: uppercase;
   padding: 3px 9px;
-  border: 1px solid;
-  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
-  background: var(--surface);
-  color: var(--ink);
-  cursor: pointer;
-}
-
-.nb-new:active {
-  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
-  transform: translate(1px, 1px);
 }
 
 /* the rail floats in the left margin; the ledger owns the page's center.
@@ -128,10 +118,7 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-faint);
-  background: none;
-  border: none;
   padding: 0;
-  cursor: pointer;
 }
 
 .rail-clear:hover {
@@ -144,12 +131,9 @@
   gap: 10px;
   width: 100%;
   text-align: left;
-  background: none;
-  border: none;
   font-size: var(--fs-ui);
   color: var(--ink-faint);
   padding: 6px 0;
-  cursor: pointer;
 }
 
 .docitem:hover {
@@ -217,7 +201,8 @@
 
 .lentry:hover,
 .lentry.active {
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
 }
 
 .lentry.filed {
@@ -273,11 +258,8 @@
   align-items: flex-start;
   width: 100%;
   text-align: left;
-  background: none;
-  border: none;
   padding: 0;
   margin-top: 9px;
-  cursor: pointer;
 }
 
 .lev-crop {
@@ -406,31 +388,39 @@
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   color: var(--ink-faint);
-  background: none;
-  border: none;
-  cursor: pointer;
   padding: 0 2px;
 }
 
 .card.notehit .nf-jump:hover {
-  background: var(--ink);
-  color: var(--bg);
+  color: var(--ink);
 }
 
 /* --- §18 the sheet: writing a note is a full page ------------------------- */
 
+/* The sheet is the one surface that changes material between themes, so it
+   is the one place the divot's ground can silently go wrong: get it wrong
+   and the buttons paint --surface plates on a white scan in light, while
+   dark stays correct by accident. Hence --divot-ground here rather than at
+   each button, and --divot-src-hi collapsed to the paper itself: nothing is
+   lighter than a white scan, so a groove cut into it is shadow-only. */
 #sheet {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   position: relative;
-  background: var(--paper);
+  --divot-ground: var(--paper);
+  --divot-src-hi: var(--paper);
+  --divot-src-lo: var(--line-strong);
+  background: var(--divot-ground);
 }
 
 @media (prefers-color-scheme: dark) {
   #sheet {
-    background: var(--surface);
+    /* back to a lit surface: the walls take the normal edge pair again */
+    --divot-ground: var(--surface);
+    --divot-src-hi: var(--edge-hi);
+    --divot-src-lo: var(--edge-lo);
   }
 }
 
@@ -453,10 +443,7 @@
   letter-spacing: var(--track-label);
   text-transform: uppercase;
   color: var(--ink-faint);
-  background: none;
-  border: none;
   padding: 2px 0;
-  cursor: pointer;
 }
 
 #sheet-back:hover {
@@ -552,7 +539,10 @@
   color: var(--ink);
 }
 
-/* the split whisper — an invitation, never a demand */
+/* the split whisper — an invitation, never a demand. Deliberately NOT on
+   the divot: a cut edge is what the surface uses to say "this is a
+   control you should act on", and a dashed rule that firms up under the
+   cursor is the only way left to say the opposite. */
 #sheet-whisper {
   display: block;
   margin-top: 14px;
@@ -598,15 +588,11 @@
   letter-spacing: var(--track-label);
   text-transform: uppercase;
   color: var(--ink-faint);
-  background: none;
-  border: none;
   padding: 5px 6px;
-  cursor: pointer;
 }
 
 #sheet-file:hover {
-  background: var(--ink);
-  color: var(--bg);
+  color: var(--ink);
 }
 
 #sheet-keep {
@@ -615,13 +601,5 @@
   font-weight: 500;
   letter-spacing: var(--track-label);
   text-transform: uppercase;
-  background: var(--ink);
-  color: var(--bg);
-  border: none;
   padding: 5px 12px;
-  cursor: pointer;
-}
-
-#sheet-keep:active {
-  translate: 1px 1px;
 }

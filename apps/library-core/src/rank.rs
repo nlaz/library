@@ -6,6 +6,7 @@ use fold::stream::Readable;
 use fxhash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
+use crate::records::is_reserved;
 use crate::text::tokenize;
 use crate::{ChunkKey, ChunkRec, EMB_DIM, Emb, FxHashSet, Readers, Word};
 
@@ -74,6 +75,15 @@ pub const MIN_REL: f32 = 0.25;
 /// known-item, and GooAQ question workloads — lower favors paraphrase but
 /// regresses known-item recall, higher the reverse.
 pub(crate) const FUSE_LEX_WEIGHT: f32 = 0.5;
+
+/// Fused-score multiplier for a note card. A card is prose the reader wrote
+/// by hand about this library — a far stronger statement of "this matters to
+/// me" than a page the ingester happened to OCR — so it should outrank page
+/// chunks carrying comparable textual evidence. Unlike [`FUSE_LEX_WEIGHT`]
+/// this is not a sweep result: the retrieval-eval gold set is books only, so
+/// there is nothing to measure it against. Deliberately modest — a card
+/// still has to earn a place in the fused list before the boost can lift it.
+pub(crate) const NOTE_BOOST: f32 = 1.4;
 
 /// How deep to fetch from the lexical ranker regardless of `k`. Pinning the
 /// depth pins the lexical list — and therefore the fusion input and the
@@ -325,6 +335,11 @@ pub(crate) fn mmr_rerank(
 /// confident semantic #1 (and vice versa): a doc mediocre in both lists
 /// could beat one excellent in one. Blending confidence instead of rank
 /// improved every workload in the retrieval-eval fusion sweep.
+///
+/// Note cards leave with their fused score scaled by [`NOTE_BOOST`], which
+/// is what makes them place above equally-supported page chunks — and, since
+/// the boost lands before the re-rank pools are cut, is also what gets a
+/// borderline card *into* those pools at all.
 pub(crate) fn fuse(lex: &[(ChunkKey, f32)], sem: &[(ChunkKey, f32)]) -> Vec<(f32, ChunkKey)> {
     let mut scores: FxHashMap<&ChunkKey, f32> = FxHashMap::default();
     for (key, rel) in lex {
@@ -333,7 +348,17 @@ pub(crate) fn fuse(lex: &[(ChunkKey, f32)], sem: &[(ChunkKey, f32)]) -> Vec<(f32
     for (key, sim) in sem {
         *scores.entry(key).or_insert(0.0) += (1.0 - FUSE_LEX_WEIGHT) * sim;
     }
-    let mut out: Vec<(f32, ChunkKey)> = scores.into_iter().map(|(k, s)| (s, k.clone())).collect();
+    let mut out: Vec<(f32, ChunkKey)> = scores
+        .into_iter()
+        .map(|(k, s)| {
+            let s = if is_reserved(&k.doc) {
+                s * NOTE_BOOST
+            } else {
+                s
+            };
+            (s, k.clone())
+        })
+        .collect();
     out.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     out
 }
@@ -583,6 +608,21 @@ mod fuzzy_mmr_tests {
         assert_eq!(fused[0].1.doc, "gold");
         // 0.5·0.08 + 0.5·1.0 = 0.54 vs 0.5·0.3 + 0.5·0.3 = 0.3
         assert!((fused[0].0 - 0.54).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fuse_boosts_note_cards_over_equally_supported_pages() {
+        let (card, page) = (key("~card/c123"), key("moxon"));
+        // the page has the *stronger* lexical evidence; the boost still has
+        // to be worth more than that gap for a card to be worth boosting
+        let fused = fuse(&[(page.clone(), 0.6), (card.clone(), 0.5)], &[]);
+        assert_eq!(fused[0].1.doc, "~card/c123");
+        assert!((fused[0].0 - 0.5 * 0.5 * NOTE_BOOST).abs() < 1e-6);
+        assert!((fused[1].0 - 0.5 * 0.6).abs() < 1e-6);
+        // far enough ahead and the page keeps its place — the boost is a
+        // thumb on the scale, not an override
+        let fused = fuse(&[(page, 1.0), (card, 0.5)], &[]);
+        assert_eq!(fused[0].1.doc, "moxon");
     }
 
     fn word(t: &str) -> Word {

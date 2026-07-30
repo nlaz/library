@@ -18,9 +18,20 @@ export const $pageImg = document.getElementById("page-img") as HTMLImageElement;
 export const $pageHl = document.getElementById("page-hl")!;
 export const $dropzone = document.getElementById("dropzone")!;
 export const $searchPop = document.getElementById("search-pop")!;
-export const $ac = document.getElementById("ac") as HTMLUListElement;
+// the inline completion overlay: the typed prefix redrawn transparent, then
+// the faint tail (see #q-ghost in search-popover.css)
+export const $qTyped = document.getElementById("q-typed")!;
+export const $qTail = document.getElementById("q-tail")!;
 export const $searchNav = document.getElementById("search-nav")!;
 export const $searchCount = document.getElementById("search-count")!;
 export const $searchPrev = document.getElementById("search-prev")!;
 export const $searchNext = document.getElementById("search-next")!;
 export const $toast = document.getElementById("toast")!;
+
+/** Latch a toggle. The class is what the divot's pressed selector matches;
+ *  the attribute is what a screen reader reads. Both from one call so they
+ *  can never drift apart. */
+export function setPressed(el: Element, on: boolean) {
+  el.classList.toggle("on", on);
+  el.setAttribute("aria-pressed", String(on));
+}

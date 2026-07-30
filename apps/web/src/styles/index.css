@@ -1,5 +1,10 @@
 @import "./tokens.css";
 @import "./base.css";
+/* third on purpose: the component sheets load after and so win equal-
+   specificity ties, which is where the deliberate per-surface exceptions
+   live (#reader-pen's ink ground, .bmenu over a cover image, the sheet's
+   paper). */
+@import "./divot.css";
 @import "./home.css";
 @import "./search-results.css";
 @import "./viewer.css";

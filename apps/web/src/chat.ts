@@ -311,7 +311,7 @@ function toolRow(ev: Extract<ChatEvent, { e: "tool" }>, anchor: HTMLElement | nu
 
 function chip(hit: Chip): HTMLElement {
   const b = document.createElement("button");
-  b.className = "cchip";
+  b.className = "cchip divot ghost";
   b.textContent = `${hit.title ?? opts.prettify(hit.doc)} · p.${hit.page}`;
   b.title = hit.doc;
   // the panel overlays the reader (higher z-index), so it stays open
@@ -326,7 +326,7 @@ const MAX_FIGURE_THUMBS = 3;
 /** A figure hit as a clickable page thumbnail — same navigation as chip(). */
 function thumb(hit: Chip): HTMLElement {
   const b = document.createElement("button");
-  b.className = "cthumb";
+  b.className = "cthumb divot ghost";
   b.title = `${hit.title ?? opts.prettify(hit.doc)} · p.${hit.page}`;
   const img = document.createElement("img");
   img.src = pageImg(hit.doc, hit.page);

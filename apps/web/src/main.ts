@@ -6,7 +6,7 @@
 
 import { atlasOpen, dismissAtlasSelection, toggleAtlas } from "./atlas";
 import { initChat } from "./chat";
-import { $cols, $q, $searchNav } from "./dom";
+import { $cols, $q, $searchNav, setPressed } from "./dom";
 import { closeDrawer, initDrawer } from "./drawer";
 import { docTitle, getDocList, prettify, setDocList } from "./format";
 import { getCol, loadCollections, renderHome, setCol } from "./home";
@@ -175,7 +175,7 @@ async function main() {
     if (!btn) return;
     // no "Everything" tab: clicking the active collection again clears it
     setCol(getCol() === btn.dataset.col ? "" : btn.dataset.col!);
-    for (const b of $cols.children) b.classList.toggle("on", b === btn && getCol() !== "");
+    for (const b of $cols.children) setPressed(b, b === btn && getCol() !== "");
     if (notesOpen()) rerenderNotes(); // the tabs scope the ledger too
     else if ($q.value.trim()) sendQuery();
     else renderHome();

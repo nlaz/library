@@ -17,7 +17,7 @@ export function citeLine(q: QuoteAnchor): string {
 /** The whole row is the jump to the marked page. */
 export function evidenceEl(q: QuoteAnchor): HTMLElement {
   const row = document.createElement("button");
-  row.className = "lev";
+  row.className = "lev divot bare";
   row.title = "Open the marked page";
 
   if (q.kind === "region") {

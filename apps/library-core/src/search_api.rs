@@ -31,7 +31,10 @@ pub struct Query {
     /// restrict to a collection from data/collections.json; empty = everything
     #[serde(default)]
     pub col: String,
-    /// "all" | "text" | "images" (empty = "all")
+    /// Which kinds of hit to return: "all" | "text" | "images" (empty =
+    /// "all") — the search popover's Cmd+F cycle. "text" means everything
+    /// the text index holds, page chunks *and* note cards, minus the
+    /// figures; "images" is figures alone (no text track runs at all).
     #[serde(default)]
     pub kind: String,
     /// restrict to a single doc id (reader find); takes precedence over `col`

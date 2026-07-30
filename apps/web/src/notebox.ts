@@ -6,7 +6,7 @@
 // in place: body, evidence, and its links.
 
 import { ensureDocTitles } from "./doc-titles";
-import { $main } from "./dom";
+import { $main, setPressed } from "./dom";
 import { evidenceEl } from "./evidence-el";
 import { docTitle } from "./format";
 import { getCol } from "./home";
@@ -44,7 +44,7 @@ export function notesOpen(): boolean {
 export async function openNotes(cardId: string | null) {
   $notes.hidden = false;
   $main.hidden = true;
-  $toggle.classList.add("on");
+  setPressed($toggle, true);
   if (cardId) selected = cardId;
   await reload();
   if (cardId) {
@@ -57,7 +57,7 @@ export async function openNotes(cardId: string | null) {
 export function closeNotes() {
   $notes.hidden = true;
   $main.hidden = false;
-  $toggle.classList.remove("on");
+  setPressed($toggle, false);
 }
 
 /** The header's collection tabs re-scope the ledger without a refetch. */
@@ -93,13 +93,13 @@ function render() {
   const crumbs = document.createElement("div");
   crumbs.className = "nb-crumbs";
   const back = document.createElement("button");
-  back.className = "nb-crumb";
+  back.className = "nb-crumb divot quiet";
   back.innerHTML = `← library <span class="here">/ notes</span>`;
   back.addEventListener("click", () => {
     location.hash = "#/";
   });
   const newBtn = document.createElement("button");
-  newBtn.className = "nb-new";
+  newBtn.className = "nb-new divot raise accent";
   newBtn.textContent = "+ note";
   newBtn.title = "New note (c)";
   newBtn.addEventListener("click", () => startCreate());
@@ -169,7 +169,7 @@ function docRailEl(docs: string[], counts: Map<string, number>): HTMLElement {
   head.append(label);
   if (sel.size) {
     const clear = document.createElement("button");
-    clear.className = "rail-clear";
+    clear.className = "rail-clear divot quiet";
     clear.textContent = "clear ×";
     clear.addEventListener("click", () => {
       sel.clear();
@@ -181,7 +181,7 @@ function docRailEl(docs: string[], counts: Map<string, number>): HTMLElement {
 
   for (const d of docs) {
     const item = document.createElement("button");
-    item.className = "docitem";
+    item.className = "docitem divot bare";
     if (sel.has(d)) item.classList.add("sel");
     item.setAttribute("aria-pressed", String(sel.has(d)));
     const t = document.createElement("span");

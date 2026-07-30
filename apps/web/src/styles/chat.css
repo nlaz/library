@@ -14,7 +14,8 @@
   display: flex;
   flex-direction: column;
   width: min(380px, 90vw);
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   border-top: 1px solid var(--line-strong);
   border-left: 1px solid var(--line-strong);
 }
@@ -57,11 +58,6 @@
 #chat-close,
 #chat-stop,
 #chat-clear {
-  border: 1px solid;
-  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
-  background: var(--surface);
-  color: var(--ink);
-  cursor: pointer;
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   text-transform: uppercase;
@@ -69,15 +65,11 @@
   padding: 1px 6px;
 }
 
-#chat-close:active,
-#chat-stop:active,
-#chat-clear:active {
-  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
-  transform: translate(1px, 1px);
-}
-
+/* the wash goes on the GROUND, not the background: re-pointing what the
+   button is cut into keeps its walls derived, where a bare background
+   would leave them mixed against a surface that is no longer there */
 #chat-stop {
-  background: var(--hl-wash);
+  --divot-ground: color-mix(in oklab, var(--hl) 30%, var(--surface));
 }
 
 #chat-stop[hidden] {
@@ -129,11 +121,6 @@
 .cchip {
   display: inline-block;
   margin: 3px 4px 0 0;
-  border: 1px solid;
-  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
-  background: var(--surface);
-  color: var(--ink);
-  cursor: pointer;
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   letter-spacing: 0.02em;
@@ -145,22 +132,13 @@
 }
 
 .cchip:hover {
-  background: var(--hl-wash);
+  --divot-ground: color-mix(in oklab, var(--hl) 30%, var(--surface));
 }
 
-.cchip:active {
-  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
-  transform: translate(1px, 1px);
-}
-
-/* figure hits render as page thumbnails; same bevel + navigation as .cchip */
+/* figure hits render as page thumbnails; same cut + navigation as .cchip */
 .cthumb {
   display: inline-block;
   margin: 3px 4px 0 0;
-  border: 1px solid;
-  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
-  background: var(--surface);
-  cursor: pointer;
   padding: 2px;
 }
 
@@ -171,12 +149,7 @@
 }
 
 .cthumb:hover {
-  background: var(--hl-wash);
-}
-
-.cthumb:active {
-  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
-  transform: translate(1px, 1px);
+  --divot-ground: color-mix(in oklab, var(--hl) 30%, var(--surface));
 }
 
 #chat-form {

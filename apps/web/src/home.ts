@@ -4,7 +4,7 @@
 // ---------------------------------------------------------------------------
 
 import { coverImg } from "./assets";
-import { $cols, $home } from "./dom";
+import { $cols, $home, setPressed } from "./dom";
 import { collectionsChecklist } from "./drawer";
 import { displayTitle, prettify, setDocList, STAGE_LABEL, statusEvent } from "./format";
 import { desktop, transport } from "./state";
@@ -39,13 +39,14 @@ export async function loadCollections(): Promise<Collections> {
   $cols.replaceChildren(
     ...Object.keys(cols).map((name) => {
       const btn = document.createElement("button");
+      btn.className = "divot quiet";
       btn.dataset.col = name;
       btn.textContent = name;
       const n = document.createElement("span");
       n.className = "n";
       n.textContent = String(cols[name].length);
       btn.append(n);
-      if (name === col) btn.classList.add("on");
+      setPressed(btn, name === col);
       return btn;
     }),
   );
@@ -117,7 +118,7 @@ function bookCard(d: DocInfo, cols: Collections): HTMLElement {
     sub.textContent = "indexing failed";
     if (d.status?.error) el.title = d.status.error;
     const retry = document.createElement("button");
-    retry.className = "bretry";
+    retry.className = "bretry divot firm";
     retry.textContent = "Retry";
     retry.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -169,7 +170,7 @@ document.addEventListener("click", closeMenus);
 
 function bookMenu(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElement {
   const btn = document.createElement("button");
-  btn.className = "bmenu";
+  btn.className = "bmenu divot firm";
   btn.textContent = "⋯";
   btn.title = "Rename, collections, delete";
   btn.addEventListener("click", (e) => {
@@ -187,6 +188,7 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
   panel.addEventListener("click", (e) => e.stopPropagation());
 
   const rename = document.createElement("button");
+  rename.className = "divot quiet";
   rename.textContent = "Rename";
   rename.addEventListener("click", () => {
     panel.remove();
@@ -214,7 +216,7 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
   });
 
   const del = document.createElement("button");
-  del.className = "danger";
+  del.className = "danger divot quiet";
   del.textContent = "Delete…";
   del.addEventListener("click", async () => {
     closeMenus();

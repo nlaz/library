@@ -6,7 +6,7 @@
 // in), saving is automatic, esc walks back to the ledger.
 
 import { ensureDocTitles } from "./doc-titles";
-import { $main } from "./dom";
+import { $main, setPressed } from "./dom";
 import { evidenceEl } from "./evidence-el";
 import { createCard, listCards, updateCard } from "./marginalia-api";
 import { impliedTitle, SPLIT_WORDS, splitPoint } from "./notebox-model";
@@ -65,7 +65,7 @@ export async function openSheet(kind: "new" | "edit", cardId: string | null) {
   const token = ++opening;
   $sheet.hidden = false;
   $main.hidden = true;
-  $toggle.classList.add("on");
+  setPressed($toggle, true);
   $ac.hidden = true;
 
   if (kind === "edit" && cardId) {
@@ -122,7 +122,7 @@ export function closeSheet() {
   void save();
   $sheet.hidden = true;
   $main.hidden = false;
-  $toggle.classList.remove("on");
+  setPressed($toggle, false);
 }
 
 function fill(title: string, body: string, createdSecs: number) {

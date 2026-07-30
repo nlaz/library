@@ -63,6 +63,17 @@ fn query(q: &str, col: &str, doc: &str) -> Query {
     .expect("query json")
 }
 
+/// A library-wide query in one of the popover's Cmd+F kinds.
+fn kind_query(q: &str, kind: &str) -> Query {
+    serde_json::from_value(serde_json::json!({
+        "seq": 1,
+        "q": q,
+        "mode": "full",
+        "kind": kind,
+    }))
+    .expect("query json")
+}
+
 #[test]
 fn reserved_hits_are_shaped_and_scoped() {
     let (mut lib, images, data) = fixture("shape");
@@ -178,4 +189,46 @@ fn reserved_hits_are_shaped_and_scoped() {
         |_| None,
     );
     assert!(r.hits.iter().all(|h| h.kind == "text" && h.doc == "moxon"));
+
+    // --- the Cmd+F kind cycle, through the same path -----------------------
+
+    // "text" is text *and* notes: the whole text index, figures withheld.
+    // Cards keep their decoration — the mode is about figures, not cards.
+    let r = answer(
+        &lib,
+        &images,
+        &data,
+        &kind_query("escapement", "text"),
+        |_| None,
+    );
+    let kinds: Vec<&str> = r.hits.iter().map(|h| h.kind).collect();
+    assert!(kinds.contains(&"text") && kinds.contains(&"card"));
+    assert!(!kinds.contains(&"image"));
+    assert!(
+        r.hits
+            .iter()
+            .filter(|h| h.kind == "card")
+            .all(|h| h.card.is_some() && h.img.is_empty())
+    );
+
+    // "images": the text track does not run at all, so a figure-less
+    // library answers nothing rather than falling back to page text
+    let r = answer(
+        &lib,
+        &images,
+        &data,
+        &kind_query("escapement", "images"),
+        |_| None,
+    );
+    assert!(r.hits.is_empty());
+
+    // "all" (and the empty default) keep the blend
+    for k in ["", "all"] {
+        let r = answer(&lib, &images, &data, &kind_query("escapement", k), |_| None);
+        let kinds: Vec<&str> = r.hits.iter().map(|h| h.kind).collect();
+        assert!(
+            kinds.contains(&"text") && kinds.contains(&"card"),
+            "kind={k}"
+        );
+    }
 }

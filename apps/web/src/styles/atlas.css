@@ -11,7 +11,8 @@
   z-index: 13;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  --divot-ground: var(--bg);
+  background: var(--divot-ground);
   font-family: var(--font-mono);
   font-size: var(--fs-mono);
   color: var(--ink);
@@ -29,7 +30,8 @@
   align-items: baseline;
   gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-4);
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   border-bottom: 1px solid var(--line-strong);
   font-size: var(--fs-meta);
 }
@@ -46,16 +48,12 @@
 #atlas-refresh {
   margin-left: auto;
   font: inherit;
-  background: none;
-  border: 1px solid var(--line);
   color: var(--ink-dim);
   padding: 1px var(--sp-2);
-  cursor: pointer;
 }
 
 #atlas-refresh:hover {
   color: var(--ink);
-  border-color: var(--line-strong);
 }
 
 #atlas-body {
@@ -71,7 +69,8 @@
   flex: none;
   overflow-y: auto;
   border-right: 1px solid var(--line);
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   padding: var(--sp-2);
 }
 
@@ -85,16 +84,16 @@
   padding: var(--sp-1) var(--sp-2) var(--sp-2);
 }
 
+/* bare: these are multi-line, full-width rail rows, not controls with an
+   edge — a cut around each one would box the whole list. The existing
+   hover/active fills below do the work. */
 #atlas-rail button {
   display: block;
   width: 100%;
   text-align: left;
   font: inherit;
   color: var(--ink);
-  background: none;
-  border: 1px solid transparent;
   padding: var(--sp-1) var(--sp-2) var(--sp-2);
-  cursor: pointer;
 }
 
 .a-title {
@@ -182,7 +181,8 @@
   flex: none;
   overflow-y: auto;
   border-left: 1px solid var(--line);
-  background: var(--surface);
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
   padding: var(--sp-3);
   font-size: var(--fs-meta);
   line-height: 1.55;

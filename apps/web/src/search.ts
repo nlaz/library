@@ -1,17 +1,30 @@
 // ---------------------------------------------------------------------------
 // search core: query state + single-flight dispatch, result cards, the
-// render/append paths, infinite-scroll paging, and the type-ahead dropdown.
+// render/append paths, infinite-scroll paging, and the inline completion.
 // All query/paging state lives here — main.ts only calls initSearch() and
 // sendQuery().
 // ---------------------------------------------------------------------------
 
 import { pageUrl } from "./assets";
-import { $ac, $home, $main, $more, $q, $results, $search, $searchCount, $stats } from "./dom";
+import {
+  $home,
+  $main,
+  $more,
+  $q,
+  $qTail,
+  $qTyped,
+  $results,
+  $search,
+  $searchCount,
+  $stats,
+} from "./dom";
 import { docTitle, hitKey } from "./format";
 import { getCol, renderHome } from "./home";
 import { hlBoxes } from "./highlights";
 import { notesOpen } from "./notebox";
 import { clearReaderHits, readerDoc, readerOpen, setReaderHits } from "./reader";
+import { completionPrefix, ghostTail } from "./search-ghost";
+import { DEFAULT_KIND, type Kind, nextKind } from "./search-kinds";
 import { transport } from "./state";
 import type { WireHit, WireResponse } from "./types";
 import { openViewer } from "./viewer";
@@ -32,8 +45,8 @@ const sentAt = new Map<number, number>();
 // route() can drop the old scope's in-flight finds on navigation)
 export const sentDoc = new Map<number, string>();
 // infinite scroll: continuation seqs and what they were for, so a late
-// page-N can be dropped if the query/col/pagination state moved on
-const sentMore = new Map<number, { q: string; col: string; offset: number }>();
+// page-N can be dropped if the query/col/kind/pagination state moved on
+const sentMore = new Map<number, { q: string; col: string; kind: Kind; offset: number }>();
 let moreOffset = 0; // next offset to request = blended hits consumed so far
 let endReached = false;
 // cross-page dedup: each continuation is its own fjall snapshot, so a
@@ -41,6 +54,44 @@ let endReached = false;
 const seen = new Set<string>();
 // send() closes over initSearch()'s state; route() (in main.ts) needs it too
 export let sendQuery: () => void = () => {};
+/** Drop any painted completion — the popover opening or closing (viewer.ts).
+ * Escape cannot do this from a $q listener: the document-capture handler
+ * that ends the search calls stopImmediatePropagation() first. */
+export let resetGhost: () => void = () => {};
+
+/** Keys that take the suggestion. Tab is the affordance; → and End are free,
+ * because the ghost only paints with the caret already at the end, where
+ * both would otherwise do nothing. */
+const ACCEPT_KEYS = ["Tab", "ArrowRight", "End"];
+
+// ---------------------------------------------------------------------------
+// result kinds: which face of the library the query answers from. Cmd+F
+// steps the cycle and nothing labels it, so every session starts from the
+// same place — everything — and the filter is reached by pressing again,
+// not inherited from whatever the last session was left on. The stats line
+// ("N hits · phase · ms") is the only tell: "hybrid+img" for everything,
+// "hybrid" for text/notes, "img" for figures.
+// ---------------------------------------------------------------------------
+
+let kind: Kind = DEFAULT_KIND;
+
+/** Cmd+F on an already-open popover: step to the next kind. */
+export function cycleKind() {
+  setKind(nextKind(kind));
+}
+
+/** Opening the popover: back to everything, so the next press is figures. */
+export function resetKind() {
+  setKind(DEFAULT_KIND);
+}
+
+function setKind(next: Kind) {
+  if (next === kind) return;
+  kind = next;
+  // the grid is answering the old kind — re-ask (the empty-query and shelf
+  // paths need nothing: they show no hits to be wrong about)
+  if ($q.value.trim()) sendQuery();
+}
 
 // ---------------------------------------------------------------------------
 // search results (unchanged card/viewer logic, URLs via pageUrl)
@@ -283,7 +334,7 @@ export function showSearch(active: boolean) {
 }
 
 /** Wire query dispatch, the response handler, infinite scroll, and the
- * type-ahead dropdown. Call once at startup, after the transport is ready. */
+ * inline completion. Call once at startup, after the transport is ready. */
 export function initSearch() {
   const send = () => {
     const q = $q.value.trim();
@@ -335,8 +386,9 @@ export function initSearch() {
     if (!doc) $stats.textContent = "searching…";
     if (import.meta.env.DEV) sentAt.set(seq + 1, performance.now());
     if (doc) sentDoc.set(seq + 1, doc);
-    // "" = search all kinds — the UI has no text/images toggle
-    transport.send({ seq: ++seq, q, mode: "full", col: getCol(), kind: "", doc });
+    // doc-scoped find has exactly one kind of hit — lexical page text — so
+    // it ignores the cycle rather than answering nothing in "figures"
+    transport.send({ seq: ++seq, q, mode: "full", col: getCol(), kind: doc ? "" : kind, doc });
   };
   sendQuery = send;
 
@@ -350,9 +402,9 @@ export function initSearch() {
     if (seq !== rendered) return;
     if (sentMore.size) return; // one continuation at a time
     setMoreState("loading");
-    sentMore.set(seq + 1, { q, col: getCol(), offset: moreOffset });
+    sentMore.set(seq + 1, { q, col: getCol(), kind, offset: moreOffset });
     if (import.meta.env.DEV) sentAt.set(seq + 1, performance.now());
-    transport.send({ seq: ++seq, q, mode: "full", col: getCol(), kind: "", doc: "", offset: moreOffset });
+    transport.send({ seq: ++seq, q, mode: "full", col: getCol(), kind, doc: "", offset: moreOffset });
   };
   moreObserver = new IntersectionObserver(
     (es) => {
@@ -406,6 +458,7 @@ export function initSearch() {
       if (
         more.q !== $q.value.trim() ||
         more.col !== getCol() ||
+        more.kind !== kind ||
         more.offset !== moreOffset ||
         readerOpen()
       ) {
@@ -420,81 +473,93 @@ export function initSearch() {
 
   $q.addEventListener("input", () => send()); // hybrid, every keystroke
 
-  // --- type-ahead: frequency-ranked word completions in a dropdown ---------
+  // --- ghost text: the likeliest continuation of the word being typed ------
   // Additive and independent of the search grid + seq machinery. Stale
-  // responses are dropped by a monotonic token (there is no request to abort).
-  let acToken = 0;
-  let acItems: string[] = [];
-  let acActive = -1;
-  let acTimer: ReturnType<typeof setTimeout>;
+  // responses are dropped by a monotonic token (there is no request to
+  // abort), and the candidate list is *kept* between keystrokes so typing on
+  // inside one word repaints from cache instead of round-tripping.
+  let ghostToken = 0;
+  let ghostCands: string[] = [];
+  let ghostTimer: ReturnType<typeof setTimeout>;
+  let composing = false;
 
-  const hideAc = () => {
-    acItems = [];
-    acActive = -1;
-    $ac.hidden = true;
-    $ac.replaceChildren();
+  const paintGhost = () => {
+    const end = $q.selectionEnd;
+    const tail = ghostTail({
+      value: $q.value,
+      candidates: ghostCands,
+      // a null selection means the engine does not track one, in which case
+      // it cannot observe mid-string editing either — treat it as at-end and
+      // degrade to "always on" rather than silently never showing
+      caretAtEnd: end === null || (end === $q.value.length && $q.selectionStart === end),
+      composing,
+      readerFind: !!readerDoc(),
+      // the input scrolls its own text; the overlay does not, so a value
+      // wider than the field would draw the tail in the wrong place.
+      // scrollWidth can equal clientWidth in WebKit regardless of overflow —
+      // with the caret pinned at the end, scrollLeft catches what it misses
+      overflowing: $q.scrollWidth > $q.clientWidth || $q.scrollLeft > 0,
+    });
+    // both spans, unconditionally: a "did the tail change" guard would be
+    // wrong, since candidates ["abzz", "abczz"] give tail "zz" for both "ab"
+    // and "abc" — the transparent head would go stale under an equal tail
+    $qTyped.textContent = tail ? $q.value : "";
+    $qTail.textContent = tail;
   };
-  const applyAc = (term: string) => {
-    $q.value = term;
-    hideAc();
-    send();
-    $q.focus();
+
+  const clearGhost = () => {
+    clearTimeout(ghostTimer);
+    ghostCands = [];
+    $qTyped.textContent = "";
+    $qTail.textContent = "";
   };
-  const renderAc = () => {
-    if (!acItems.length) return hideAc();
-    $ac.replaceChildren(
-      ...acItems.map((t, i) => {
-        const li = document.createElement("li");
-        li.textContent = t;
-        if (i === acActive) li.className = "on";
-        // mousedown (not click) so it fires before the input's blur hides us
-        li.addEventListener("mousedown", (e) => {
-          e.preventDefault();
-          applyAc(t);
-        });
-        return li;
-      }),
-    );
-    $ac.hidden = false;
-  };
-  const fetchAc = (q: string) => {
-    const tok = ++acToken;
+  resetGhost = clearGhost;
+
+  const fetchGhost = (prefix: string) => {
+    const tok = ++ghostToken;
     transport
-      .complete(q)
+      .complete(prefix)
       .then((items) => {
-        if (tok !== acToken) return; // a newer keystroke superseded this
-        acItems = items.filter((t) => t !== q); // exact echo has nothing to add
-        acActive = -1;
-        renderAc();
+        if (tok !== ghostToken) return; // a newer keystroke superseded this
+        ghostCands = items; // kept verbatim; ghostTail does the filtering
+        paintGhost();
       })
       .catch(() => {});
   };
 
-  $q.addEventListener("input", () => {
-    const q = $q.value.trim();
-    clearTimeout(acTimer);
-    // no completions for reader-find or sub-2-char queries
-    if (q.length < 2 || readerDoc()) return hideAc();
-    acTimer = setTimeout(() => fetchAc(q), 80);
+  const armGhost = () => {
+    clearTimeout(ghostTimer);
+    const prefix = completionPrefix($q.value);
+    // no completions for reader-find (the dictionary is library-wide), for a
+    // word too short to complete, or mid-composition
+    if (!prefix || composing || readerDoc()) return clearGhost();
+    paintGhost(); // synchronous, from cache — the ghost never blinks
+    ghostTimer = setTimeout(() => fetchGhost(prefix), 80);
+  };
+
+  $q.addEventListener("input", armGhost);
+  // a caret move fires no input event, and element-level "selectionchange" is
+  // too new for the WKWebView floor — repaint on what every engine does fire
+  for (const ev of ["keyup", "mouseup", "select"] as const) {
+    $q.addEventListener(ev, paintGhost);
+  }
+  $q.addEventListener("compositionstart", () => {
+    composing = true;
+    clearGhost();
   });
+  $q.addEventListener("compositionend", () => {
+    composing = false;
+    armGhost();
+  });
+  $q.addEventListener("blur", clearGhost);
   $q.addEventListener("keydown", (e) => {
-    if ($ac.hidden || !acItems.length) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      acActive = (acActive + 1) % acItems.length;
-      renderAc();
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      acActive = (acActive - 1 + acItems.length) % acItems.length;
-      renderAc();
-    } else if (e.key === "Enter") {
-      if (acActive >= 0) {
-        e.preventDefault();
-        applyAc(acItems[acActive]);
-      }
-    } else if (e.key === "Escape") {
-      hideAc();
-    }
+    if (!ACCEPT_KEYS.includes(e.key) || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+    // what is on screen is what Tab takes
+    const tail = $qTail.textContent ?? "";
+    if (!tail) return; // nothing to accept: the key keeps its normal job
+    e.preventDefault();
+    $q.value += tail;
+    clearGhost(); // accepting finishes the word; the next keystroke re-arms
+    send(); // ...and the finished word is a new query
   });
-  $q.addEventListener("blur", () => hideAc());
 }

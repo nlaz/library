@@ -43,48 +43,65 @@
   height: 4px;
 }
 
-#q {
+/* the field and its ghost share one geometry: #q-wrap IS the input's box, so
+   the overlay is inset:0 and needs no numbers of its own. No overflow:hidden
+   here — it would clip #q:focus's outline, which sits outside the border. */
+#q-wrap {
+  position: relative;
   width: 300px;
+}
+
+#q {
+  width: 100%;
   font: inherit;
   padding: 7px 14px;
   outline: none;
+  /* the ghost paints over the field, so the native search chrome has to go:
+     the platform ✕ would sit under the suggestion, and the search field's
+     inner metrics differ from a plain div's */
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Escape already clears the query and closes the popover — the clear button
+   is a duplicate affordance, and it owns pixels the suggestion needs */
+#q::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  display: none;
 }
 
 #q::placeholder {
   color: var(--ink-faint);
 }
 
-#ac {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 260px;
-  overflow-y: auto;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-}
-
-#ac[hidden] {
-  display: none;
-}
-
-#ac li {
-  padding: 5px 14px;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#ac li:hover,
-#ac li.on {
-  background: var(--ink);
-  color: var(--surface);
-}
-
 #q:focus {
   outline: 1px solid var(--ink);
   outline-offset: 1px;
+}
+
+/* inline completion: the typed prefix redrawn transparent so the browser
+   places the faint tail for us. The UI font is proportional, so nothing here
+   may measure text — which means every box property must match #q exactly
+   (border width, padding, font) or the tail drifts. */
+#q-ghost {
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
+  padding: 7px 14px;
+  font: inherit;
+  white-space: pre;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#q-typed {
+  color: transparent;
+}
+
+#q-tail {
+  color: var(--ink-faint);
 }
 
 #search-nav {

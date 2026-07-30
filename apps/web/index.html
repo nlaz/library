@@ -119,8 +119,13 @@
       <div class="dz-inner">Drop PDFs to add them to the library</div>
     </div>
     <div id="search-pop" hidden>
-      <input id="q" type="search" placeholder="Search the library…" autocomplete="off" />
-      <ul id="ac" hidden></ul>
+      <div id="q-wrap">
+        <input id="q" type="search" placeholder="Search the library…" autocomplete="off" />
+        <!-- inline completion. The two spans MUST stay on one line: #q-ghost
+             is white-space: pre, so a newline between them renders as a space
+             and shifts every suggestion to the right. -->
+        <div id="q-ghost" aria-hidden="true"><span id="q-typed"></span><span id="q-tail"></span></div>
+      </div>
       <div id="search-nav" hidden>
         <span id="search-count"></span>
         <button id="search-prev" title="Previous match (Shift+Enter)">↑</button>

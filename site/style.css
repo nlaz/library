@@ -27,7 +27,8 @@
 :root {
   color-scheme: dark;
   /* kept in step with apps/web/src/styles/tokens.css §2 by hand — this page
-     duplicates the tokens rather than importing them */
+     duplicates the tokens rather than importing them. hero.js carries the
+     same values again, as GLSL constants for the brass ramp. */
   --bg: #110e0a;
   --surface: #191613;
   --line: #2a2521;
@@ -36,6 +37,11 @@
   --hl: #daaf6b;
   --font-ui: "Instrument Sans", system-ui, -apple-system, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Bayer 50% threshold, black on transparent — the app's one texture
+     primitive, used here to hold the hero back behind the masthead. No blur
+     anywhere in the stacks. */
+  --dither-50: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='2' height='2'%3E%3Crect width='1' height='1'/%3E%3Crect x='1' y='1' width='1' height='1'/%3E%3C/svg%3E");
 }
 
 * {
@@ -50,49 +56,75 @@ body {
   font-family: var(--font-ui);
   font-size: 15px;
   line-height: 1.6;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
   min-height: 100vh;
-  padding: 96px 24px 48px;
+  overflow-x: hidden;
 }
 
-main {
-  width: 100%;
-  max-width: 640px;
+/* --- the hero -------------------------------------------------------------
+   The canvas is sized from the character grid by hero.js, so it can fall a
+   few pixels short of the viewport. It is centred and the shortfall shows
+   --bg, which is the colour the scene fades to anyway. */
+
+.hero {
+  position: relative;
+  min-height: 100svh;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   text-align: center;
+  padding: 96px 24px;
+  overflow: hidden;
 }
 
-.mark {
-  image-rendering: auto;
+#hero {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  display: block;
+  opacity: 0;
+  transition: opacity 0.6s linear;
 }
+
+#hero.ready { opacity: 1; }
+
+/* the scrim: dither, not a gradient. Sits over the scene and under the type */
+.hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--dither-50);
+  background-size: 2px 2px;
+  image-rendering: pixelated;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.stage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.stage > * { flex: 0 0 auto; }
 
 h1 {
-  margin-top: 24px;
-  font-size: 28px;
+  font-size: 34px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .tagline {
   margin-top: 16px;
-  max-width: 52ch;
-  color: var(--ink-dim);
-}
-
-.shot {
-  margin-top: 48px;
-  width: 100%;
-  height: auto;
-  border: 1px solid var(--line);
-  background: var(--surface);
+  max-width: 46ch;
+  color: var(--ink);
 }
 
 .download {
-  margin-top: 48px;
+  margin-top: 40px;
   display: inline-block;
   background: var(--hl);
   color: var(--bg);
@@ -102,9 +134,7 @@ h1 {
   border-radius: 0;
 }
 
-.download:hover {
-  filter: brightness(1.08);
-}
+.download:hover { filter: brightness(1.08); }
 
 .meta {
   margin-top: 16px;
@@ -113,8 +143,20 @@ h1 {
   color: var(--ink-dim);
 }
 
+/* --- below the fold ------------------------------------------------------- */
+
+main {
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 0 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
 .firstrun {
-  margin-top: 64px;
+  margin-top: 72px;
   width: 100%;
   max-width: 52ch;
   text-align: left;
@@ -157,18 +199,19 @@ h1 {
 }
 
 footer {
-  margin-top: 96px;
+  margin: 96px auto 48px;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--ink-dim);
   display: flex;
+  justify-content: center;
   gap: 8px;
 }
 
-footer a {
-  color: var(--ink-dim);
-}
+footer a { color: var(--ink-dim); }
+footer a:hover { color: var(--ink); }
 
-footer a:hover {
-  color: var(--ink);
+@media (max-width: 600px) {
+  h1 { font-size: 27px; }
+  .hero { padding: 72px 20px; }
 }

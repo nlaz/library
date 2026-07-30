@@ -6,25 +6,30 @@
   <title>The Library</title>
   <meta name="description" content="An on-device search engine and chat agent for a personal collection of scanned PDFs. Nothing leaves the machine." />
   <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="preload" href="fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="fonts/instrument-sans-vf.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <!-- The hero is decoration: if the shader never starts, the ground colour
+       stays and the masthead reads exactly the same. -->
+  <section class="hero">
+    <canvas id="hero" role="img"
+            aria-label="An endless walk down a vaulted library nave, three storeys of shelving lit by tall windows, drawn in ASCII characters"></canvas>
+    <div class="stage">
+      <h1>The Library</h1>
+      <p class="tagline">
+        An on-device search engine for a personal collection of scanned PDFs.
+        Nothing leaves the machine.
+      </p>
+      <a class="download" href="https://github.com/nlaz/library/releases/latest/download/TheLibrary-macos-arm64.dmg">
+        Download for macOS
+      </a>
+      <p class="meta">v0.0.1 &middot; macOS 26+ &middot; Apple silicon &middot; unsigned</p>
+    </div>
+  </section>
+
   <main>
-    <img class="mark" src="icon.png" alt="" width="96" height="96" />
-    <h1>The Library</h1>
-    <p class="tagline">
-      An on-device search engine and chat agent for a personal collection of
-      scanned PDFs &mdash; books, catalogs, papers. Nothing leaves the machine:
-      no cloud, no accounts, no API keys.
-    </p>
-
-    <img class="shot" src="screenshot.png" alt="The Library app window" width="1280" height="860" />
-
-    <a class="download" href="https://github.com/nlaz/library/releases/latest/download/TheLibrary-macos-arm64.dmg">
-      Download for macOS
-    </a>
-    <p class="meta">v0.0.1 &middot; macOS 26+ &middot; Apple silicon &middot; unsigned</p>
-
     <section class="firstrun">
       <h2>First launch</h2>
       <p>
@@ -41,5 +46,7 @@
     <span>&middot;</span>
     <span>Apache-2.0</span>
   </footer>
+
+  <script src="hero.js" defer></script>
 </body>
 </html>

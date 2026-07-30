@@ -26,12 +26,14 @@
 
 :root {
   color-scheme: dark;
-  --bg: #0d0d0d;
-  --surface: #151515;
-  --line: #262626;
-  --ink: #e5e5e5;
-  --ink-dim: #8c8c8c;
-  --hl: #facc15;
+  /* kept in step with apps/web/src/styles/tokens.css §2 by hand — this page
+     duplicates the tokens rather than importing them */
+  --bg: #110e0a;
+  --surface: #191613;
+  --line: #2a2521;
+  --ink: #e7e2de;
+  --ink-dim: #8d8a87;
+  --hl: #daaf6b;
   --font-ui: "Instrument Sans", system-ui, -apple-system, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
@@ -93,7 +95,7 @@ h1 {
   margin-top: 48px;
   display: inline-block;
   background: var(--hl);
-  color: #0d0d0d;
+  color: var(--bg);
   font-weight: 600;
   text-decoration: none;
   padding: 14px 28px;

@@ -3,20 +3,24 @@
 //
 // A signed-distance model of a vaulted library nave, raymarched in WebGL2 at
 // character resolution and resolved through a glyph atlas measured at runtime
-// from IBM Plex Mono. The camera dollies down the nave and wraps on one bay;
-// because the room is periodic in depth, that wrap lands on an identical frame
-// and the walk is seamless. No dissolve, no seam, no video file.
+// from IBM Plex Mono. The camera dollies down the nave at fifty seconds a bay
+// and wraps on that bay; because the room is periodic in depth, the wrap lands
+// on an identical frame and the walk is seamless. No dissolve, no seam, no
+// video file.
 //
 // Two passes: the scene renders into a small framebuffer sized to the
 // character grid (a 1440x900 viewport is only ~360x128 cells, so the marching
 // is nearly free), then a fullscreen pass turns each cell into a glyph and
 // tints it. Glyph choice comes from luminance; tint comes from luminance at
-// gamma, so only genuine highlights reach brass and the accent stays a
-// highlighter — the same rule tokens.css states for the app.
+// gamma, so the accent tracks how lit a surface is rather than smearing over
+// the whole frame.
 //
-// The brass ramp constants below are the dark-theme values from
-// apps/web/src/styles/tokens.css §2, kept in step by hand exactly as the rest
-// of this stylesheet is.
+// The tint is the "lamplight" reading of the palette: --hl and --hl-line are
+// the dark-theme values from apps/web/src/styles/tokens.css §2 exactly, and
+// the two stops below them are the neutral tokens warmed toward that same
+// accent, so the room is lit by one colour instead of being a grey room with
+// gold on it. Still one accent — it just arrives a third of the way up the
+// range instead of only at the top.
 //
 // If anything is missing — no WebGL2, no webfont — the page keeps its ground
 // colour and the masthead reads normally. The hero is decoration.
@@ -41,10 +45,11 @@ const POOL = " .'`,:;-~_=+ilrtcvxznuoseCLEZS0OQGD#%8B&@$";
 // stays quiet behind the type.
 const SCENE = {
   tan: Math.tan((50 * 0.5 * Math.PI) / 180),
-  far: 46, fog: 0.016, black: 0.235, white: 0.800,
+  far: 46, fog: 0.016, black: 0.240, white: 0.800,
   key: [0.38, 0.72, -0.30], head: 0.44,
   steps: 180, scale: 0.88, shadow: 0,
-  pose: 4.1,                          // the frame reduced-motion rests on
+  pose: 6.42,                         // the frame reduced-motion rests on —
+                                      //   in seconds, so it tracks dolly speed
 };
 
 const FONT = '"IBM Plex Mono", ui-monospace, monospace';
@@ -73,19 +78,29 @@ uniform int   uGlyphs;
 in  vec2 v_uv;
 out vec4 fragColor;
 
-const vec3 BG = vec3(0.06667, 0.05490, 0.03922); // #110e0a  --bg
-const vec3 C0 = vec3(0.16471, 0.14510, 0.12941); // #2a2521  --line
-const vec3 C1 = vec3(0.55294, 0.54118, 0.52941); // #8d8a87  --ink-dim
+// The ground is --bg taken down and warmed; site/style.css carries the same
+// value as --ground and the two MUST agree, or the sliver of page under the
+// canvas bands against the scene.
+//
+// The two lower stops are NOT the neutral tokens: they are --line and
+// --ink-dim rotated toward the accent's hue and taken down a little, so the
+// stone reads as lit by the same brass the highlights are rather than sitting
+// neutral underneath it. The top two stops are the tokens exactly.
+const vec3 BG = vec3(0.05882, 0.04314, 0.02745); // #0f0b07  ground
+const vec3 C0 = vec3(0.16471, 0.12549, 0.08627); // #2a2016  --line, warmed
+const vec3 C1 = vec3(0.54118, 0.45098, 0.34510); // #8a7358  --ink-dim, warmed
 const vec3 C2 = vec3(0.85490, 0.68627, 0.41961); // #daaf6b  --hl
 const vec3 C3 = vec3(0.92157, 0.76471, 0.52157); // #ebc385  --hl-line
 
-// One accent, and it is a highlighter: the bottom 55% is stone, the turn into
-// brass happens over 55-86%, and --hl-line only shows in the top 14%.
+// Still one accent, but it arrives a third of the way up rather than at the
+// top: the bottom 42% is stone, the turn into brass runs 42-80%, and --hl-line
+// shows over the top 20%. Lamplight rather than a highlighter — the room is
+// lit, not merely visible.
 vec3 brass(float t){
   t = clamp(t, 0.0, 1.0);
-  vec3 c = mix(C0, C1, smoothstep(0.00, 0.55, t));
-  c = mix(c, C2, smoothstep(0.55, 0.86, t));
-  c = mix(c, C3, smoothstep(0.86, 1.00, t));
+  vec3 c = mix(C0, C1, smoothstep(0.00, 0.42, t));
+  c = mix(c, C2, smoothstep(0.42, 0.80, t));
+  c = mix(c, C3, smoothstep(0.80, 1.00, t));
   return c;
 }
 
@@ -126,16 +141,19 @@ void main(){
   // Colour from luminance modulated by depth — quantizing both on the same
   // signal makes the image read as flat plateaus, like a chart.
   //
-  // The gamma is what keeps the accent honest. Glyph selection wants the full
-  // range so structure reads, but tint must not: at gamma 2.9 a mid-tone of
-  // 0.6 lands at 0.23 (stone) while 0.94 lands at 0.83 (the turn into brass),
-  // so only genuine highlights ever reach the accent.
-  float hueT = pow(lum, 2.9) * (1.0 - 0.40 * depth);
+  // The gamma sets how late the accent arrives. Glyph selection wants the full
+  // range so structure reads, but tint must not: at gamma 2.2 a mid-tone of
+  // 0.6 lands at 0.33 (warm stone) while 0.85 lands at 0.69 (well into brass),
+  // so the lit half of the room takes the accent and the shadowed half does
+  // not. The depth term then pulls colour back out with distance, so the far
+  // end of the nave stays stone however bright it gets.
+  float hueT = pow(lum, 2.2) * (1.0 - 0.36 * depth);
 
-  // DIM pulls the whole field back toward the page ground. The hero sits
-  // behind type, so it wants to read as texture at the edge of vision rather
-  // than as an image competing with the masthead.
-  const float DIM = 0.72;
+  // DIM pulls the whole field back toward the ground. The hero sits behind
+  // type, so it wants to read as texture at the edge of vision rather than as
+  // an image competing with the masthead — and a warm palette needs more of
+  // that restraint than a neutral one did.
+  const float DIM = 0.64;
   fragColor = vec4(mix(BG, brass(hueT), ink * DIM), 1.0);
 }`;
 
@@ -307,7 +325,7 @@ float naveShade(int id, vec3 p, vec3 n, float lum){
 // the axial dolly. Speed only sets how long a cycle takes — the wrap is on
 // BAY, so any speed loops exactly and this can be tuned purely by feel.
 void camera(vec2 uv, out vec3 ro, out vec3 rd){
-  float z = mod(uTime * 0.072, BAY);        // ~32s a bay
+  float z = mod(uTime * 0.046, BAY);        // 50s a bay
   vec3 o = vec3(0.0, 1.72, -8.0 + z);
   lookAt(uv, o, o + vec3(0.0, 0.30, 6.0), ro, rd);
 }

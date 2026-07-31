@@ -14,41 +14,53 @@
     <header>
       <nav id="cols" role="group" title="Collections"></nav>
       <button id="notes-toggle" class="divot" title="Notes" aria-label="Notes" aria-pressed="false">
-        <!-- typewriter in the same 2×2 Bayer 50% tile as the chat burst:
-             paper, carriage, body, feet — all currentColor -->
+        <!-- tabbed index card in the same 2×2 Bayer 50% tile as its
+             neighbours: tab, frame, one rule — all currentColor. The tab is
+             what keeps it from reading as a generic document; it says
+             catalogue, which is the register this whole app is in. Every
+             limb is 2px on the integer grid so the tile never breaks. -->
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
           <defs>
-            <pattern id="notes-type-dither" width="2" height="2" patternUnits="userSpaceOnUse">
+            <pattern id="notes-card-dither" width="2" height="2" patternUnits="userSpaceOnUse">
               <rect width="1" height="1" fill="currentColor" />
               <rect x="1" y="1" width="1" height="1" fill="currentColor" />
             </pattern>
           </defs>
-          <g shape-rendering="crispEdges" fill="url(#notes-type-dither)">
-            <rect x="5" y="0" width="6" height="4" />
-            <rect x="2" y="4" width="12" height="3" />
-            <rect x="0" y="4" width="2" height="2" />
-            <rect x="14" y="4" width="2" height="2" />
-            <rect x="1" y="8" width="14" height="6" />
-            <rect x="2" y="14" width="3" height="2" />
-            <rect x="11" y="14" width="3" height="2" />
+          <g shape-rendering="crispEdges" fill="url(#notes-card-dither)">
+            <rect x="1" y="0" width="6" height="2" />
+            <rect x="1" y="2" width="14" height="2" />
+            <rect x="1" y="2" width="2" height="12" />
+            <rect x="13" y="2" width="2" height="12" />
+            <rect x="1" y="12" width="14" height="2" />
+            <rect x="4" y="7" width="8" height="2" />
           </g>
         </svg>
       </button>
-      <button id="chat-toggle" class="divot" title="Ask the librarian" aria-label="Ask the librarian">
-        <!-- star burst filled with the 2×2 Bayer 50% tile from tokens.css §2,
-             in currentColor so it follows --ink across themes -->
+      <!-- hidden for now: the glyph and the panel behind it are both live,
+           this is only the way in. chat.ts still binds to the button, so
+           dropping the attribute is the whole of turning it back on. -->
+      <button id="chat-toggle" class="divot" title="Ask the librarian" aria-label="Ask the librarian" hidden>
+        <!-- chamfered speech bubble with a tail, filled with the 2×2 Bayer
+             50% tile from tokens.css §2, in currentColor so it follows --ink
+             across themes. The corners are dropped rather than curved — a
+             radius here would land off the grid and fray the tile, exactly
+             what the old diagonal star burst did. The tail is the only
+             asymmetry in the header trio, which is what makes it findable. -->
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
           <defs>
-            <pattern id="chat-burst-dither" width="2" height="2" patternUnits="userSpaceOnUse">
+            <pattern id="chat-bubble-dither" width="2" height="2" patternUnits="userSpaceOnUse">
               <rect width="1" height="1" fill="currentColor" />
               <rect x="1" y="1" width="1" height="1" fill="currentColor" />
             </pattern>
           </defs>
-          <path
-            shape-rendering="crispEdges"
-            fill="url(#chat-burst-dither)"
-            d="M8 0 L9.5 5.4 L13.7 2.3 L10.6 6.5 L16 8 L10.6 9.5 L13.7 13.7 L9.5 10.6 L8 16 L6.5 10.6 L2.3 13.7 L5.4 9.5 L0 8 L5.4 6.5 L2.3 2.3 L6.5 5.4 Z"
-          />
+          <g shape-rendering="crispEdges" fill="url(#chat-bubble-dither)">
+            <rect x="2" y="0" width="12" height="2" />
+            <rect x="0" y="2" width="2" height="8" />
+            <rect x="14" y="2" width="2" height="8" />
+            <rect x="2" y="10" width="12" height="2" />
+            <rect x="4" y="12" width="4" height="2" />
+            <rect x="4" y="14" width="2" height="2" />
+          </g>
         </svg>
       </button>
     </header>

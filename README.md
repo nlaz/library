@@ -467,19 +467,16 @@ Download [`TheLibrary-macos-arm64.dmg`][dmg] from the latest release and
 drag the app to `/Applications`. It needs macOS 26 or newer on Apple
 silicon.
 
-The build is signed ad-hoc rather than notarized, so the first launch is
-blocked: macOS reports that it cannot verify the app is free of malware.
-That check keys off the quarantine attribute the browser attached to the
-download, so removing it is enough:
+The build is signed with a Developer ID certificate and notarized by
+Apple, with the ticket stapled to both the app and the disk image, so it
+opens like anything else you install — no quarantine step, and no first
+launch that has to be argued with. Releases before 0.1.0 were ad-hoc
+signed and do need that argument; the fix for one already downloaded is
+`xattr -dr com.apple.quarantine '/Applications/The Library.app'`.
 
-```sh
-xattr -dr com.apple.quarantine '/Applications/The Library.app'
-```
-
-The GUI equivalent is to launch the app once, let it be refused, then open
-**System Settings → Privacy & Security**, where an *Open Anyway* button
-appears for it. Control-clicking the app and choosing *Open* no longer
-works — macOS 15 removed that bypass.
+The first launch does take a while on a machine that has never run it:
+the layout and image models come down from HuggingFace before the first
+book can be read. The launch screen says how far along that is.
 
 [dmg]: https://github.com/nlaz/library/releases/latest/download/TheLibrary-macos-arm64.dmg
 

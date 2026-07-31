@@ -76,8 +76,14 @@ fn memory_breakdown_covers_indexes_caches_and_stores() {
     let m = memory(&lib, &images, &dir, Some(rss));
 
     // the corpus section: counts, exact embedding payload, per-source disk
-    assert_eq!((m.corpus.docs, m.corpus.chunks, m.corpus.figures), (1, 5, 3));
-    assert_eq!(m.corpus.emb_bytes, ((5 * EMB_DIM + 3 * CLIP_DIM) * 4) as u64);
+    assert_eq!(
+        (m.corpus.docs, m.corpus.chunks, m.corpus.figures),
+        (1, 5, 3)
+    );
+    assert_eq!(
+        m.corpus.emb_bytes,
+        ((5 * EMB_DIM + 3 * CLIP_DIM) * 4) as u64
+    );
     assert_eq!(m.corpus.pdf_bytes, 1000);
     assert_eq!(m.corpus.page_bytes, 600);
     assert_eq!(m.corpus.ocr_bytes, 50);
@@ -100,8 +106,17 @@ fn memory_breakdown_covers_indexes_caches_and_stores() {
         .iter()
         .map(|k| k.name.as_str())
         .collect();
-    for want in ["sink_lex", "sink_vec", "sink_manifest", "sink_terms", "keyed_root"] {
-        assert!(lib_names.contains(&want), "library.db missing {want}: {lib_names:?}");
+    for want in [
+        "sink_lex",
+        "sink_vec",
+        "sink_manifest",
+        "sink_terms",
+        "keyed_root",
+    ] {
+        assert!(
+            lib_names.contains(&want),
+            "library.db missing {want}: {lib_names:?}"
+        );
     }
     let img_names: Vec<&str> = m.stores[1]
         .db
@@ -109,7 +124,10 @@ fn memory_breakdown_covers_indexes_caches_and_stores() {
         .iter()
         .map(|k| k.name.as_str())
         .collect();
-    assert!(img_names.contains(&"sink_imgvec"), "images.db: {img_names:?}");
+    assert!(
+        img_names.contains(&"sink_imgvec"),
+        "images.db: {img_names:?}"
+    );
 
     // arithmetic: accounted sums the RAM line items; unaccounted is signed
     let expected: u64 = m.indexes.iter().map(|i| i.bytes).sum::<u64>()
@@ -124,23 +142,49 @@ fn memory_breakdown_covers_indexes_caches_and_stores() {
     assert_eq!(memory(&lib, &images, &dir, None).unaccounted_bytes, None);
 
     // ese is priced, clip is opaque
-    assert!(m.models.iter().any(|x| x.bytes == Some(ese::MODEL_BYTES as u64)));
+    assert!(
+        m.models
+            .iter()
+            .any(|x| x.bytes == Some(ese::MODEL_BYTES as u64))
+    );
     assert!(m.models.iter().any(|x| x.bytes.is_none()));
 
     // serialized field names are the contract with the web mirror
     let v = serde_json::to_value(&m).expect("breakdown serializes");
     assert!(v["rss_bytes"].is_u64());
     let idx = &v["indexes"][0];
-    for field in ["live", "slots", "free_slots", "stale", "map_bytes", "graph_bytes"] {
+    for field in [
+        "live",
+        "slots",
+        "free_slots",
+        "stale",
+        "map_bytes",
+        "graph_bytes",
+    ] {
         assert!(!idx[field].is_null(), "flattened index field {field}");
     }
     let store = &v["stores"][0];
-    for field in ["ram_bytes", "disk_bytes", "write_buffer_bytes", "block_cache_capacity", "block_cache_bytes", "keyspaces"] {
+    for field in [
+        "ram_bytes",
+        "disk_bytes",
+        "write_buffer_bytes",
+        "block_cache_capacity",
+        "block_cache_bytes",
+        "keyspaces",
+    ] {
         assert!(!store[field].is_null(), "flattened store field {field}");
     }
     assert!(!v["caches"][0]["warmed"].is_null());
     assert!(v["atlas_building"].is_boolean());
-    for field in ["docs", "emb_bytes", "pdf_bytes", "page_bytes", "ocr_bytes", "chunk_table_bytes", "model_dir_bytes"] {
+    for field in [
+        "docs",
+        "emb_bytes",
+        "pdf_bytes",
+        "page_bytes",
+        "ocr_bytes",
+        "chunk_table_bytes",
+        "model_dir_bytes",
+    ] {
         assert!(!v["corpus"][field].is_null(), "corpus field {field}");
     }
 }

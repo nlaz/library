@@ -24,6 +24,16 @@ APP="$ROOT/target/release/bundle/macos/The Library.app"
 DMG_NAME="TheLibrary-macos-arm64.dmg"
 REPO="nlaz/library"
 
+# Set SIGN_IDENTITY to a Developer ID Application identity to produce a
+# signed, notarized, stapled build; leave it unset for the ad-hoc bundle
+# (which Gatekeeper blocks on other machines — see the README).
+#
+#   security find-identity -v -p codesigning        # the identity string
+#   xcrun notarytool store-credentials library-notary \
+#     --apple-id you@example.com --team-id TEAMID --password <app-specific>
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-library-notary}"
+
 DRY_RUN=0
 VERSION_ARG=""
 for arg in "$@"; do
@@ -43,6 +53,15 @@ if [[ $DRY_RUN -eq 0 ]]; then
   command -v gh >/dev/null || { echo "missing: gh" >&2; exit 1; }
   gh auth status >/dev/null
   [[ -z "$(git -C "$ROOT" status --porcelain)" ]] || { echo "working tree not clean" >&2; exit 1; }
+fi
+# Fail on bad credentials now rather than after a multi-minute LTO build.
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  security find-identity -v -p codesigning | grep -qF "$SIGN_IDENTITY" \
+    || { echo "no codesigning identity matching: $SIGN_IDENTITY" >&2; exit 1; }
+  xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null \
+    || { echo "notarytool profile '$NOTARY_PROFILE' unusable (see store-credentials)" >&2; exit 1; }
+else
+  echo "warning: SIGN_IDENTITY unset — building ad-hoc signed, unnotarized" >&2
 fi
 
 # --- version ---
@@ -74,11 +93,34 @@ cargo build --release -p library-ingest
 # --- stitch sidecars where chat.rs / ingest.rs already look ---
 cp "$ROOT/apps/librarian/.build/release/librarian" "$APP/Contents/Resources/librarian"
 cp "$ROOT/target/release/library-ingest" "$APP/Contents/MacOS/library-ingest"
-# re-seal ad-hoc after modifying the bundle; sidecars first so the outer
-# signature covers valid nested code
-codesign --force --sign - "$APP/Contents/Resources/librarian" "$APP/Contents/MacOS/library-ingest"
-codesign --force --sign - "$APP"
+# Re-seal after modifying the bundle; sidecars first so the outer signature
+# covers valid nested code. Hardened runtime (--options runtime) and a
+# secure timestamp are both hard notarization requirements, and an
+# unsigned nested binary fails the whole submission. No entitlements: the
+# app isn't sandboxed, WKWebView's JIT lives in Apple-signed helper
+# processes, and the sidecars are separate processes, not in-process
+# dylibs — add an --entitlements plist only if a notarized build crashes.
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  SIGN=(--force --options runtime --timestamp --sign "$SIGN_IDENTITY")
+else
+  SIGN=(--force --sign -)
+fi
+codesign "${SIGN[@]}" "$APP/Contents/Resources/librarian" "$APP/Contents/MacOS/library-ingest"
+codesign "${SIGN[@]}" "$APP"
 codesign --verify --deep --strict "$APP"
+
+# --- notarize the app (minutes; Apple's service, needs network) ---
+# The .app is stapled before the DMG is built so a copy dragged out of the
+# DMG carries its own ticket and launches offline.
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  ZIP="$ROOT/dist/notarize.zip"
+  mkdir -p "$ROOT/dist"
+  ditto -c -k --keepParent "$APP" "$ZIP"   # zip only to upload; ticket is for the app
+  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+  rm -f "$ZIP"
+  xcrun stapler staple "$APP"
+  spctl -a -vv "$APP"                      # expect: source=Notarized Developer ID
+fi
 
 # --- DMG (hdiutil; tauri's dmg step can't run after stitching) ---
 STAGE="$(mktemp -d)"
@@ -88,6 +130,15 @@ ln -s /Applications "$STAGE/Applications"
 mkdir -p "$ROOT/dist"
 hdiutil create -volname "The Library" -srcfolder "$STAGE" -ov -format UDZO "$ROOT/dist/$DMG_NAME"
 
+# The DMG is quarantined on download and checked in its own right, so it
+# gets the same treatment as the app it carries.
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$ROOT/dist/$DMG_NAME"
+  xcrun notarytool submit "$ROOT/dist/$DMG_NAME" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$ROOT/dist/$DMG_NAME"
+  spctl -a -t open --context context:primary-signature -vv "$ROOT/dist/$DMG_NAME"
+fi
+
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "dry run: built $ROOT/dist/$DMG_NAME (v$VERSION); skipping tag + release"
   exit 0
@@ -96,7 +147,8 @@ fi
 # --- tag + release ---
 git -C "$ROOT" tag "v$VERSION"
 git -C "$ROOT" push origin main "v$VERSION"
+NOTES="macOS 26+, Apple silicon."
+[[ -n "$SIGN_IDENTITY" ]] || NOTES="$NOTES Unsigned — see the README for the first-launch step."
 gh release create "v$VERSION" "$ROOT/dist/$DMG_NAME" \
-  --repo "$REPO" --title "The Library $VERSION" \
-  --notes "macOS 26+, Apple silicon. Unsigned — right-click the app and choose Open on first launch."
+  --repo "$REPO" --title "The Library $VERSION" --notes "$NOTES"
 echo "https://github.com/$REPO/releases/latest/download/$DMG_NAME"

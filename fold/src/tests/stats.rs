@@ -20,11 +20,7 @@ fn db_stats_covers_keyspaces() {
     assert!(names.contains(&"sink_vecs_graph"), "keyspaces: {names:?}");
     assert_eq!(db.block_cache_capacity, 32 * 1024 * 1024);
     assert!(db.disk_bytes > 0);
-    let vecs = db
-        .keyspaces
-        .iter()
-        .find(|k| k.name == "sink_vecs")
-        .unwrap();
+    let vecs = db.keyspaces.iter().find(|k| k.name == "sink_vecs").unwrap();
     assert!(vecs.approx_len >= 50, "approx_len: {}", vecs.approx_len);
 }
 
@@ -65,7 +61,10 @@ fn hnsw_reader_stats_track_shape_without_rebuild() {
     }));
     assert!(r.is_err());
     st.rtx(|idx| {
-        assert!(idx.stats().stale, "stats must report staleness, not rebuild");
+        assert!(
+            idx.stats().stale,
+            "stats must report staleness, not rebuild"
+        );
         // a search takes the rebuild path; stats then sees a fresh graph
         assert!(!idx.search(&[0.0, 0.0, 0.0, 0.0]).is_empty());
         assert!(!idx.stats().stale);
@@ -84,10 +83,7 @@ fn bm25_cache_stats_cold_then_warm() {
     }
     // a fresh open is the truly cold state (a commit also materializes the
     // cache); the first search pays the DOCLEN scan
-    let st = Stream::new(
-        &path,
-        terminal::search::Bm25::<u32, String>::new("lex"),
-    );
+    let st = Stream::new(&path, terminal::search::Bm25::<u32, String>::new("lex"));
     st.rtx(|idx| {
         let cold = idx.cache_stats();
         assert!(!cold.warmed);

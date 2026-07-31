@@ -24,11 +24,17 @@ let home: typeof import("./home");
  * out, so the flip decision has to be fed its one input. */
 let panelLeft = 40;
 
+/** Doc ids the menu asked Finder to show. */
+let revealed: string[] = [];
+
 beforeAll(async () => {
   await mountChrome();
   const state = await import("./state");
   state.setDesktop({
     docs: async () => docs,
+    revealDoc: async (id: string) => {
+      revealed.push(id);
+    },
   } as unknown as typeof import("./tauri"));
   home = await import("./home");
 
@@ -39,6 +45,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   panelLeft = 40;
+  revealed = [];
 });
 
 const $home = () => document.getElementById("home")!;
@@ -75,4 +82,19 @@ it("flips a menu rightward when it would hang off the window", async () => {
   await home.renderHome({});
   panelLeft = -2;
   expect(openMenu().classList.contains("rightward")).toBe(true);
+});
+
+it("shows a book's original in Finder and closes the menu behind it", async () => {
+  docs = [doc()];
+  await home.renderHome({});
+  const menu = openMenu();
+  const reveal = [...menu.querySelectorAll("button")].find(
+    (b) => b.textContent === "Show in Finder",
+  )!;
+  expect(reveal).toBeDefined();
+  reveal.click();
+  await Promise.resolve();
+  expect(revealed).toEqual(["kant"]);
+  // the menu is done once it has acted — nothing left hanging over the shelf
+  expect($home().querySelector(".book-menu")).toBeNull();
 });

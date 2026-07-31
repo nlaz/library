@@ -2,7 +2,7 @@
 //! delete/retry.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use library_core::wire;
 use library_ingest::status::{self, DocState, DocStatus};
@@ -192,6 +192,40 @@ pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Resul
     .map_err(|e| e.to_string())?
 }
 
+/// The file a "Show in Finder" points at: the doc's original in data/pdfs.
+/// Reserved ids are synthetic docs with no file at all, and a doc whose
+/// original was moved out of the library folder by hand has nothing to show.
+fn reveal_target(data: &Path, doc: &str) -> Result<PathBuf, String> {
+    if library_core::records::is_reserved(doc) {
+        return Err("not a document".into());
+    }
+    library_ingest::source_path(data, doc)
+        .ok_or_else(|| "the original file is no longer in the library folder".to_string())
+}
+
+/// Select a doc's original file in Finder. Adding a book *moves* it into the
+/// library folder, so the app is the only thing that still knows where the
+/// file went — this is the way back to it.
+#[tauri::command]
+pub(crate) async fn reveal_doc(state: State<'_, AppState>, doc: String) -> Result<(), String> {
+    let path = reveal_target(&state.settings.data, &doc)?;
+    // blocking: `open` waits on Finder, which can be slow to come forward
+    tauri::async_runtime::spawn_blocking(move || {
+        // -R reveals the file in its folder instead of opening it in Preview
+        let st = std::process::Command::new("/usr/bin/open")
+            .arg("-R")
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("showing {} in Finder: {e}", path.display()))?;
+        if !st.success() {
+            return Err(format!("Finder could not show {}", path.display()));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Re-queue a doc whose ingest failed.
 #[tauri::command]
 pub(crate) fn retry_doc(state: State<'_, AppState>, doc: String) -> Result<(), String> {
@@ -234,5 +268,24 @@ mod tests {
                 "is_processing for {state:?}"
             );
         }
+    }
+
+    #[test]
+    fn reveal_target_finds_the_original_and_refuses_what_has_none() {
+        let dir = std::env::temp_dir().join(format!("library-reveal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("pdfs")).unwrap();
+        std::fs::write(dir.join("pdfs/kant.pdf"), b"%PDF-").unwrap();
+
+        assert_eq!(reveal_target(&dir, "kant"), Ok(dir.join("pdfs/kant.pdf")));
+        // a doc whose original was taken out of the library folder by hand
+        assert!(reveal_target(&dir, "hume").is_err());
+        // reserved ids contain `/` — they must never reach a path join
+        assert_eq!(
+            reveal_target(&dir, "~cards/abc"),
+            Err("not a document".into())
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

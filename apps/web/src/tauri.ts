@@ -116,6 +116,12 @@ export function deleteDoc(doc: string): Promise<void> {
   return invoke("delete_doc", { doc });
 }
 
+/** Select a doc's original file in Finder (adding a book moved it into the
+ * library folder, so this is the way back to it). */
+export function revealDoc(doc: string): Promise<void> {
+  return invoke("reveal_doc", { doc });
+}
+
 /** Re-queue a doc whose ingest failed. */
 export function retryDoc(doc: string): Promise<void> {
   return invoke("retry_doc", { doc });

@@ -208,6 +208,8 @@ async function main() {
     prettify,
     // no write path in the web build — the drawer renders read-only
     edit: desktop ? { setTitle: desktop.setTitle, setCollections: desktop.setCollections } : null,
+    // the web build has no filesystem to reveal the original in
+    reveal: desktop ? desktop.revealDoc : null,
     onChanged: async (id) => {
       await renderHome(await loadCollections());
       // a rename must show in the reader chrome immediately

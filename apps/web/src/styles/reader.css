@@ -232,6 +232,13 @@
   outline-offset: 1px;
 }
 
+/* "Show in Finder", under the file id it acts on */
+.dval .dreveal {
+  display: block;
+  margin-top: 6px;
+  font-size: var(--fs-mono);
+}
+
 /* the "new collection…" input under the drawer's checklist */
 .dval .mcols ~ input[type="text"] {
   margin-top: 6px;

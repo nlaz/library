@@ -162,7 +162,7 @@ function bookCard(d: DocInfo, cols: Collections): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// book-card "…" menu: rename / collections / delete (desktop only)
+// book-card "…" menu: rename / collections / reveal / delete (desktop only)
 // ---------------------------------------------------------------------------
 
 function closeMenus() {
@@ -177,7 +177,7 @@ function bookMenu(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElement
   const btn = document.createElement("button");
   btn.className = "bmenu divot firm";
   btn.textContent = "⋯";
-  btn.title = "Rename, collections, delete";
+  btn.title = "Rename, collections, show in Finder, delete";
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
     const open = card.querySelector(".book-menu");
@@ -227,6 +227,18 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
     if (e.key === "Escape") closeMenus();
   });
 
+  const reveal = document.createElement("button");
+  reveal.className = "divot quiet";
+  reveal.textContent = "Show in Finder";
+  reveal.addEventListener("click", async () => {
+    closeMenus();
+    try {
+      await desktop!.revealDoc(d.id);
+    } catch (e) {
+      notify(`show in Finder: ${e}`, { sticky: true });
+    }
+  });
+
   const del = document.createElement("button");
   del.className = "danger divot quiet";
   del.textContent = "Delete…";
@@ -244,7 +256,7 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
     renderHome(await loadCollections());
   });
 
-  panel.append(rename, colList, newCol, del);
+  panel.append(rename, colList, newCol, reveal, del);
   return panel;
 }
 

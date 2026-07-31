@@ -95,6 +95,7 @@ pub fn run() {
             docs::set_collections,
             docs::delete_doc,
             docs::retry_doc,
+            docs::reveal_doc,
             ingest::ingest_paths,
             settings::get_settings,
             settings::set_settings,

@@ -144,6 +144,7 @@ it("Escape in the reader closes the drawer before it closes the book", async () 
     getCollections: async () => ({}),
     prettify: (id) => id,
     edit: null,
+    reveal: null,
     onChanged: () => {},
     onError: () => {},
   });

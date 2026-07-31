@@ -36,6 +36,8 @@ type Opts = {
     setTitle(doc: string, title: string): Promise<void>;
     setCollections(doc: string, names: string[]): Promise<void>;
   } | null;
+  /** null = no filesystem to show it in (web build) */
+  reveal: ((doc: string) => Promise<void>) | null;
   onChanged(doc: string): void;
   onError(msg: string): void;
 };
@@ -124,13 +126,31 @@ function renderDrawer(d: DrawerDoc, cols: Collections) {
   if (o.edit) colRow.querySelector(".dval")!.append(newCollectionInput(d, checklist));
   rows.push(colRow);
 
-  rows.push(row("file", text(d.id)));
+  const fileRow = row("file", text(d.id));
+  if (o.reveal) fileRow.querySelector(".dval")!.append(revealButton(d.id));
+  rows.push(fileRow);
   rows.push(row("pages", text(d.pages ? `${d.pages} pp.` : "—")));
   const s = d.status;
   rows.push(row("status", text(s ? s.state + (s.error ? ` — ${s.error}` : "") : "ready")));
   if (d.id === markupDoc()) rows.push(row("marginalia", marginaliaList()));
 
   $drawer.replaceChildren(...rows);
+}
+
+/** The id names the original in the library folder; this is the way to it —
+ * the file was moved there on add, so nothing else knows where it went. */
+function revealButton(doc: string): HTMLElement {
+  const b = document.createElement("button");
+  b.className = "dreveal divot quiet";
+  b.textContent = "Show in Finder";
+  b.addEventListener("click", async () => {
+    try {
+      await opts!.reveal!(doc);
+    } catch (e) {
+      opts?.onError(`show in Finder: ${e}`);
+    }
+  });
+  return b;
 }
 
 /** Every mark in the open doc, page order (docMarks() is pre-sorted);

@@ -39,23 +39,27 @@ const GROUPS: Group[] = [
       ["Home / End", "Jump to the first / last page"],
       ["⌘U", "Markup mode — draw on the page"],
       ["m", "Show or hide existing marks"],
-      ["Esc", "Back to the shelves"],
+      ["ⓘ", "Title, collections, and the marks you've made"],
+      ["Esc", "One step back: the drawer, then the book you came from"],
     ],
   },
   {
     title: "Notes",
     rows: [
-      ["c", "Start a note, from any surface"],
+      ["c", "Start a note, from any surface — Esc returns you to it"],
       ["j / k", "Walk down / up the ledger"],
+      ["Enter", "Write in the open entry (double-clicking it does too)"],
       ["[[", "Link another note while writing"],
+      ["Esc", "One step back: the open entry, the filters, then out"],
     ],
   },
   {
     title: "Views",
     rows: [
-      ["⌘.", "Performance"],
+      ["⌘.", "Performance — 1 / 2 / 3 / 4 pick a section"],
       ["⌘/", "Corpus atlas"],
       ["?", "This list"],
+      ["Esc", "Close whichever of them is open"],
     ],
   },
 ];

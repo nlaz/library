@@ -334,6 +334,39 @@
   color: var(--ink);
 }
 
+/* the open entry's one action. It appears only on the open entry, because
+   only the open entry has one — a door on every row would read as chrome,
+   and the ledger is meant to be prose in whitespace. */
+.lacts {
+  margin-top: 12px;
+}
+
+.ledit {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  padding: 3px 9px;
+}
+
+.ledit:hover {
+  color: var(--ink);
+}
+
+/* the key beside the door: the same gesture, without the pointer */
+.ledit .lkey {
+  color: var(--ink-faint);
+}
+
+.ledit:hover .lkey {
+  color: var(--ink-dim);
+}
+
 .nb-filedrule {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);

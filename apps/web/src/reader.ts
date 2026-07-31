@@ -7,6 +7,7 @@
 import { attachMarkLayer, scheduleMarkTicks, setMarkupDoc } from "./markup";
 import { ocrUrl, pageImg } from "./assets";
 import { hlBoxes } from "./highlights";
+import { goBack, originLabel } from "./nav";
 import type { OcrWord, WireHit } from "./types";
 
 const $reader = document.getElementById("reader")!;
@@ -41,6 +42,10 @@ export function openReader(doc: string, pages: number, page?: number, title?: st
   }
   page ??= Number(localStorage.getItem(`pos:${doc}`)) || 1;
   $title.textContent = title ?? doc;
+  // the same ← lands in four different places depending on how the book was
+  // opened (shelves, a search hit, a note's evidence, an atlas trail), so it
+  // says which one rather than leaving it to be discovered
+  $back.title = `Back to ${originLabel("the shelves")} (Esc)`;
   $reader.hidden = false;
   const target = $pagesEl.children[Math.min(Math.max(page, 1), pages) - 1];
   // placeholder aspect ratios keep offsets stable enough to land on the page
@@ -334,16 +339,34 @@ export function scheduleTicks() {
 }
 window.addEventListener("resize", scheduleTicks);
 
-$back.addEventListener("click", () => {
-  location.hash = "#/";
-});
+// ---------------------------------------------------------------------------
+// leaving: one layer per Escape. Panels that live *inside* the reader
+// register here rather than being imported (drawer.ts already depends on
+// this module, and the dependency only runs one way); markup's own layers —
+// an in-flight gesture, a mark popover, the mode itself — unwind before
+// these, from its listener, which registers first.
+// ---------------------------------------------------------------------------
+
+const inner: (() => boolean)[] = [];
+
+/** Register an inner layer. The callback closes whatever it owns and
+ * returns whether it consumed the key; Escape stops at the first one. */
+export function onReaderEscape(cb: () => boolean) {
+  inner.push(cb);
+}
+
+function leaveReader() {
+  goBack("#/");
+}
+
+$back.addEventListener("click", leaveReader);
 
 document.addEventListener("keydown", (e) => {
   if ($reader.hidden) return;
   const vh = $scroll.clientHeight;
   switch (e.key) {
     case "Escape":
-      location.hash = "#/";
+      if (!inner.some((close) => close())) leaveReader();
       break;
     case "ArrowDown":
     case "PageDown":

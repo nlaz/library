@@ -13,7 +13,7 @@ import {
   openMarkPopover,
   scheduleMarkTicks,
 } from "./markup";
-import { scheduleTicks } from "./reader";
+import { onReaderEscape, scheduleTicks } from "./reader";
 import type { Collections, DocStatus } from "./types";
 
 /** The facts the drawer shows — DocInfo minus `processing` (the web
@@ -67,6 +67,12 @@ export function initDrawer(o: Opts) {
   // entering markup mode surfaces the doc's existing marks
   onMarkupEnter((doc) => {
     if (doc) void openDrawer(doc);
+  });
+  // an open drawer is a layer: Escape closes it before it closes the book
+  onReaderEscape(() => {
+    if (!openFor) return false;
+    closeDrawer();
+    return true;
   });
 }
 

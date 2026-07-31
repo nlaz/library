@@ -110,6 +110,16 @@ function close() {
   $toggle.setAttribute("aria-expanded", "false");
 }
 
+// The panel is a layer, so Escape closes it wherever the focus happens to
+// be — not only inside its own field. It registers before the reader's and
+// the ledger's listeners (main.ts imports this module first), which is what
+// keeps a press from closing the book underneath an open chat.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || $panel.hidden) return;
+  e.stopImmediatePropagation();
+  close();
+});
+
 let chatDisabledReason: string | null = null;
 
 /** Take the librarian off the chrome entirely: this Mac has no on-device

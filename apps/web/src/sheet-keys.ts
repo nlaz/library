@@ -5,7 +5,7 @@
 export type SheetKeyAction =
   /** Close the [[ completion list; the sheet stays open. */
   | "dismiss-completions"
-  /** Flush the draft and walk back to the ledger. */
+  /** Flush the draft and walk back to wherever the note was started. */
   | "leave"
   /** Hop from the title into the prose. */
   | "focus-body"

@@ -7,6 +7,7 @@ import { coverImg } from "./assets";
 import { $cols, $home, setPressed } from "./dom";
 import { collectionsChecklist } from "./drawer";
 import { displayTitle, prettify, setDocList, STAGE_LABEL, stageCount, statusEvent } from "./format";
+import { forgetDoc } from "./nav";
 import { onboardPanel } from "./onboard";
 import { desktop, transport } from "./state";
 import { notify } from "./toast";
@@ -225,6 +226,7 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
     try {
       await desktop!.deleteDoc(d.id);
       localStorage.removeItem(`pos:${d.id}`);
+      forgetDoc(d.id); // and it must not stay on anyone's way back
       if (location.hash.startsWith(`#/read/${encodeURIComponent(d.id)}`)) location.hash = "#/";
     } catch (e) {
       notify(`delete failed: ${e}`, { sticky: true });

@@ -9,6 +9,8 @@ import { ensureDocTitles } from "./doc-titles";
 import { $main, setPressed } from "./dom";
 import { evidenceEl } from "./evidence-el";
 import { createCard, listCards, updateCard } from "./marginalia-api";
+import { originLabel, returnTo, takeOrigin } from "./nav";
+import { surfaceOf } from "./nav-model";
 import { impliedTitle, SPLIT_WORDS, splitPoint } from "./notebox-model";
 import { sheetKey } from "./sheet-keys";
 import { notify } from "./toast";
@@ -67,6 +69,9 @@ export async function openSheet(kind: "new" | "edit", cardId: string | null) {
   $main.hidden = true;
   setPressed($toggle, true);
   $ac.hidden = true;
+  // `c` starts a note from any surface, so the way out names the surface it
+  // goes back to rather than always claiming to be the ledger
+  $back.textContent = `← ${originLabel("notes")}`;
 
   if (kind === "edit" && cardId) {
     let cs: CardRec[] = [];
@@ -120,6 +125,10 @@ export function closeSheet() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
   void save();
+  // hand focus back before hiding: a key struck at a field nobody can see
+  // is still read as the sheet's, and Escape there would walk out of the
+  // surface that replaced it (atlas.ts blurs on the same reasoning)
+  if ($sheet.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
   $sheet.hidden = true;
   $main.hidden = false;
   setPressed($toggle, false);
@@ -200,11 +209,33 @@ function scheduleSave() {
   }, 1200);
 }
 
+/** The way back: to the page that was being read, the shelves, wherever the
+ * note was started. Only when that was the ledger — or when there is no
+ * trail at all — does it land on the entry it just wrote. */
 async function leave() {
+  const saved = await flush();
+  const from = takeOrigin();
+  returnTo(
+    from && surfaceOf(from).kind !== "notes"
+      ? from
+      : saved
+        ? `#/notes?card=${saved.id}`
+        : "#/notes",
+  );
+}
+
+/** The other way out: file it in the journal and look at it there. Two
+ * exits, each labelled with where it goes. */
+async function keep() {
+  const saved = await flush();
+  location.hash = saved ? `#/notes?card=${saved.id}` : "#/notes";
+}
+
+/** Commit whatever is on the sheet now, cancelling the debounce. */
+async function flush(): Promise<CardRec | null> {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
-  const saved = await save();
-  location.hash = saved ? `#/notes?card=${saved.id}` : "#/notes";
+  return save();
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +332,7 @@ $body.addEventListener("blur", () => {
 });
 
 $back.addEventListener("click", () => void leave());
-$keep.addEventListener("click", () => void leave());
+$keep.addEventListener("click", () => void keep());
 $file.addEventListener("click", async () => {
   if (!card) return;
   const saved = await save({ filed: !card.filed });

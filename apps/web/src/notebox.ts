@@ -11,6 +11,7 @@ import { evidenceEl } from "./evidence-el";
 import { docTitle } from "./format";
 import { getCol } from "./home";
 import { listCards } from "./marginalia-api";
+import { goBack, originLabel } from "./nav";
 import {
   backlinks,
   cardShown,
@@ -94,10 +95,14 @@ function render() {
   crumbs.className = "nb-crumbs";
   const back = document.createElement("button");
   back.className = "nb-crumb divot quiet";
-  back.innerHTML = `← library <span class="here">/ notes</span>`;
-  back.addEventListener("click", () => {
-    location.hash = "#/";
-  });
+  // the ledger is reached from the shelves, from a search hit, from a mark
+  // in a book — the crumb names whichever it was. A book's title is user
+  // text, so it goes in as a text node and never as markup.
+  const here = document.createElement("span");
+  here.className = "here";
+  here.textContent = "/ notes";
+  back.append(`← ${originLabel()} `, here);
+  back.addEventListener("click", () => goBack("#/"));
   const newBtn = document.createElement("button");
   newBtn.className = "nb-new divot raise accent";
   newBtn.textContent = "+ note";
@@ -260,6 +265,26 @@ function entryEl(c: CardRec): HTMLElement {
     content.append(foot);
   }
 
+  // Opening an entry is what a click does; *writing* in it had only a
+  // double-click and a return key, neither of which anything said out loud.
+  // The open entry now carries the door, with its key beside it.
+  if (active) {
+    const acts = document.createElement("div");
+    acts.className = "lacts";
+    const edit = document.createElement("button");
+    edit.className = "ledit divot quiet";
+    const key = document.createElement("span");
+    key.className = "lkey";
+    key.textContent = "⏎";
+    edit.append("edit", key);
+    edit.addEventListener("click", (e) => {
+      e.stopPropagation(); // the entry's own click would close it again
+      startEdit(c.id);
+    });
+    acts.append(edit);
+    content.append(acts);
+  }
+
   el.append(content);
   el.addEventListener("click", () => {
     selected = active ? null : c.id;
@@ -311,8 +336,10 @@ function selectedCard(): CardRec | null {
 // chrome + keys
 // ---------------------------------------------------------------------------
 
+// a toggle puts you back where you were, which is not always the shelves
 $toggle.addEventListener("click", () => {
-  location.hash = notesOpen() ? "#/" : "#/notes";
+  if (notesOpen()) goBack("#/");
+  else location.hash = "#/notes";
 });
 
 document.addEventListener("keydown", (e) => {
@@ -320,7 +347,17 @@ document.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
   switch (e.key) {
     case "Escape":
-      location.hash = "#/";
+      // one layer per press, innermost first: the open entry, then the
+      // rail's filters, then the ledger itself
+      if (selected) {
+        selected = null;
+        render();
+      } else if (sel.size) {
+        sel.clear();
+        render();
+      } else {
+        goBack("#/");
+      }
       break;
     case "j":
     case "k": {

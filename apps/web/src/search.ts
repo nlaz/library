@@ -25,6 +25,7 @@ import { notesOpen } from "./notebox";
 import { clearReaderHits, readerDoc, readerOpen, setReaderHits } from "./reader";
 import { completionPrefix, ghostTail } from "./search-ghost";
 import { DEFAULT_KIND, type Kind, nextKind } from "./search-kinds";
+import { sheetOpen } from "./sheet";
 import { transport } from "./state";
 import type { WireHit, WireResponse } from "./types";
 import { openViewer } from "./viewer";
@@ -325,12 +326,18 @@ function appendResults(msg: WireResponse) {
 // ---------------------------------------------------------------------------
 
 export function showSearch(active: boolean) {
-  // a library-wide query while the note box is open means "show me the
-  // results" — leave the box by navigation, the way the reader is left
-  // (the box sits over the grid and would swallow every click)
-  if (active && notesOpen()) location.hash = "#/";
   $search.hidden = !active;
   $home.hidden = active;
+}
+
+/** The notes surfaces hide <main>, so a library-wide query typed over one
+ * of them has nowhere to land — leave by navigation, the way the reader is
+ * left. Only the box's own input may do this: route() re-sends the standing
+ * query after every navigation, and bouncing *there* made the notes glyph
+ * inert whenever the box had text in it, and made a query typed from the
+ * sheet paint its results into a hidden <main>. */
+function leaveForGrid() {
+  if ($q.value.trim() && (notesOpen() || sheetOpen())) location.hash = "#/";
 }
 
 /** Wire query dispatch, the response handler, infinite scroll, and the
@@ -471,7 +478,11 @@ export function initSearch() {
     render(msg);
   });
 
-  $q.addEventListener("input", () => send()); // hybrid, every keystroke
+  // hybrid, every keystroke
+  $q.addEventListener("input", () => {
+    leaveForGrid();
+    send();
+  });
 
   // --- ghost text: the likeliest continuation of the word being typed ------
   // Additive and independent of the search grid + seq machinery. Stale

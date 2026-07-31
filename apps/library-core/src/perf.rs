@@ -384,7 +384,12 @@ fn search_log_bytes() -> (usize, usize) {
 /// stats, the stores' own fjall numbers, and a TTL-cached walk of the
 /// corpus dirs under `data`. `rss_bytes` comes from the host so this crate
 /// stays platform-free.
-pub fn memory(lib: &Library, images: &Images, data: &Path, rss_bytes: Option<u64>) -> MemoryBreakdown {
+pub fn memory(
+    lib: &Library,
+    images: &Images,
+    data: &Path,
+    rss_bytes: Option<u64>,
+) -> MemoryBreakdown {
     let (lex_cache, vec_stats) = lib.rtx(|((lex, vec), _)| (lex.cache_stats(), vec.stats()));
     let img_stats = images.rtx(|(vec, _)| vec.stats());
     let (log_entries, log_bytes) = search_log_bytes();

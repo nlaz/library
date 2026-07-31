@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# Local release: build everything, stitch the sidecars into the .app, make a
-# DMG, tag, and publish a GitHub Release.
+# Local release: build everything, stitch the sidecars into the .app, zip it,
+# tag, and publish a GitHub Release.
 #
 #   scripts/release.sh [version] [--dry-run]
 #
 # With no version, releases whatever tauri.conf.json says. --dry-run stops
-# after the DMG (no commit, no tag, no push, no release) so the bundle can be
+# after the zip (no commit, no tag, no push, no release) so the bundle can be
 # inspected first.
+#
+# A zip, not a disk image. 0.1.0 shipped one by hand for a reason worth
+# keeping: the app's own notarization comes back in minutes, but the DMG's sat
+# in Apple's queue for seven hours, and a signed-but-unnotarized DMG is
+# evaluated on mount — it hands back the blocked first launch that notarizing
+# exists to remove. A zip is not evaluated that way at all. The ticket is
+# stapled into the bundle before it is zipped, so the app opens clean the
+# moment it is unpacked, offline included.
 #
 # The sidecars are stitched in *after* `tauri build` on purpose: Tauri's
 # externalBin/resources are validated at compile time, which would break
@@ -20,8 +28,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONF="$ROOT/apps/library-app/tauri.conf.json"
 APP="$ROOT/target/release/bundle/macos/The Library.app"
 # Stable asset name: the site links
-# https://github.com/nlaz/library/releases/latest/download/$DMG_NAME forever.
-DMG_NAME="TheLibrary-macos-arm64.dmg"
+# https://github.com/nlaz/library/releases/latest/download/$ZIP_NAME forever.
+ZIP_NAME="TheLibrary-macos-arm64.zip"
 REPO="nlaz/library"
 
 # Set SIGN_IDENTITY to a Developer ID Application identity to produce a
@@ -44,7 +52,7 @@ for arg in "$@"; do
 done
 
 # --- preflight ---
-for tool in cargo swift npm hdiutil codesign python3; do
+for tool in cargo swift npm ditto codesign python3; do
   command -v "$tool" >/dev/null || { echo "missing: $tool" >&2; exit 1; }
 done
 cargo tauri --version >/dev/null 2>&1 || { echo "missing: cargo-tauri (cargo install tauri-cli)" >&2; exit 1; }
@@ -110,37 +118,23 @@ codesign "${SIGN[@]}" "$APP"
 codesign --verify --deep --strict "$APP"
 
 # --- notarize the app (minutes; Apple's service, needs network) ---
-# The .app is stapled before the DMG is built so a copy dragged out of the
-# DMG carries its own ticket and launches offline.
-if [[ -n "$SIGN_IDENTITY" ]]; then
-  ZIP="$ROOT/dist/notarize.zip"
-  mkdir -p "$ROOT/dist"
-  ditto -c -k --keepParent "$APP" "$ZIP"   # zip only to upload; ticket is for the app
-  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
-  rm -f "$ZIP"
-  xcrun stapler staple "$APP"
-  spctl -a -vv "$APP"                      # expect: source=Notarized Developer ID
-fi
-
-# --- DMG (hdiutil; tauri's dmg step can't run after stitching) ---
-STAGE="$(mktemp -d)"
-trap 'rm -rf "$STAGE"' EXIT
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
 mkdir -p "$ROOT/dist"
-hdiutil create -volname "The Library" -srcfolder "$STAGE" -ov -format UDZO "$ROOT/dist/$DMG_NAME"
-
-# The DMG is quarantined on download and checked in its own right, so it
-# gets the same treatment as the app it carries.
 if [[ -n "$SIGN_IDENTITY" ]]; then
-  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$ROOT/dist/$DMG_NAME"
-  xcrun notarytool submit "$ROOT/dist/$DMG_NAME" --keychain-profile "$NOTARY_PROFILE" --wait
-  xcrun stapler staple "$ROOT/dist/$DMG_NAME"
-  spctl -a -t open --context context:primary-signature -vv "$ROOT/dist/$DMG_NAME"
+  UPLOAD="$ROOT/dist/notarize.zip"
+  ditto -c -k --keepParent "$APP" "$UPLOAD"  # a carrier for the upload only
+  xcrun notarytool submit "$UPLOAD" --keychain-profile "$NOTARY_PROFILE" --wait
+  rm -f "$UPLOAD"
+  # The ticket goes into the bundle, not the carrier — which is why the
+  # shipped zip has to be made after this, not reused from above.
+  xcrun stapler staple "$APP"
+  spctl -a -vv "$APP"                        # expect: source=Notarized Developer ID
 fi
+
+# --- the shipped artifact ---
+ditto -c -k --keepParent "$APP" "$ROOT/dist/$ZIP_NAME"
 
 if [[ $DRY_RUN -eq 1 ]]; then
-  echo "dry run: built $ROOT/dist/$DMG_NAME (v$VERSION); skipping tag + release"
+  echo "dry run: built $ROOT/dist/$ZIP_NAME (v$VERSION); skipping tag + release"
   exit 0
 fi
 
@@ -149,6 +143,6 @@ git -C "$ROOT" tag "v$VERSION"
 git -C "$ROOT" push origin main "v$VERSION"
 NOTES="macOS 14+, Apple silicon. Asking the librarian needs macOS 26."
 [[ -n "$SIGN_IDENTITY" ]] || NOTES="$NOTES Unsigned — see the README for the first-launch step."
-gh release create "v$VERSION" "$ROOT/dist/$DMG_NAME" \
+gh release create "v$VERSION" "$ROOT/dist/$ZIP_NAME" \
   --repo "$REPO" --title "The Library $VERSION" --notes "$NOTES"
-echo "https://github.com/$REPO/releases/latest/download/$DMG_NAME"
+echo "https://github.com/$REPO/releases/latest/download/$ZIP_NAME"

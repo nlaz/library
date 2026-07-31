@@ -463,8 +463,8 @@ was not too expensive, it was happening at the wrong time.
 
 ## Installing
 
-Download [`TheLibrary-macos-arm64.dmg`][dmg] from the latest release and
-drag the app to `/Applications`. It needs macOS 14 or newer on Apple
+Download [`TheLibrary-macos-arm64.zip`][zip] from the latest release,
+unpack it, and drag the app to `/Applications`. It needs macOS 14 or newer on Apple
 silicon. Reading, OCR, figure indexing and search are Vision and PDFKit
 calls that have been there since 10.15, and ONNX Runtime links statically,
 so the floor is set by what has been tested rather than by what is
@@ -474,7 +474,7 @@ leaves the chat out where they're absent, rather than offering a door that
 opens onto an error.
 
 The build is signed with a Developer ID certificate and notarized by
-Apple, with the ticket stapled to both the app and the disk image, so it
+Apple, with the ticket stapled into the bundle before it is zipped, so it
 opens like anything else you install — no quarantine step, and no first
 launch that has to be argued with. Releases before 0.1.0 were ad-hoc
 signed and do need that argument; the fix for one already downloaded is
@@ -484,7 +484,7 @@ The first launch does take a while on a machine that has never run it:
 the layout and image models come down from HuggingFace before the first
 book can be read. The launch screen says how far along that is.
 
-[dmg]: https://github.com/nlaz/library/releases/latest/download/TheLibrary-macos-arm64.dmg
+[zip]: https://github.com/nlaz/library/releases/latest/download/TheLibrary-macos-arm64.zip
 
 ## Working on this
 

@@ -3,10 +3,10 @@
 //
 // A signed-distance model of a vaulted library nave, raymarched in WebGL2 at
 // character resolution and resolved through a glyph atlas measured at runtime
-// from IBM Plex Mono. The camera dollies down the nave at fifty seconds a bay
-// and wraps on that bay; because the room is periodic in depth, the wrap lands
-// on an identical frame and the walk is seamless. No dissolve, no seam, no
-// video file.
+// from IBM Plex Mono. The camera dollies down the nave at a hundred seconds a
+// bay and wraps on that bay; because the room is periodic in depth, the wrap
+// lands on an identical frame and the walk is seamless. No dissolve, no seam,
+// no video file.
 //
 // Two passes: the scene renders into a small framebuffer sized to the
 // character grid (a 1440x900 viewport is only ~360x128 cells, so the marching
@@ -48,7 +48,7 @@ const SCENE = {
   far: 46, fog: 0.016, black: 0.240, white: 0.800,
   key: [0.38, 0.72, -0.30], head: 0.44,
   steps: 180, scale: 0.88, shadow: 0,
-  pose: 6.42,                         // the frame reduced-motion rests on —
+  pose: 12.83,                        // the frame reduced-motion rests on —
                                       //   in seconds, so it tracks dolly speed
 };
 
@@ -324,8 +324,15 @@ float naveShade(int id, vec3 p, vec3 n, float lum){
 
 // the axial dolly. Speed only sets how long a cycle takes — the wrap is on
 // BAY, so any speed loops exactly and this can be tuned purely by feel.
+//
+// It is tuned by the FASTEST thing on screen, not the average. Forward motion
+// makes the optical flow radial from the vanishing point, so it is slowest at
+// the centre and fastest in the corners — where the lit vertical edges of the
+// standards and window reveals live, streaming up and down the frame edges at
+// several times the rate anything in the middle moves. Set the speed so THAT
+// reads as a drift and the centre of the frame will look nearly still.
 void camera(vec2 uv, out vec3 ro, out vec3 rd){
-  float z = mod(uTime * 0.046, BAY);        // 50s a bay
+  float z = mod(uTime * 0.023, BAY);        // 100s a bay
   vec3 o = vec3(0.0, 1.72, -8.0 + z);
   lookAt(uv, o, o + vec3(0.0, 0.30, 6.0), ro, rd);
 }

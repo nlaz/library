@@ -49,6 +49,27 @@ pub(crate) struct ChatStatus {
     pub(crate) reason: Option<String>,
 }
 
+/// Apple Foundation Models — and so the librarian — arrived in macOS 26.
+/// Nothing else in the app needs it: Vision OCR, PDFKit and the stores are
+/// all 10.15-era API, which is why the bundle's floor is lower than this.
+const CHAT_MIN_MACOS: u32 = 26;
+
+/// Major version of the running macOS, or `None` if `sw_vers` won't say. Cold
+/// path — once per process, inside a probe that already spawns a process, so
+/// asking the OS the plain way costs nothing worth avoiding.
+fn macos_major() -> Option<u32> {
+    let out = std::process::Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// AFM's `UnavailableReason` debug spelling → something a person can act on.
 fn explain(raw: &str) -> String {
     if raw.contains("appleIntelligenceNotEnabled") {
@@ -81,6 +102,20 @@ pub(crate) async fn chat_status(app: AppHandle) -> Result<ChatStatus, String> {
 fn probe_chat(app: &AppHandle) -> ChatStatus {
     CHAT_STATUS
         .get_or_init(|| {
+            // On an older macOS the sidecar can't load FoundationModels at
+            // all: dyld kills it before `main`, and the only trace is on a
+            // stderr nobody reads, so the spawn below would report "could not
+            // be started" for what is really "this OS doesn't have it". Say
+            // the true thing, and don't pay a doomed spawn to learn it. A
+            // silent `sw_vers` falls through to the probe, which fails closed.
+            if macos_major().is_some_and(|v| v < CHAT_MIN_MACOS) {
+                return ChatStatus {
+                    available: false,
+                    reason: Some(format!(
+                        "The librarian needs macOS {CHAT_MIN_MACOS} or newer — the rest of the library works here."
+                    )),
+                };
+            }
             let bin = librarian_bin(app);
             if !bin.is_file() {
                 return ChatStatus {

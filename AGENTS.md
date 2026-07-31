@@ -132,3 +132,12 @@ changes go in their own commit so review diffs stay readable.
   cache.
 - For representative `ese` bench numbers, use
   `RUSTFLAGS="-Ctarget-cpu=native" cargo bench -p ese`.
+- `tauri.conf.json`'s `minimumSystemVersion` is not just `Info.plist`:
+  `cargo tauri build` also exports it as `MACOSX_DEPLOYMENT_TARGET`, so it
+  sets the `library-app` binary's `LC_BUILD_VERSION minos` too (check with
+  `vtool -show-build`). It is **14.0** — the Apple calls in ingest are
+  10.15-era and ORT links statically at 11.0, so the floor is a tested
+  claim, not a technical limit. Only the two Swift binaries (`librarian`,
+  `tools/clean-pages`) need 26, for FoundationModels, and both are optional
+  at runtime; `chat.rs::probe_chat` refuses below `CHAT_MIN_MACOS` so the
+  chat surface is hidden rather than failing on first use.

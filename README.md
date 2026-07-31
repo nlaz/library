@@ -464,8 +464,14 @@ was not too expensive, it was happening at the wrong time.
 ## Installing
 
 Download [`TheLibrary-macos-arm64.dmg`][dmg] from the latest release and
-drag the app to `/Applications`. It needs macOS 26 or newer on Apple
-silicon.
+drag the app to `/Applications`. It needs macOS 14 or newer on Apple
+silicon. Reading, OCR, figure indexing and search are Vision and PDFKit
+calls that have been there since 10.15, and ONNX Runtime links statically,
+so the floor is set by what has been tested rather than by what is
+reachable. Only asking the librarian needs macOS 26, because that is where
+Apple Foundation Models arrived: the app checks for them at startup and
+leaves the chat out where they're absent, rather than offering a door that
+opens onto an error.
 
 The build is signed with a Developer ID certificate and notarized by
 Apple, with the ticket stapled to both the app and the disk image, so it

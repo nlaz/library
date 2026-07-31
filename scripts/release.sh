@@ -147,7 +147,7 @@ fi
 # --- tag + release ---
 git -C "$ROOT" tag "v$VERSION"
 git -C "$ROOT" push origin main "v$VERSION"
-NOTES="macOS 26+, Apple silicon."
+NOTES="macOS 14+, Apple silicon. Asking the librarian needs macOS 26."
 [[ -n "$SIGN_IDENTITY" ]] || NOTES="$NOTES Unsigned — see the README for the first-launch step."
 gh release create "v$VERSION" "$ROOT/dist/$DMG_NAME" \
   --repo "$REPO" --title "The Library $VERSION" --notes "$NOTES"

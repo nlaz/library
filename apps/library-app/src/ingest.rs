@@ -31,8 +31,11 @@ pub(crate) fn install_agent(data: &Path) {
         eprintln!("library-ingest binary not found — background ingest agent not installed");
         return;
     };
+    use library_ingest::agent::Install;
     match library_ingest::agent::install(&bin, data) {
-        Ok(path) => println!("ingest agent: {}", path.display()),
+        Ok(Install::Ready(path)) => println!("ingest agent: {}", path.display()),
+        // a decline is the user's or the environment's call, not a fault
+        Ok(Install::Skipped(why)) => println!("ingest agent not installed: {why}"),
         Err(e) => eprintln!("ingest agent install failed: {e:#}"),
     }
 }

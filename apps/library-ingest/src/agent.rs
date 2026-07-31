@@ -72,15 +72,72 @@ pub fn installed_matches(bin: &Path, data: &Path) -> bool {
     }
 }
 
+/// What [`install`] did. Declining is a normal outcome with a reason, not a
+/// failure — callers log the reason and carry on.
+pub enum Install {
+    /// Loaded into launchd, or already exactly right.
+    Ready(PathBuf),
+    Skipped(String),
+}
+
+/// Whether this binary lives somewhere launchd will still find next week.
+///
+/// A path under `/Volumes` is a mounted image or an external disk — which is
+/// what "opened the app straight from the DMG" looks like, and the single
+/// most common way a first launch happens. An `AppTranslocation` path is the
+/// randomised read-only copy Gatekeeper runs a quarantined app from. Baking
+/// either into a plist installs an agent that wakes every fifteen minutes,
+/// forever, pointed at a path that stopped existing when they ejected.
+pub fn is_stable_location(bin: &Path) -> bool {
+    let p = bin.to_string_lossy();
+    !p.starts_with("/Volumes/") && !p.contains("/AppTranslocation/")
+}
+
+/// Parse `launchctl print-disabled gui/$UID` for one label. Lines look like
+/// `"com.example.thing" => disabled`.
+fn parse_disabled(printed: &str, label: &str) -> bool {
+    printed
+        .lines()
+        .find(|l| l.contains(&format!("\"{label}\"")))
+        .is_some_and(|l| l.split("=>").nth(1).is_some_and(|v| v.trim() == "disabled"))
+}
+
+/// Whether the user has switched this agent off in System Settings →
+/// General → Login Items → Allow in the Background.
+///
+/// launchd remembers that decision across reinstalls, and it is the one
+/// place a person can say no to us. Bootstrapping over it on every launch
+/// would make their switch appear not to stick, which is worse than not
+/// having offered the switch at all.
+pub fn user_disabled() -> bool {
+    let uid = unsafe { libc::getuid() };
+    Command::new("launchctl")
+        .args(["print-disabled", &format!("gui/{uid}")])
+        .output()
+        .ok()
+        .is_some_and(|out| parse_disabled(&String::from_utf8_lossy(&out.stdout), LABEL))
+}
+
 /// Write the plist (atomically) and (re)load it into the user's launchd
 /// session. Safe to call repeatedly; a no-op when nothing changed.
-pub fn install(bin: &Path, data: &Path) -> Result<PathBuf> {
+pub fn install(bin: &Path, data: &Path) -> Result<Install> {
     if !bin.is_file() {
         bail!("worker binary not found at {}", bin.display());
     }
+    if !is_stable_location(bin) {
+        return Ok(Install::Skipped(format!(
+            "the app is running from {} — move it to /Applications for background indexing",
+            bin.display()
+        )));
+    }
+    if user_disabled() {
+        return Ok(Install::Skipped(
+            "background indexing is switched off in Login Items — leaving it off".into(),
+        ));
+    }
     let path = plist_path()?;
     if installed_matches(bin, data) {
-        return Ok(path);
+        return Ok(Install::Ready(path));
     }
     std::fs::create_dir_all(path.parent().expect("plist path always has a parent"))?;
     std::fs::create_dir_all(data.join("logs"))?;
@@ -104,5 +161,54 @@ pub fn install(bin: &Path, data: &Path) -> Result<PathBuf> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    Ok(path)
+    Ok(Install::Ready(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dmg_or_translocated_app_is_not_a_stable_location() {
+        for p in [
+            "/Volumes/The Library/The Library.app/Contents/MacOS/library-ingest",
+            "/private/var/folders/x/AppTranslocation/ABC-123/d/The Library.app/Contents/MacOS/library-ingest",
+        ] {
+            assert!(!is_stable_location(Path::new(p)), "{p}");
+        }
+    }
+
+    #[test]
+    fn an_installed_app_is_a_stable_location() {
+        for p in [
+            "/Applications/The Library.app/Contents/MacOS/library-ingest",
+            "/Users/someone/Applications/The Library.app/Contents/MacOS/library-ingest",
+            "/Users/someone/code/library/target/debug/library-ingest",
+        ] {
+            assert!(is_stable_location(Path::new(p)), "{p}");
+        }
+    }
+
+    #[test]
+    fn disabled_is_read_from_launchctl_output() {
+        let printed = "\tdisabled services = {\n\t\t\"com.other.thing\" => enabled\n\t\t\"computer.flower.library.ingest\" => disabled\n\t}\n";
+        assert!(parse_disabled(printed, LABEL));
+    }
+
+    #[test]
+    fn enabled_and_absent_both_mean_not_disabled() {
+        let enabled = "\t\t\"computer.flower.library.ingest\" => enabled\n";
+        assert!(!parse_disabled(enabled, LABEL));
+        // never toggled: launchd doesn't list it at all
+        assert!(!parse_disabled(
+            "\t\t\"com.other.thing\" => disabled\n",
+            LABEL
+        ));
+    }
+
+    #[test]
+    fn a_label_that_merely_contains_ours_is_not_ours() {
+        let other = "\t\t\"computer.flower.library.ingest.helper\" => disabled\n";
+        assert!(!parse_disabled(other, LABEL));
+    }
 }

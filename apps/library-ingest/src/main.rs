@@ -450,13 +450,17 @@ fn main() -> Result<()> {
             // would resolve against / when the agent fires
             let data = std::path::absolute(&data)?;
             let bin = std::env::current_exe()?;
-            let path = library_ingest::agent::install(&bin, &data)?;
-            println!("agent loaded: {}", path.display());
-            println!("logs: {}/logs/ingest.log", data.display());
-            println!(
-                "disable with: launchctl bootout gui/$UID/{}",
-                library_ingest::agent::LABEL
-            );
+            match library_ingest::agent::install(&bin, &data)? {
+                library_ingest::agent::Install::Ready(path) => {
+                    println!("agent loaded: {}", path.display());
+                    println!("logs: {}/logs/ingest.log", data.display());
+                    println!(
+                        "disable with: launchctl bootout gui/$UID/{}",
+                        library_ingest::agent::LABEL
+                    );
+                }
+                library_ingest::agent::Install::Skipped(why) => println!("not installed: {why}"),
+            }
             Ok(())
         }
         Cli::LayoutDebug {

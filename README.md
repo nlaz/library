@@ -279,6 +279,15 @@ one vector space — that shared space is the whole trick, because it lets a
 typed English query be compared directly against a picture with no words
 anywhere near it.
 
+The two detectors are not redundant. Measured over 183 pages of this
+corpus, **69% of the figures the layout model finds sit in places the
+word-gap heuristic cannot look** — a heuristic that reads gaps between
+words is blind to anything embedded in a text column, and structurally
+blind to tables, which are full of words. On dense catalog spreads the gap
+is eightfold (43 figures against 5). The heuristic earns its place the
+other way round: it catches full-bleed spreads the model whiffs, and it is
+what keeps figure search working at all if the model is unavailable.
+
 Two structural notes:
 
 - Ingestion is split into a **prepare** phase that touches no store and a

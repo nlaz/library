@@ -22,6 +22,7 @@
 pub mod agent;
 pub mod clean;
 pub mod layout;
+pub mod models;
 pub mod ocr;
 pub mod pdftext;
 pub mod status;
@@ -110,6 +111,13 @@ pub enum Progress {
     Clip {
         done: usize,
         total: usize,
+    },
+    /// First-run fetch of a model's weights, in **bytes** (every other
+    /// variant counts pages or records). Only ever emitted once per machine
+    /// per model — see [`models::watch_download`].
+    Download {
+        done: u64,
+        total: u64,
     },
     /// Committing prepared records to a store (emitted by the worker loop).
     Indexing,
@@ -512,12 +520,6 @@ fn detect_regions(words: &[Word]) -> Vec<Bbox> {
     regions
 }
 
-fn inter_area(a: Bbox, b: Bbox) -> f32 {
-    let w = (a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0]);
-    let h = (a[1] + a[3]).min(b[1] + b[3]) - a[1].max(b[1]);
-    w.max(0.0) * h.max(0.0)
-}
-
 /// Whether `bbox` contains ink, judged on the page's shared grayscale
 /// downscale (scans are full of legitimately blank gaps).
 fn region_inked(luma: &image::GrayImage, bbox: Bbox) -> bool {
@@ -549,6 +551,12 @@ fn crop_for_clip(page: &image::DynamicImage, bbox: Bbox) -> image::DynamicImage 
         (bbox[3] * ih).max(1.0) as u32,
     )
     .thumbnail(CROP_MAX_PX, CROP_MAX_PX)
+}
+
+fn inter_area(a: Bbox, b: Bbox) -> f32 {
+    let w = (a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0]);
+    let h = (a[1] + a[3]).min(b[1] + b[3]) - a[1].max(b[1]);
+    w.max(0.0) * h.max(0.0)
 }
 
 /// One page's contribution to the figure index, produced off-thread.
@@ -658,6 +666,18 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
 
     let pages = read_ocr(&ctx.data.join("ocr").join(doc))?;
     let pages_dir = ctx.data.join("pages").join(doc);
+    // Once per machine. The app fetches this at launch, so normally this is
+    // a size check; the path that matters is the launchd worker running on a
+    // machine whose app has never been opened. Log-and-continue: without the
+    // detector, figures come from word gaps alone (see `page_figures`), which
+    // is a recall loss and not a failure.
+    if let Err(e) = models::ensure_layout(&ctx.data, |done, total| {
+        progress(Progress::Download { done, total })
+    }) {
+        progress(Progress::Log(format!(
+            "page-layout model unavailable, using word gaps only: {e:#}"
+        )));
+    }
     let model = layout::LayoutModel::load(&ctx.data)?;
     // PDFs (including cache-only reindexes whose source is gone) keep
     // their exact pre-image behavior — the guarantee is image-docs only
@@ -702,11 +722,24 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
         return Ok(Vec::new()); // nothing to embed: skip the CLIP load
     }
 
-    // 2. embed, draining so crops free as batches complete
-    let model = ImageEmbedding::try_new(
-        ImageInitOptions::new(ImageEmbeddingModel::ClipVitB32)
-            .with_cache_dir(ctx.data.join("models"))
-            .with_show_download_progress(true),
+    // 2. embed, draining so crops free as batches complete. The app caches
+    // this encoder at launch (`models::ensure_clip_vision`), so normally the
+    // construction below is a load from disk. It stays wrapped because the
+    // launchd worker can run on a machine whose app has never been opened,
+    // and there the same call *downloads* ~335 MB first — minutes of
+    // otherwise unexplained stall partway through someone's first ingest.
+    let models_dir = ctx.data.join("models");
+    let model = models::watch_download(
+        &models_dir,
+        models::CLIP_VISION_BYTES,
+        || {
+            ImageEmbedding::try_new(
+                ImageInitOptions::new(ImageEmbeddingModel::ClipVitB32)
+                    .with_cache_dir(models_dir.clone())
+                    .with_show_download_progress(true),
+            )
+        },
+        |done, total| progress(Progress::Download { done, total }),
     )?;
     let total = crops.len();
     let mut recs: Vec<ImageRec> = Vec::with_capacity(keys.len());

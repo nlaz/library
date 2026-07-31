@@ -26,8 +26,14 @@ use and any redistribution.
    Source: Oblix/yolov10m-doclaynet_ONNX_document-layout-analysis
            https://huggingface.co/Oblix/yolov10m-doclaynet_ONNX_document-layout-analysis
    License: AGPL-3.0
-   Use here: fetched at runtime to data/models/layout/ and run via ONNX Runtime
-   for page-layout detection during ingestion. It is optional in the sense that
-   ingestion falls back to a word-gap heuristic when the model file is absent.
+   Use here: downloaded at runtime by the app itself, on first launch, to
+   data/models/layout/ on the user's own machine (see
+   library-ingest/src/models.rs::ensure_layout) and run via ONNX Runtime for
+   page-layout detection during ingestion. It is never vendored in this
+   repository and never included in a build artifact. It is optional in the
+   sense that ingestion falls back to a word-gap heuristic when the file is
+   absent or the download fails — that fallback loses roughly two thirds of
+   detected figures, and effectively all tables, so it is a degraded mode
+   rather than an equivalent one.
    Because this model is AGPL-3.0, review its terms before redistributing it or
    offering it as part of a network service.

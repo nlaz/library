@@ -59,6 +59,10 @@ fn emit_progress(app: &AppHandle, doc: &str, p: Progress) {
         Progress::Embed { done, total } => ("embed", done, total, String::new()),
         Progress::Figures { done, total } => ("figures", done, total, String::new()),
         Progress::Clip { done, total } => ("clip", done, total, String::new()),
+        // bytes, not pages: the card renders this stage as MB (format.ts)
+        Progress::Download { done, total } => {
+            ("download", done as usize, total as usize, String::new())
+        }
         Progress::Indexing => ("indexing", 0, 0, String::new()),
     };
     let _ = app.emit(

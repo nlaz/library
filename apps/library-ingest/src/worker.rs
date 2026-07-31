@@ -279,6 +279,9 @@ impl StatusMirror<'_> {
             Progress::Embed { done, total } => ("embed", done as u64, total as u64),
             Progress::Figures { done, total } => ("figures", done as u64, total as u64),
             Progress::Clip { done, total } => ("clip", done as u64, total as u64),
+            // bytes, not pages — but the status file's done/total are units
+            // the reader picks by stage, and the card labels this one "MB"
+            Progress::Download { done, total } => ("download", done, total),
             Progress::Indexing => ("indexing", 0, 0),
         };
         if stage == self.stage && self.last.elapsed().as_millis() < 1000 {
@@ -365,6 +368,9 @@ impl MetricsClock {
             Progress::Embed { .. } => self.flip("embed"),
             Progress::Figures { .. } => self.flip("figures"),
             Progress::Clip { .. } => self.flip("clip"),
+            // a once-per-machine model fetch is not a pipeline stage; timing
+            // it would put a network wait in the per-page ingest metrics
+            Progress::Download { .. } => {}
             Progress::Indexing => self.flip("indexing"),
         }
     }

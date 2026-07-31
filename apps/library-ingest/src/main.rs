@@ -261,6 +261,10 @@ fn print_progress(p: Progress) {
                 println!("  clip {done}/{total}");
             }
         }
+        Progress::Download { done, total } => {
+            let mb = |b: u64| b / (1024 * 1024);
+            println!("  downloading model {}/{} MB", mb(done), mb(total));
+        }
         Progress::Indexing => println!("  indexing"),
     }
 }

@@ -82,10 +82,10 @@ export async function renderHome(cols?: Collections) {
       return shelf;
     }),
   );
-  // Until something here can answer a query, the shelves aren't the point —
-  // what a book goes through is. The panel sits above them, so a book that
-  // is mid-ingest appears under the row explaining what's happening to it,
-  // and both disappear together when the first one lands.
+  // An empty library has nothing to show but what to do about it, so the
+  // panel takes the pane (centred by onboard.css) and leaves the moment a
+  // book is added — from then on the card's own progress bar is the honest
+  // account of what is happening, and a panel narrating it is in the way.
   const onboard = onboardPanel(ds);
   if (onboard) $home.prepend(onboard);
 }

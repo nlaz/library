@@ -1,7 +1,7 @@
-// The shelf, over the real chrome: which way a book's "⋯" menu opens. That
-// is the one thing the stylesheet can't decide on its own — which column a
-// card landed in is a grid autoflow fact CSS won't name. See
-// chrome-fixture.ts for the mounting rules this depends on.
+// The shelf, over the real chrome: when the first-run card holds the pane,
+// and which way a book's "⋯" menu opens. Both are decisions the pure modules
+// can't make — one is about what else is in the pane, the other about where
+// the card landed in the grid. See chrome-fixture.ts for the mounting rules.
 
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { mountChrome } from "./chrome-fixture";
@@ -46,6 +46,23 @@ const openMenu = () => {
   $home().querySelector<HTMLElement>(".bmenu")!.click();
   return $home().querySelector<HTMLElement>(".book-menu")!;
 };
+
+it("gives the whole pane to the first-run card while the library is empty", async () => {
+  docs = [];
+  await home.renderHome({});
+  // :only-child is what centres it (onboard.css) — anything else in #home
+  // silently drops it back into top-left flow
+  expect($home().children).toHaveLength(1);
+  expect($home().firstElementChild?.className).toBe("onboard");
+});
+
+it("drops the first-run card the moment a book is added, still indexing", async () => {
+  docs = [doc({ processing: true, pages: 0, status: null })];
+  await home.renderHome({});
+  expect($home().querySelector(".onboard")).toBeNull();
+  // the card's own progress bar is what reports the indexing from here
+  expect($home().querySelector(".book.processing .progress")).not.toBeNull();
+});
 
 it("opens a menu leftward when there is room for it", async () => {
   docs = [doc()];

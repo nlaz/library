@@ -1,18 +1,45 @@
 /* ---------------------------------------------------------------------------
-   first-run panel: three states a book passes through, above the shelves,
-   until one book can answer a query.
+   first-run panel: what an empty library has to say for itself, in the middle
+   of the pane where the shelves would be.
 
-   It borrows the launch card's mark column deliberately — a tick in a fixed
-   gutter is now this app's way of saying "this part is finished", and the
-   two screens a new user sees back to back should say it the same way. What
-   differs is the register: the launch card is machinery reporting on itself
-   in mono, this is prose, so the titles are set in the UI face. */
+   It is the launch card again (launch.css) — same plate, same stamped head,
+   same fixed mark gutter, same mono at --fs-meta. Those two screens arrive
+   back to back on a first run, and the register carrying over is what makes
+   them read as one program still setting itself up rather than as two
+   unrelated notices. Only the mark gutter survives from the earlier prose
+   version of this panel; the UI face went with it. */
+
+/* The empty library has nothing to scroll past, so the pane belongs to the
+   card: fill the scroller and centre in it. :only-child is the guard — the
+   one case where the panel shares the pane is a library whose only book
+   failed, and there the card belongs above that shelf, in normal flow, not
+   floating in the middle of it. */
+#home:has(> .onboard:only-child) {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+}
 
 .onboard {
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
+  border: 1px solid var(--line-strong);
+  width: min(380px, 100%);
+  padding: var(--sp-3);
   display: grid;
-  gap: var(--sp-4);
-  max-width: 440px;
-  padding: var(--sp-5) var(--sp-1) var(--sp-5) 0;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
+.ohead {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-faint);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: var(--sp-1);
 }
 
 .osteps {
@@ -20,26 +47,27 @@
   gap: var(--sp-3);
 }
 
-/* mark · body · optional button */
+/* mark · body. The gutter is the launch card's: a tick in a fixed column is
+   this app's way of saying "this part is finished", and the width matches so
+   the two checklists line up when they follow each other. */
 .ostep {
   display: grid;
-  grid-template-columns: 16px 1fr auto;
-  gap: var(--sp-2) var(--sp-3);
-  align-items: start;
-  padding-bottom: var(--sp-3);
-  border-bottom: 1px solid var(--line);
+  grid-template-columns: 12px 1fr;
+  gap: var(--sp-2);
+  align-items: baseline;
+  color: var(--ink-faint);
 }
 
-.ostep:last-child {
-  border-bottom: 0;
-  padding-bottom: 0;
+.ostep.done {
+  color: var(--ink-dim);
+}
+
+.ostep.active {
+  color: var(--ink);
 }
 
 .omark {
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  line-height: 1.7;
-  color: var(--ink-faint);
+  color: inherit;
 }
 
 .ostep.active .omark,
@@ -49,30 +77,26 @@
 
 .ostep b {
   display: block;
-  font-size: var(--fs-title);
-  font-weight: 600;
-  color: var(--ink);
+  font-size: var(--fs-mono);
+  font-weight: 500;
 }
 
 .osub {
   display: block;
-  font-size: var(--fs-ui);
   color: var(--ink-dim);
   text-wrap: pretty;
 }
 
-/* a step you haven't reached is legible but plainly not now */
-.ostep.pending b {
-  color: var(--ink-dim);
-}
-
-.ostep.pending .osub {
-  color: var(--ink-faint);
-}
-
-.ostep.done b,
+/* a step you haven't reached keeps one colour throughout — a sub brighter
+   than the title it belongs to reads as the more important half */
+.ostep.pending .osub,
 .ostep.done .osub {
-  color: var(--ink-faint);
+  color: inherit;
+}
+
+.opick {
+  justify-self: start;
+  margin-top: var(--sp-1);
 }
 
 /* the vocabulary strip: present, ignorable, and the only place in the app
@@ -81,11 +105,9 @@
   display: flex;
   gap: var(--sp-4);
   flex-wrap: wrap;
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
   color: var(--ink-faint);
   border-top: 1px solid var(--line);
-  padding-top: var(--sp-3);
+  padding-top: var(--sp-2);
 }
 
 .okeys kbd {

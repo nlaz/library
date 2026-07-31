@@ -1,8 +1,13 @@
 // ---------------------------------------------------------------------------
-// The first-run panel: three states a book passes through, shown until this
-// library holds one that can answer a query. Rendered by home.ts above the
-// shelves, so a book that is still being read appears underneath the row
-// that explains what is happening to it.
+// The first-run panel: an accession card in the middle of an empty library,
+// naming the three things that happen to a book. Rendered by home.ts, which
+// centres it in the shelf pane because with no shelves there is nothing else
+// for it to be above.
+//
+// It is deliberately the launch card's twin — same plate, same stamped head,
+// same fixed mark gutter, same mono. These are the first two screens anyone
+// sees, back to back, and the second one reading as a different program is
+// the whole thing this shape avoids.
 //
 // The key strip at the foot is the other half: this app's vocabulary is
 // entirely in its keyboard, and the empty library is the one moment we can
@@ -31,6 +36,14 @@ export function onboardPanel(docs: DocInfo[]): HTMLElement | null {
   const el = document.createElement("section");
   el.className = "onboard";
 
+  const head = document.createElement("div");
+  head.className = "ohead";
+  for (const s of ["the library", "getting started"]) {
+    const part = document.createElement("span");
+    part.textContent = s;
+    head.append(part);
+  }
+
   const list = document.createElement("div");
   list.className = "osteps";
   for (const r of rows) {
@@ -47,18 +60,16 @@ export function onboardPanel(docs: DocInfo[]): HTMLElement | null {
     sub.textContent = r.sub;
     body.append(title, sub);
     row.append(mark, body);
-
-    // The picker is reachable by ⌘O, but a shortcut nobody has been told
-    // about is not an affordance — the button is how anyone finds it.
-    if (r.state === "active" && r.title.startsWith("Drop")) {
-      const pick = document.createElement("button");
-      pick.className = "divot firm";
-      pick.textContent = "Choose files…";
-      pick.addEventListener("click", onPick);
-      row.append(pick);
-    }
     list.append(row);
   }
+
+  // The picker is reachable by ⌘O, but a shortcut nobody has been told
+  // about is not an affordance — the button is how anyone finds it. It sits
+  // where the launch card's skip button sits, for the same reason.
+  const pick = document.createElement("button");
+  pick.className = "opick divot firm";
+  pick.textContent = "Choose files…";
+  pick.addEventListener("click", onPick);
 
   const keys = document.createElement("div");
   keys.className = "okeys";
@@ -74,6 +85,6 @@ export function onboardPanel(docs: DocInfo[]): HTMLElement | null {
     keys.append(item);
   }
 
-  el.append(list, keys);
+  el.append(head, list, pick, keys);
   return el;
 }

@@ -277,9 +277,31 @@ export type MemoryBreakdown = {
   atlas_building: boolean;
 };
 
+/** Launch-screen status (desktop only): `app:status` events and the latched
+ * `startup_status` command return this same shape. `done`/`total` are bytes,
+ * and are zero except while a model is actually downloading. */
+export type StartupStatus = {
+  /** Matches the sequence in launch-model.ts; `ready` ends it. */
+  step: "stores" | "layout" | "clip" | "vision" | "ready";
+  detail: string;
+  done: number;
+  total: number;
+};
+
 export type IngestEvent = {
   doc: string;
-  stage: "log" | "ocr" | "clean" | "embed" | "figures" | "clip" | "indexing" | "done" | "error";
+  stage:
+    | "log"
+    | "ocr"
+    | "clean"
+    | "embed"
+    | "figures"
+    // one-time model fetch; `done`/`total` are bytes, not pages
+    | "download"
+    | "clip"
+    | "indexing"
+    | "done"
+    | "error";
   done: number;
   total: number;
   message: string;

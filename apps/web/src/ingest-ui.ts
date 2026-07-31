@@ -4,6 +4,7 @@
 
 import { $dropzone, $home } from "./dom";
 import { getCol, ingesting, loadCollections, renderHome, updateBookProgress } from "./home";
+import { setOnboardPicker } from "./onboard";
 import { desktop } from "./state";
 import { notify } from "./toast";
 
@@ -29,12 +30,36 @@ async function queueFiles(paths: string[]) {
   renderHome();
 }
 
+/** Open the native chooser and queue whatever comes back. Shared by the
+ * first-run panel's button and ⌘O — one path, so the move-confirm and the
+ * extension gate can't diverge between them. */
+export async function pickAndQueue() {
+  if (!desktop) return;
+  try {
+    await queueFiles(await desktop.pickFiles());
+  } catch (e) {
+    notify(`add failed: ${e}`, { sticky: true });
+  }
+}
+
 export function wireDesktop() {
   if (!desktop) return;
+  setOnboardPicker(() => void pickAndQueue());
   desktop
     .getSettings()
     .then((s) => (libraryDir = `${s.data}/pdfs`))
     .catch(() => {});
+
+  // ⌘O adds books from anywhere in the app, the way every other Mac app
+  // opens a file — but never out from under someone typing.
+  document.addEventListener("keydown", (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key !== "o") return;
+    const t = e.target as HTMLElement | null;
+    if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t?.isContentEditable)
+      return;
+    e.preventDefault();
+    void pickAndQueue();
+  });
   desktop.onDragDrop(
     () => ($dropzone.hidden = false),
     () => ($dropzone.hidden = true),

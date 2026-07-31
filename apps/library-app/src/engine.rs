@@ -26,6 +26,8 @@ pub struct Engine {
 pub struct AppState {
     pub(crate) settings: Settings,
     pub(crate) engine: RwLock<Option<std::sync::Arc<Engine>>>,
+    /// Last launch-screen status, latched so a late webview can catch up.
+    pub(crate) status: std::sync::Mutex<Status>,
     /// Wakes the worker thread for an immediate sweep; what to ingest
     /// comes from the status files, not the channel.
     pub(crate) wake: mpsc::Sender<()>,
@@ -47,6 +49,54 @@ pub(crate) fn dev_root() -> PathBuf {
 // engine init (background: store open + model load take seconds)
 // ---------------------------------------------------------------------------
 
+/// What the launch screen is showing. One event type for the whole startup
+/// sequence; the frontend (launch-model.ts) owns how the steps are drawn,
+/// including the labels for steps not yet reached.
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct Status {
+    /// Machine-readable step, in order: `stores` | `layout` | `clip`, then
+    /// `ready` when the sequence is done.
+    pub(crate) step: &'static str,
+    /// One clause, already user-facing. Only rendered for a step the
+    /// frontend doesn't recognise; otherwise it is a log aid.
+    pub(crate) detail: String,
+    /// Bytes, while a model is downloading; zero on an indeterminate step.
+    pub(crate) done: u64,
+    pub(crate) total: u64,
+}
+
+impl Default for Status {
+    /// The state before `init_engine` has run a line: the window is up and
+    /// the stores are about to open.
+    fn default() -> Status {
+        Status::step("stores", "Opening the library")
+    }
+}
+
+impl Status {
+    fn step(step: &'static str, detail: &str) -> Status {
+        Status {
+            step,
+            detail: detail.to_string(),
+            done: 0,
+            total: 0,
+        }
+    }
+}
+
+/// Emit a launch-screen status **and** latch it on the state.
+///
+/// The latch is what makes the frontend's subscription raceable: with a warm
+/// cache the whole sequence can finish before the webview has run a line of
+/// JavaScript, and a launch screen that only listens would then wait forever
+/// for an event already sent. `startup_status` hands over the last one.
+fn status(app: &AppHandle, s: Status) {
+    if let Ok(mut slot) = app.state::<AppState>().status.lock() {
+        *slot = s.clone();
+    }
+    let _ = app.emit("app:status", &s);
+}
+
 pub(crate) fn init_engine(app: AppHandle) {
     let settings = app.state::<AppState>().settings.clone();
     let fail = |msg: String| {
@@ -54,6 +104,7 @@ pub(crate) fn init_engine(app: AppHandle) {
         let _ = app.emit("app:error", &msg);
     };
 
+    status(&app, Status::step("stores", "Opening the library"));
     let t = Instant::now();
     // `Locked` usually means the launchd ingest worker is inside one of its
     // brief commit windows (which include an HNSW checkpoint — tens of
@@ -112,15 +163,64 @@ pub(crate) fn init_engine(app: AppHandle) {
         .expect("engine slot lock poisoned") = Some(engine.clone());
     let _ = app.emit("app:ready", ());
 
-    // Readiness doesn't wait for CLIP: text queries embed with ese (no model
-    // object), so search works the moment the stores open. Only figure search
-    // needs the encoder (shared space with figure crops), and its callers
-    // treat "not loaded yet" as no figure results.
+    // Everything past this point is models, and readiness does not wait for
+    // any of it: text queries embed with ese (no model object), so search
+    // works the moment the stores open. That is why `app:ready` fires above —
+    // the launch screen stays up for the downloads, but it can offer a way in.
+    //
+    // On a machine that has never run this app, both steps below *fetch*
+    // rather than load: together they are the one part of startup measured in
+    // minutes. The layout detector goes first because it is the smaller of
+    // the two and the one nothing else would ever fetch — doing it here
+    // rather than at first ingest means the launch screen owns every model
+    // wait the app has, and the first document added is indexed at full
+    // quality instead of falling back to word-gap figure detection.
     let t = Instant::now();
     let models = settings.data.join("models");
-    match TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::ClipVitB32).with_cache_dir(models),
-    ) {
+    status(
+        &app,
+        Status::step("layout", "Fetching the page-layout model"),
+    );
+    if let Err(e) = library_ingest::models::ensure_layout(&settings.data, |done, total| {
+        status(
+            &app,
+            Status {
+                step: "layout",
+                detail: "Fetching the page-layout model".into(),
+                done,
+                total,
+            },
+        );
+    }) {
+        // not fatal: ingestion falls back to word-gap figure detection
+        eprintln!("page-layout model unavailable: {e:#}");
+    } else {
+        println!("layout model ready in {:?}", t.elapsed());
+    }
+
+    let t = Instant::now();
+    status(&app, Status::step("clip", "Preparing figure search"));
+    let loaded = library_ingest::models::watch_download(
+        &models,
+        library_ingest::models::CLIP_TEXT_BYTES,
+        || {
+            TextEmbedding::try_new(
+                InitOptions::new(EmbeddingModel::ClipVitB32).with_cache_dir(models.clone()),
+            )
+        },
+        |done, total| {
+            status(
+                &app,
+                Status {
+                    step: "clip",
+                    detail: "Fetching the figure-search model".into(),
+                    done,
+                    total,
+                },
+            );
+        },
+    );
+    match loaded {
         Ok(c) => {
             let _ = engine.clip_text.set(c);
             println!("embedding model ready in {:?}", t.elapsed());
@@ -129,6 +229,35 @@ pub(crate) fn init_engine(app: AppHandle) {
             "figure search unavailable — embedding model failed to load: {e}"
         )),
     }
+
+    // Last, and biggest: the image encoder. Nothing on this screen needs it —
+    // it is what *indexes* pictures, not what searches them — but fetching it
+    // here is what keeps it off the critical path of the first document,
+    // where it would otherwise appear as a stalled progress bar partway
+    // through an ingest. Cached and dropped, not held: see `ensure_clip_vision`.
+    let t = Instant::now();
+    status(
+        &app,
+        Status::step("vision", "Fetching the figure-indexing model"),
+    );
+    if let Err(e) = library_ingest::models::ensure_clip_vision(&settings.data, |done, total| {
+        status(
+            &app,
+            Status {
+                step: "vision",
+                detail: "Fetching the figure-indexing model".into(),
+                done,
+                total,
+            },
+        );
+    }) {
+        // not fatal: ingest fetches it itself, it just costs the wait later
+        eprintln!("figure-indexing model not pre-fetched: {e:#}");
+    } else {
+        println!("image encoder cached in {:?}", t.elapsed());
+    }
+
+    status(&app, Status::step("ready", ""));
 }
 
 pub(crate) fn engine(state: &AppState) -> Result<std::sync::Arc<Engine>, String> {

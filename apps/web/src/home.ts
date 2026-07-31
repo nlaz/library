@@ -6,7 +6,8 @@
 import { coverImg } from "./assets";
 import { $cols, $home, setPressed } from "./dom";
 import { collectionsChecklist } from "./drawer";
-import { displayTitle, prettify, setDocList, STAGE_LABEL, statusEvent } from "./format";
+import { displayTitle, prettify, setDocList, STAGE_LABEL, stageCount, statusEvent } from "./format";
+import { onboardPanel } from "./onboard";
 import { desktop, transport } from "./state";
 import { notify } from "./toast";
 import type { Collections, DocInfo, IngestEvent } from "./types";
@@ -80,12 +81,12 @@ export async function renderHome(cols?: Collections) {
       return shelf;
     }),
   );
-  if (!visible.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = "the library is empty — drop a PDF or image anywhere";
-    $home.replaceChildren(empty);
-  }
+  // Until something here can answer a query, the shelves aren't the point —
+  // what a book goes through is. The panel sits above them, so a book that
+  // is mid-ingest appears under the row explaining what's happening to it,
+  // and both disappear together when the first one lands.
+  const onboard = onboardPanel(ds);
+  if (onboard) $home.prepend(onboard);
 }
 
 function bookCard(d: DocInfo, cols: Collections): HTMLElement {
@@ -276,6 +277,5 @@ export function updateBookProgress(el: Element, e?: IngestEvent) {
   if (!e || !sub || !fill) return;
   const frac = e.total > 0 ? e.done / e.total : 0;
   fill.style.width = `${Math.round(frac * 100)}%`;
-  const n = e.total > 0 ? ` ${e.done}/${e.total}` : "";
-  sub.textContent = `${STAGE_LABEL[e.stage] ?? e.stage}${n}`;
+  sub.textContent = `${STAGE_LABEL[e.stage] ?? e.stage}${stageCount(e.stage, e.done, e.total)}`;
 }

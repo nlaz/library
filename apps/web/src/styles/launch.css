@@ -1,0 +1,91 @@
+/* ---------------------------------------------------------------------------
+   launch screen: the whole window while the stores open and the models come
+   down. Above every other layer (30) — nothing is usable behind it, so
+   nothing should show through.
+
+   The card is an accession card: a stamped header, then one line per step of
+   startup, all of them present from the first frame. No spinner. A spinner
+   says "wait" without saying for what, and on a first run this wait is
+   minutes long and has three separate reasons. */
+
+#launch {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  --divot-ground: var(--bg);
+  background: var(--divot-ground);
+  display: grid;
+  place-items: center;
+  padding: var(--sp-4);
+}
+
+#launch[hidden] {
+  display: none;
+}
+
+#launch-card {
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
+  border: 1px solid var(--line-strong);
+  width: min(340px, 100%);
+  padding: var(--sp-3);
+  display: grid;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
+#launch-head {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-faint);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: var(--sp-1);
+}
+
+#launch-rows {
+  display: grid;
+  gap: 5px;
+}
+
+/* mark · label · count. The mark column is fixed so the labels stay in one
+   vertical line as ticks land in it — a checklist whose text shifts when an
+   item completes reads as a redraw rather than as progress. */
+.lrow {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  gap: var(--sp-2);
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+}
+
+.lrow.pending {
+  color: var(--ink-faint);
+}
+
+.lrow.done {
+  color: var(--ink-dim);
+}
+
+.lrow.active {
+  color: var(--ink);
+}
+
+.lmark {
+  color: var(--hl-line);
+}
+
+.lnote {
+  color: var(--ink-dim);
+}
+
+#launch-skip {
+  justify-self: start;
+  margin-top: var(--sp-1);
+}
+
+#launch-skip[hidden] {
+  display: none;
+}

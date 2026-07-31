@@ -110,6 +110,24 @@ function close() {
   $toggle.setAttribute("aria-expanded", "false");
 }
 
+let chatDisabledReason: string | null = null;
+
+/** Take the librarian off the chrome entirely: this Mac has no on-device
+ * model, so a chat button is an invitation to a dead end. The reason is
+ * kept for the shortcut sheet, which explains the absence rather than
+ * leaving a hole where a feature used to be. */
+export function disableChat(reason: string | null) {
+  close();
+  $toggle.remove();
+  $panel.remove();
+  chatDisabledReason = reason;
+}
+
+/** Null while the librarian is available. */
+export function chatUnavailableReason(): string | null {
+  return chatDisabledReason;
+}
+
 function persist() {
   sessionStorage.setItem(STORE_KEY, JSON.stringify(transcript.slice(-24)));
 }

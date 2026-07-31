@@ -5,7 +5,7 @@ use library_core::Query;
 use library_core::wire::Response;
 use tauri::State;
 
-use crate::engine::{AppState, answer, engine};
+use crate::engine::{AppState, Status, answer, engine};
 
 #[tauri::command]
 pub(crate) async fn search(state: State<'_, AppState>, query: Query) -> Result<Response, String> {
@@ -45,6 +45,15 @@ pub(crate) fn ready(state: State<'_, AppState>) -> bool {
         .read()
         .expect("engine slot lock poisoned")
         .is_some()
+}
+
+/// The latched launch-screen status. The webview subscribes to `app:status`
+/// and then calls this, so a startup that finished before the frontend
+/// booted still resolves (the same subscribe-then-recheck shape the search
+/// transport's `ready()` uses).
+#[tauri::command]
+pub(crate) fn startup_status(state: State<'_, AppState>) -> Status {
+    state.status.lock().expect("status lock poisoned").clone()
 }
 
 /// Hidden perf view (Cmd+.): the search ring (per-stage timings + per-hit

@@ -44,10 +44,25 @@ export const STAGE_LABEL: Record<string, string> = {
   embed: "indexing text",
   figures: "finding figures",
   clip: "indexing figures",
+  download: "fetching the figure model",
   indexing: "committing",
   queued: "queued",
   staged: "waiting to index",
 };
+
+/** Stages whose done/total are bytes rather than pages or records. The
+ * one-time model fetch is the only one — see `Progress::Download`. */
+const BYTE_STAGES = new Set(["download"]);
+
+/** The count that follows a stage label on a book card: "12/300" for pages,
+ * "84/335 MB" for the model fetch, nothing at all for a stage with no
+ * denominator to report. */
+export function stageCount(stage: string, done: number, total: number): string {
+  if (total <= 0) return "";
+  if (!BYTE_STAGES.has(stage)) return ` ${done}/${total}`;
+  const mb = (b: number) => Math.round(b / (1024 * 1024));
+  return ` ${mb(done)}/${mb(total)} MB`;
+}
 
 /** Progress-shaped view of a persisted status, for cards with no live
  * event yet (e.g. right after launch while the doc is mid-ingest). */

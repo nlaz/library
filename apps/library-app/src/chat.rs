@@ -38,6 +38,80 @@ pub(crate) fn librarian_bin(app: &AppHandle) -> PathBuf {
     dev_root().join("apps/librarian/.build/release/librarian")
 }
 
+/// Whether this machine can serve a chat turn at all, and why not when it
+/// can't. The UI hides the librarian entirely when `available` is false —
+/// an on-device model that isn't there is not a feature to fail at, it's a
+/// feature this Mac doesn't have.
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct ChatStatus {
+    pub(crate) available: bool,
+    /// Present only when unavailable: one sentence, already user-facing.
+    pub(crate) reason: Option<String>,
+}
+
+/// AFM's `UnavailableReason` debug spelling → something a person can act on.
+fn explain(raw: &str) -> String {
+    if raw.contains("appleIntelligenceNotEnabled") {
+        "Apple Intelligence is turned off — enable it in System Settings to ask the librarian."
+    } else if raw.contains("deviceNotEligible") {
+        "This Mac doesn't support Apple Intelligence, so the librarian is unavailable."
+    } else if raw.contains("modelNotReady") {
+        "Apple Intelligence is still downloading its model — the librarian will appear once it finishes."
+    } else {
+        return format!("The on-device model is unavailable ({raw}).");
+    }
+    .to_string()
+}
+
+/// Cached because the answer can only change with a System Settings change
+/// or an OS model download, neither of which we can observe mid-session —
+/// and probing spawns a process, which the frontend must not pay per call.
+static CHAT_STATUS: std::sync::OnceLock<ChatStatus> = std::sync::OnceLock::new();
+
+/// Async + blocking pool: the probe spawns a process that loads the
+/// Foundation Models framework, which is far too long to hold a command
+/// thread for.
+#[tauri::command]
+pub(crate) async fn chat_status(app: AppHandle) -> Result<ChatStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || probe_chat(&app))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn probe_chat(app: &AppHandle) -> ChatStatus {
+    CHAT_STATUS
+        .get_or_init(|| {
+            let bin = librarian_bin(app);
+            if !bin.is_file() {
+                return ChatStatus {
+                    available: false,
+                    reason: Some("The librarian isn't included in this build.".into()),
+                };
+            }
+            match std::process::Command::new(&bin).arg("check").output() {
+                Ok(out) => {
+                    let said = String::from_utf8_lossy(&out.stdout);
+                    if said.trim_start().starts_with("AVAILABLE") {
+                        ChatStatus {
+                            available: true,
+                            reason: None,
+                        }
+                    } else {
+                        ChatStatus {
+                            available: false,
+                            reason: Some(explain(said.trim())),
+                        }
+                    }
+                }
+                Err(e) => ChatStatus {
+                    available: false,
+                    reason: Some(format!("The librarian could not be started: {e}")),
+                },
+            }
+        })
+        .clone()
+}
+
 fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
     use std::io::BufRead;
     let bin = librarian_bin(app);
@@ -60,6 +134,11 @@ fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
     let mut lines = std::io::BufReader::new(child.stdout.take().expect("piped stdout")).lines();
     match lines.next() {
         Some(Ok(l)) if l.contains("\"ready\"") => {}
+        // the sidecar's own preflight refused: report its reason, not "no ready"
+        Some(Ok(l)) if l.contains("\"unavailable\"") => {
+            let raw: serde_json::Value = serde_json::from_str(&l).unwrap_or_default();
+            return Err(explain(raw["reason"].as_str().unwrap_or("")));
+        }
         _ => return Err("librarian sidecar did not become ready".into()),
     }
     Ok(ChatBridge {

@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
+import { confirm as confirmDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Transport } from "./transport";
 import type {
   AtlasResponse,
@@ -15,6 +15,7 @@ import type {
   IngestEvent,
   NewCard,
   QueryMsg,
+  StartupStatus,
   WireResponse,
 } from "./types";
 
@@ -70,6 +71,18 @@ export function ingestPaths(
   mode: "move" | "copy" = "copy",
 ): Promise<string[]> {
   return invoke<string[]>("ingest_paths", { paths, collection, mode });
+}
+
+/** Native file chooser for adding books — the same set of formats the drop
+ * handler and the Rust ingest gate accept. Empty when cancelled. */
+export async function pickFiles(): Promise<string[]> {
+  const picked = await openDialog({
+    multiple: true,
+    title: "Add to library",
+    filters: [{ name: "Documents and scans", extensions: ["pdf", "png", "jpg", "jpeg", "heic"] }],
+  });
+  if (!picked) return [];
+  return Array.isArray(picked) ? picked : [picked];
 }
 
 /** Ask before relocating files into the library folder. */
@@ -141,6 +154,12 @@ export function chatCancel(): void {
   invoke("chat_cancel").catch(() => {});
 }
 
+/** Whether Apple Foundation Models can answer on this Mac. Cached in Rust;
+ * an unavailable answer hides the librarian rather than failing at it. */
+export function chatStatus(): Promise<{ available: boolean; reason: string | null }> {
+  return invoke<{ available: boolean; reason: string | null }>("chat_status");
+}
+
 // --- marginalia: note-box cards ---------------------------------------------
 
 export function listCards(): Promise<CardRec[]> {
@@ -167,6 +186,16 @@ export function onIngestProgress(cb: (e: IngestEvent) => void): void {
 
 export function onAppError(cb: (msg: string) => void): void {
   listen<string>("app:error", (e) => cb(e.payload));
+}
+
+/** The latched launch-screen status, for the subscribe-then-recheck that
+ * makes a startup finishing before the webview boots survivable. */
+export function startupStatus(): Promise<StartupStatus> {
+  return invoke<StartupStatus>("startup_status");
+}
+
+export function onStartupStatus(cb: (s: StartupStatus) => void): void {
+  listen<StartupStatus>("app:status", (e) => cb(e.payload));
 }
 
 /** Engine start is stalled (e.g. the background indexer is mid-commit). */

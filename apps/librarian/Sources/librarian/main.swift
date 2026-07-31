@@ -1152,6 +1152,15 @@ final class ServeState: @unchecked Sendable {
 func runServe() async {
     let state = ServeState()
 
+    // Preflight. A session built on an unavailable model constructs fine and
+    // only fails on the first `respond`, with an opaque error that reaches
+    // the user as chat prose. Refusing to claim ready — and naming the
+    // reason — lets the host hide the chat surface instead.
+    if case .unavailable(let reason) = SystemLanguageModel.default.availability {
+        emit.line(["e": "unavailable", "reason": "\(reason)"])
+        exit(3)
+    }
+
     // prewarm once at spawn so the first turn is warm
     makeSession().prewarm()
     emit.line(["e": "ready"])

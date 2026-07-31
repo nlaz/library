@@ -71,11 +71,23 @@ main {
    a groove around a face is a button, a well you can see into is a field.
    Never let a button and an input share a treatment. */
 
-/* both header toggles are icon-only dithered glyphs; notes pushes the
-   pair to the right edge of the header */
+/* all three header toggles are icon-only dithered glyphs; notes pushes the
+   group to the right edge of the header */
 #notes-toggle,
-#chat-toggle {
+#chat-toggle,
+#keys-toggle {
   padding: 4px 6px;
+}
+
+/* the shortcut sheet is a reference, not a feature — it sits last and one
+   step back in the ink so the two feature toggles keep the eye */
+#keys-toggle {
+  color: var(--ink-faint);
+}
+
+#keys-toggle:hover,
+#keys-toggle.on {
+  color: var(--ink);
 }
 
 #notes-toggle {
@@ -83,7 +95,8 @@ main {
 }
 
 #notes-toggle svg,
-#chat-toggle svg {
+#chat-toggle svg,
+#keys-toggle svg {
   display: block;
 }
 

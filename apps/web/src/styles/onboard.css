@@ -1,0 +1,98 @@
+/* ---------------------------------------------------------------------------
+   first-run panel: three states a book passes through, above the shelves,
+   until one book can answer a query.
+
+   It borrows the launch card's mark column deliberately — a tick in a fixed
+   gutter is now this app's way of saying "this part is finished", and the
+   two screens a new user sees back to back should say it the same way. What
+   differs is the register: the launch card is machinery reporting on itself
+   in mono, this is prose, so the titles are set in the UI face. */
+
+.onboard {
+  display: grid;
+  gap: var(--sp-4);
+  max-width: 440px;
+  padding: var(--sp-5) var(--sp-1) var(--sp-5) 0;
+}
+
+.osteps {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+/* mark · body · optional button */
+.ostep {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  gap: var(--sp-2) var(--sp-3);
+  align-items: start;
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.ostep:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.omark {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.7;
+  color: var(--ink-faint);
+}
+
+.ostep.active .omark,
+.ostep.done .omark {
+  color: var(--hl-line);
+}
+
+.ostep b {
+  display: block;
+  font-size: var(--fs-title);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.osub {
+  display: block;
+  font-size: var(--fs-ui);
+  color: var(--ink-dim);
+  text-wrap: pretty;
+}
+
+/* a step you haven't reached is legible but plainly not now */
+.ostep.pending b {
+  color: var(--ink-dim);
+}
+
+.ostep.pending .osub {
+  color: var(--ink-faint);
+}
+
+.ostep.done b,
+.ostep.done .osub {
+  color: var(--ink-faint);
+}
+
+/* the vocabulary strip: present, ignorable, and the only place in the app
+   where the keyboard introduces itself unprompted */
+.okeys {
+  display: flex;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-faint);
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-3);
+}
+
+.okeys kbd {
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--well);
+  padding: 0 3px;
+  color: var(--ink-dim);
+}

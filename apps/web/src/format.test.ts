@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { displayTitle, docTitle, prettify, setDocList } from "./format";
+import { displayTitle, docTitle, prettify, setDocList, stageCount } from "./format";
 import type { DocInfo } from "./types";
 
 const doc = (over: Partial<DocInfo> & { id: string }): DocInfo => ({
@@ -67,5 +67,19 @@ describe("docTitle", () => {
 
   it("prettifies the raw id for unknown docs", () => {
     expect(docTitle("secret-garden")).toBe("Secret Garden");
+  });
+});
+
+describe("stageCount", () => {
+  it("counts pages for ordinary pipeline stages", () => {
+    expect(stageCount("ocr", 12, 300)).toBe(" 12/300");
+  });
+
+  it("counts the one-time model fetch in MB, not bytes", () => {
+    expect(stageCount("download", 84 << 20, 335 << 20)).toBe(" 84/335 MB");
+  });
+
+  it("says nothing when there is no denominator", () => {
+    expect(stageCount("indexing", 0, 0)).toBe("");
   });
 });

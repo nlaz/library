@@ -60,6 +60,7 @@ pub fn run() {
             app.manage(AppState {
                 settings,
                 engine: RwLock::new(None),
+                status: std::sync::Mutex::new(crate::engine::Status::default()),
                 wake: tx,
                 chat: std::sync::Mutex::new(None),
                 chat_stdin: std::sync::Mutex::new(None),
@@ -83,6 +84,7 @@ pub fn run() {
             commands::search,
             commands::complete,
             commands::ready,
+            commands::startup_status,
             commands::perf_searches,
             commands::perf_memory,
             commands::perf_ingest,
@@ -98,6 +100,7 @@ pub fn run() {
             settings::set_settings,
             chat::chat_turn,
             chat::chat_cancel,
+            chat::chat_status,
             marginalia::list_cards,
             marginalia::create_card,
             marginalia::update_card,

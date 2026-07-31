@@ -63,29 +63,8 @@
           </g>
         </svg>
       </button>
-      <button id="keys-toggle" class="divot" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" aria-pressed="false">
-        <!-- three rows of keycaps in the same 2×2 Bayer 50% tile as its
-             neighbours; no outer frame, so it reads at 16px without any
-             negative space that would need the ground colour -->
-        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-          <defs>
-            <pattern id="keys-cap-dither" width="2" height="2" patternUnits="userSpaceOnUse">
-              <rect width="1" height="1" fill="currentColor" />
-              <rect x="1" y="1" width="1" height="1" fill="currentColor" />
-            </pattern>
-          </defs>
-          <g shape-rendering="crispEdges" fill="url(#keys-cap-dither)">
-            <rect x="0" y="3" width="2" height="2" />
-            <rect x="4" y="3" width="2" height="2" />
-            <rect x="8" y="3" width="2" height="2" />
-            <rect x="12" y="3" width="2" height="2" />
-            <rect x="2" y="7" width="2" height="2" />
-            <rect x="6" y="7" width="2" height="2" />
-            <rect x="10" y="7" width="2" height="2" />
-            <rect x="4" y="11" width="8" height="2" />
-          </g>
-        </svg>
-      </button>
+      <!-- the shortcut sheet has no glyph in the header: `?` opens it, and
+           the first-run panel is where that is said out loud -->
     </header>
     <main>
       <div id="home"></div>

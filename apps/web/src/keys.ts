@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
-// keys: the shortcut sheet behind the header's ⌨ button and the `?` key.
+// keys: the shortcut sheet behind the `?` key. It has no glyph in the
+// header — the way in is the key itself, said out loud by the first-run
+// panel and nowhere else.
 //
 // Every key this app answers to is discoverable nowhere else — the chrome is
 // deliberately bare, so this list is the only place the vocabulary is
@@ -9,7 +11,6 @@
 // ---------------------------------------------------------------------------
 
 import { chatUnavailableReason } from "./chat";
-import { setPressed } from "./dom";
 
 type Row = [keys: string, what: string];
 type Group = { title: string; rows: Row[] };
@@ -66,7 +67,6 @@ const GROUPS: Group[] = [
 
 const $sheet = document.getElementById("keys")!;
 const $body = document.getElementById("keys-body")!;
-const $toggle = document.getElementById("keys-toggle")!;
 
 export function keysOpen(): boolean {
   return !$sheet.hidden;
@@ -79,13 +79,11 @@ export function toggleKeys() {
 
 export function closeKeys() {
   $sheet.hidden = true;
-  setPressed($toggle, false);
 }
 
 function openKeys() {
   if (!$body.childElementCount) render();
   $sheet.hidden = false;
-  setPressed($toggle, true);
 }
 
 function render() {
@@ -128,7 +126,6 @@ function render() {
   }
 }
 
-$toggle.addEventListener("click", toggleKeys);
 document.getElementById("keys-close")!.addEventListener("click", closeKeys);
 $sheet.addEventListener("click", (e) => {
   if (e.target === $sheet) closeKeys(); // click the scrim, not the card

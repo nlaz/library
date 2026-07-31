@@ -170,6 +170,9 @@ function closeMenus() {
 }
 document.addEventListener("click", closeMenus);
 
+/** A menu landing this close to the window's left edge counts as off it. */
+const EDGE = 6;
+
 function bookMenu(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElement {
   const btn = document.createElement("button");
   btn.className = "bmenu divot firm";
@@ -179,7 +182,14 @@ function bookMenu(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElement
     e.stopPropagation();
     const open = card.querySelector(".book-menu");
     closeMenus();
-    if (!open) card.append(menuPanel(card, d, cols));
+    if (open) return;
+    const panel = menuPanel(card, d, cols);
+    card.append(panel);
+    // The panel is wider than a card, so it hangs off to the left — fine over
+    // the neighbouring cover, not fine for the leftmost column, where it goes
+    // off the window and gets clipped. Measure the one thing CSS can't know
+    // and hang it off the other side instead.
+    if (panel.getBoundingClientRect().left < EDGE) panel.classList.add("rightward");
   });
   return btn;
 }

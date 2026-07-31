@@ -79,6 +79,15 @@ header {
   contain-intrinsic-size: auto 270px;
 }
 
+/* content-visibility carries paint containment, which clips to the card box —
+   and the "⋯" menu is wider than a card by design. The card holding an open
+   menu opts out for as long as it holds it; one card at a time, so the skip
+   the rest of the shelf gets is untouched. */
+.book:has(> .book-menu) {
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
 .book.processing {
   cursor: default;
 }
@@ -220,8 +229,11 @@ header {
   --divot-ground: var(--surface);
 }
 
+/* :has, not a sibling combinator — the panel is appended after the trigger,
+   so `.book-menu ~ .bmenu` never matched and the trigger vanished from under
+   its own open menu the moment the pointer left the card. */
 .book:hover .bmenu,
-.book .book-menu ~ .bmenu,
+.book:has(> .book-menu) .bmenu,
 .bmenu:focus-visible {
   opacity: 1;
 }
@@ -240,6 +252,14 @@ header {
   background: var(--divot-ground);
   border: 1px solid var(--line-strong);
   cursor: default;
+}
+
+/* Hung off the other side, for a card in the leftmost column: right-aligned
+   there would put the panel off the window. home.ts measures and sets this,
+   because which column a card is in is a grid autoflow fact CSS won't name. */
+.book-menu.rightward {
+  right: auto;
+  left: 6px;
 }
 
 /* hard dithered shadow — no blur in the stacks. Two bands fully outside the

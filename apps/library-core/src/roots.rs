@@ -412,19 +412,25 @@ pub fn sync_root(meta: &crate::meta::Meta, root: &crate::meta::RootRec, now: u64
                 // inode but bytes we already hold is a copy, not a new book
                 let hash = content_hash(&abs(&root.path, &relpath));
                 let existing = hash.as_deref().and_then(|h| meta.doc_with_hash(h));
-                let doc = match existing {
+                match existing {
+                    // a second copy of a book we have: record the file, but
+                    // leave the document where it is. Otherwise whichever
+                    // copy the scan happened to reach last would decide the
+                    // shelf, and a stray duplicate in Downloads could
+                    // silently re-file a book you had put away.
                     Some(doc) => {
                         out.duplicates += 1;
-                        doc
+                        let _ =
+                            meta.put_file(&root.id, &relpath, &doc, &stat, hash.as_deref(), now);
                     }
                     None => {
                         let doc = crate::notes::mint_id('d');
                         out.queued.push(doc.clone());
-                        doc
+                        let _ =
+                            meta.put_file(&root.id, &relpath, &doc, &stat, hash.as_deref(), now);
+                        let _ = meta.set_doc_placement(&doc, kind.as_str(), shelf_of(&relpath));
                     }
-                };
-                let _ = meta.put_file(&root.id, &relpath, &doc, &stat, hash.as_deref(), now);
-                let _ = meta.set_doc_placement(&doc, kind.as_str(), shelf_of(&relpath));
+                }
             }
             Change::Moved {
                 doc,

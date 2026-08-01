@@ -169,6 +169,15 @@ fn a_copy_is_recognised_as_the_same_document() {
         docs.iter().all(|(_, d)| d == &doc),
         "one document between them"
     );
+
+    // and the copy does not re-file the book it duplicates: the original
+    // was loose at the top level and stays there, even though the copy
+    // landed in a folder
+    let shelf: Option<String> = lib
+        .ctx
+        .write(|c| c.query_row("SELECT shelf FROM docs WHERE id = ?1", [&doc], |r| r.get(0)))
+        .expect("shelf");
+    assert_eq!(shelf, None, "a duplicate must not move the document");
 }
 
 #[test]

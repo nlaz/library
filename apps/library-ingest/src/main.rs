@@ -173,6 +173,19 @@ enum Cli {
         #[arg(long, default_value = "data")]
         data: PathBuf,
     },
+    /// Watch a folder: link it and scan it once. The first folder linked
+    /// becomes the default — where `ingest` puts files it is handed.
+    /// (The desktop app does this for you; this is for CLI-only use.)
+    Link {
+        dir: PathBuf,
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+    },
+    /// Every watched folder, with what is indexed under it.
+    Roots {
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+    },
     /// Move a pre-0.2 library (data/pdfs + JSON sidecars) into the folder
     /// layout: originals copied into shelf folders, caches re-keyed to
     /// minted ids, sidecars imported into meta.db. Copies — the old
@@ -443,6 +456,56 @@ fn main() -> Result<()> {
                 be_gentle();
             }
             worker(&data)
+        }
+        Cli::Link { dir, data } => {
+            let dir = std::path::absolute(&dir)?;
+            if !dir.is_dir() {
+                anyhow::bail!("not a folder: {}", dir.display());
+            }
+            let ctx = library_core::meta::Ctx::open(&data)?;
+            let root = ctx.add_root(&dir, now_secs())?;
+            let applied = library_core::roots::sync_root(&ctx.meta, &root, now_secs());
+            for doc in &applied.queued {
+                library_ingest::status::write(
+                    &ctx.meta,
+                    doc,
+                    &library_ingest::status::DocStatus::new(
+                        library_ingest::status::DocState::Queued,
+                    ),
+                )?;
+            }
+            println!(
+                "watching {}{}",
+                root.path.display(),
+                if root.is_default { " (default)" } else { "" }
+            );
+            println!(
+                "{} to ingest, {} already known",
+                applied.queued.len(),
+                applied.duplicates
+            );
+            Ok(())
+        }
+        Cli::Roots { data } => {
+            let ctx = library_core::meta::Ctx::open(&data)?;
+            let roots = ctx.roots();
+            if roots.is_empty() {
+                println!("no watched folders — `library-ingest link <dir>`");
+            }
+            for r in roots {
+                println!(
+                    "{} {}  {} docs{}",
+                    if r.is_default { "*" } else { " " },
+                    r.path.display(),
+                    ctx.present_files_in_root(&r.id),
+                    if r.path.is_dir() {
+                        ""
+                    } else {
+                        "  (not readable)"
+                    }
+                );
+            }
+            Ok(())
         }
         Cli::Migrate {
             from,

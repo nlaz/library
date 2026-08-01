@@ -15,6 +15,7 @@ fxhash = { workspace = true }
 fjall = { workspace = true }
 postcard = { workspace = true }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
+xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
 
 [lints]
 workspace = true

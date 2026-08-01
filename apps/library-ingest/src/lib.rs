@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use fastembed::{ImageEmbedding, ImageEmbeddingModel, ImageInitOptions};
 use library_core::meta::Meta;
+pub use library_core::records::{SOURCE_EXTS, SourceKind};
 use library_core::{
     Bbox, ChunkKey, ChunkRec, ClipEmb, Emb, FxHashSet, ImageKey, ImageRec, Images, Library, Word,
 };
@@ -167,38 +168,6 @@ pub fn read_ocr(ocr_dir: &Path) -> Result<Vec<PageOcr>> {
     }
     pages.sort_by_key(|p: &PageOcr| p.page);
     Ok(pages)
-}
-
-/// What kind of source file a library document came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceKind {
-    Pdf,
-    Image,
-}
-
-/// The one extension allowlist — every ingest gate (worker scan, app drop
-/// handler, CLI) classifies through [`SourceKind::of`], so adding a format
-/// means touching this table only. Order matters: [`source_path`] resolves
-/// in this order, pdf first.
-pub const SOURCE_EXTS: [(&str, SourceKind); 5] = [
-    ("pdf", SourceKind::Pdf),
-    ("png", SourceKind::Image),
-    ("jpg", SourceKind::Image),
-    ("jpeg", SourceKind::Image),
-    // iPhone photos; ImageIO decodes HEIC natively and the page render is
-    // JPEG either way, so nothing downstream changes
-    ("heic", SourceKind::Image),
-];
-
-impl SourceKind {
-    /// Classify by extension (case-insensitive); `None` = not ingestible.
-    pub fn of(path: &Path) -> Option<SourceKind> {
-        let ext = path.extension()?.to_str()?;
-        SOURCE_EXTS
-            .iter()
-            .find(|(e, _)| ext.eq_ignore_ascii_case(e))
-            .map(|(_, k)| *k)
-    }
 }
 
 /// Resolve a doc id back to its source file in `data/pdfs`, trying each

@@ -33,7 +33,10 @@ use crate::notes::{CardLink, CardRec, QuoteAnchor};
 use crate::wire::Collections;
 
 /// Bump when `MIGRATIONS` grows. Each entry runs once, in order.
-const MIGRATIONS: &[&str] = &[include_str!("meta/0001_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("meta/0001_initial.sql"),
+    include_str!("meta/0002_roots.sql"),
+];
 
 /// Filename under the app-support dir.
 pub const META_DB: &str = "meta.db";
@@ -44,6 +47,20 @@ fn sql_err(e: rusqlite::Error) -> io::Error {
 
 fn json_str(s: String) -> serde_json::Value {
     serde_json::Value::String(s)
+}
+
+/// A linked folder.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RootRec {
+    pub id: String,
+    pub path: std::path::PathBuf,
+    /// The drop target for files added through the app. Exactly one.
+    pub is_default: bool,
+    /// `watching` | `unavailable` — the second means we could not read it
+    /// last time we looked, which is emphatically not "it is empty".
+    pub state: String,
+    pub added_at: u64,
+    pub last_scan_at: u64,
 }
 
 /// A library's two halves: the app-support directory holding the caches
@@ -190,6 +207,236 @@ impl Meta {
                 R::default()
             }
         }
+    }
+
+    // --- roots --------------------------------------------------------------
+
+    /// Every linked folder, default first then oldest first.
+    pub fn roots(&self) -> Vec<RootRec> {
+        self.read(|c| {
+            let mut q = c.prepare(
+                "SELECT id, path, is_default, state, added_at, last_scan_at
+                 FROM roots ORDER BY is_default DESC, added_at, rowid",
+            )?;
+            let rows = q.query_map([], |r| {
+                Ok(RootRec {
+                    id: r.get(0)?,
+                    path: std::path::PathBuf::from(r.get::<_, String>(1)?),
+                    is_default: r.get(2)?,
+                    state: r.get(3)?,
+                    added_at: r.get::<_, i64>(4)? as u64,
+                    last_scan_at: r.get::<_, i64>(5)? as u64,
+                })
+            })?;
+            rows.collect()
+        })
+    }
+
+    /// Link a folder, or return the existing root if it is already linked.
+    /// The first root linked becomes the default by construction — a
+    /// library with folders but no drop target has nowhere to put a drop.
+    pub fn add_root(&self, path: &Path, now: u64) -> io::Result<RootRec> {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let text = canonical.to_string_lossy().to_string();
+        if let Some(existing) = self.roots().into_iter().find(|r| r.path == canonical) {
+            return Ok(existing);
+        }
+        let id = crate::notes::mint_id('r');
+        let first = self.roots().is_empty();
+        self.write(|c| {
+            c.execute(
+                "INSERT INTO roots (id, path, is_default, state, added_at, last_scan_at)
+                 VALUES (?1, ?2, ?3, 'watching', ?4, 0)",
+                params![id, text, first, now as i64],
+            )?;
+            Ok(())
+        })?;
+        Ok(RootRec {
+            id,
+            path: canonical,
+            is_default: first,
+            state: "watching".into(),
+            added_at: now,
+            last_scan_at: 0,
+        })
+    }
+
+    /// Unlink a folder. The files rows cascade; the *documents* do not —
+    /// unlinking routes through the same `missing` path a deletion does,
+    /// so the caller retracts them deliberately and the notes survive.
+    pub fn remove_root(&self, id: &str) -> io::Result<()> {
+        self.write(|c| {
+            c.execute("DELETE FROM roots WHERE id = ?1", [id])?;
+            Ok(())
+        })
+    }
+
+    /// Make one root the drop target, demoting whichever held it.
+    pub fn set_default_root(&self, id: &str) -> io::Result<()> {
+        self.write(|c| {
+            c.execute("UPDATE roots SET is_default = (id = ?1)", [id])?;
+            Ok(())
+        })
+    }
+
+    pub fn set_root_state(&self, id: &str, state: &str, scanned_at: Option<u64>) -> io::Result<()> {
+        self.write(|c| {
+            c.execute(
+                "UPDATE roots SET state = ?2,
+                   last_scan_at = coalesce(?3, last_scan_at) WHERE id = ?1",
+                params![id, state, scanned_at.map(|t| t as i64)],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The drop target for files added through the app.
+    pub fn default_root(&self) -> Option<RootRec> {
+        self.roots().into_iter().find(|r| r.is_default)
+    }
+
+    // --- files --------------------------------------------------------------
+
+    /// Everything we have indexed under one root, as the scanner wants it.
+    pub fn files_in_root(&self, root_id: &str) -> Vec<crate::roots::Known> {
+        self.read(|c| {
+            let mut q = c.prepare(
+                "SELECT doc_id, relpath, inode, size, mtime, content_hash
+                 FROM files WHERE root_id = ?1 AND state != 'missing' ORDER BY relpath",
+            )?;
+            let rows = q.query_map([root_id], |r| {
+                Ok(crate::roots::Known {
+                    doc: r.get(0)?,
+                    relpath: r.get(1)?,
+                    inode: r.get::<_, i64>(2)? as u64,
+                    size: r.get::<_, i64>(3)? as u64,
+                    mtime: r.get(4)?,
+                    content_hash: r.get(5)?,
+                })
+            })?;
+            rows.collect()
+        })
+    }
+
+    /// Record a file and the document it belongs to. Upserts on
+    /// `(root, relpath)`, so a rescan of an unchanged file is idempotent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_file(
+        &self,
+        root_id: &str,
+        relpath: &str,
+        doc: &str,
+        stat: &crate::roots::Stat,
+        hash: Option<&str>,
+        now: u64,
+    ) -> io::Result<()> {
+        let id = crate::notes::mint_id('f');
+        self.write(|c| {
+            c.execute(
+                "INSERT INTO files
+                   (id, root_id, relpath, inode, size, mtime, content_hash, doc_id,
+                    state, first_seen_at, last_seen_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'present', ?9, ?9)
+                 ON CONFLICT(root_id, relpath) DO UPDATE SET
+                   inode = excluded.inode, size = excluded.size,
+                   mtime = excluded.mtime,
+                   content_hash = coalesce(excluded.content_hash, files.content_hash),
+                   doc_id = excluded.doc_id, state = 'present',
+                   last_seen_at = excluded.last_seen_at",
+                params![
+                    id,
+                    root_id,
+                    relpath,
+                    stat.inode as i64,
+                    stat.size as i64,
+                    stat.mtime,
+                    hash,
+                    doc,
+                    now as i64,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Move a file's row to a new path, keeping its document.
+    pub fn move_file(
+        &self,
+        root_id: &str,
+        from: &str,
+        to: &str,
+        stat: &crate::roots::Stat,
+        now: u64,
+    ) -> io::Result<()> {
+        self.write(|c| {
+            c.execute(
+                "UPDATE files SET relpath = ?3, inode = ?4, size = ?5, mtime = ?6,
+                                  state = 'present', last_seen_at = ?7
+                 WHERE root_id = ?1 AND relpath = ?2",
+                params![
+                    root_id,
+                    from,
+                    to,
+                    stat.inode as i64,
+                    stat.size as i64,
+                    stat.mtime,
+                    now as i64
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn set_file_state(&self, root_id: &str, relpath: &str, state: &str) -> io::Result<()> {
+        self.write(|c| {
+            c.execute(
+                "UPDATE files SET state = ?3 WHERE root_id = ?1 AND relpath = ?2",
+                params![root_id, relpath, state],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The document a set of bytes already belongs to, if any — the dedup
+    /// probe for a file that appeared with a fresh inode.
+    pub fn doc_with_hash(&self, hash: &str) -> Option<String> {
+        self.read(|c| {
+            c.query_row(
+                "SELECT doc_id FROM files WHERE content_hash = ?1 LIMIT 1",
+                [hash],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+        })
+    }
+
+    /// Where a document's file lives now: `(root path, relpath)`.
+    pub fn doc_path(&self, doc: &str) -> Option<std::path::PathBuf> {
+        self.read(|c| {
+            c.query_row(
+                "SELECT roots.path, files.relpath FROM files
+                 JOIN roots ON roots.id = files.root_id
+                 WHERE files.doc_id = ?1 AND files.state != 'missing' LIMIT 1",
+                [doc],
+                |r| {
+                    Ok(std::path::PathBuf::from(r.get::<_, String>(0)?)
+                        .join(r.get::<_, String>(1)?))
+                },
+            )
+            .optional()
+        })
+    }
+
+    /// Record what kind of file a document is and which shelf it sits on.
+    pub fn set_doc_placement(&self, doc: &str, kind: &str, shelf: Option<&str>) -> io::Result<()> {
+        self.write(|c| {
+            c.execute(
+                "INSERT INTO docs (id, kind, shelf) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, shelf = excluded.shelf",
+                params![doc, kind, shelf],
+            )?;
+            Ok(())
+        })
     }
 
     // --- titles -------------------------------------------------------------

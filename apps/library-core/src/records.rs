@@ -1,5 +1,7 @@
 //! Shared chunk records: keys, words, and the stored record type.
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 use crate::Emb;
@@ -71,5 +73,44 @@ impl ChunkRec {
             s.push_str(&w.t);
         }
         s
+    }
+}
+
+/// What kind of source file a library document came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Pdf,
+    Image,
+}
+
+/// The one extension allowlist — the folder scanner, the drop handler and
+/// the CLI all classify through [`SourceKind::of`], so adding a format means
+/// touching this table only.
+pub const SOURCE_EXTS: [(&str, SourceKind); 5] = [
+    ("pdf", SourceKind::Pdf),
+    ("png", SourceKind::Image),
+    ("jpg", SourceKind::Image),
+    ("jpeg", SourceKind::Image),
+    // iPhone photos; ImageIO decodes HEIC natively and the page render is
+    // JPEG either way, so nothing downstream changes
+    ("heic", SourceKind::Image),
+];
+
+impl SourceKind {
+    /// The stored form, for the `docs.kind` column.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceKind::Pdf => "pdf",
+            SourceKind::Image => "image",
+        }
+    }
+
+    /// Classify by extension (case-insensitive); `None` = not ingestible.
+    pub fn of(path: &Path) -> Option<SourceKind> {
+        let ext = path.extension()?.to_str()?;
+        SOURCE_EXTS
+            .iter()
+            .find(|(e, _)| ext.eq_ignore_ascii_case(e))
+            .map(|(_, k)| *k)
     }
 }

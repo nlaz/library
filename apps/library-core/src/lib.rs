@@ -11,6 +11,7 @@ pub mod notes;
 pub mod perf;
 pub mod rank;
 pub mod records;
+pub mod roots;
 pub mod search_api;
 pub mod sidecar;
 pub mod store;

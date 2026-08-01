@@ -19,7 +19,6 @@
 //! caller's call (the CLI drops the whole process to background QoS, the app
 //! runs ingest on a utility-QoS worker thread that OCR and ort inherit).
 
-pub mod agent;
 pub mod clean;
 pub mod layout;
 pub mod models;
@@ -199,7 +198,7 @@ impl SourceKind {
 
 /// Resolve a doc id back to its source file in `data/pdfs`, trying each
 /// known extension. (`data/pdfs` keeps its name — it is the originals
-/// folder, now format-mixed, and the launchd WatchPaths points at it.)
+/// folder, now format-mixed.)
 pub fn source_path(data: &Path, doc: &str) -> Option<PathBuf> {
     let dir = data.join("pdfs");
     SOURCE_EXTS
@@ -667,7 +666,7 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
     let pages = read_ocr(&ctx.data.join("ocr").join(doc))?;
     let pages_dir = ctx.data.join("pages").join(doc);
     // Once per machine. The app fetches this at launch, so normally this is
-    // a size check; the path that matters is the launchd worker running on a
+    // a size check; the path that matters is the `worker` CLI running on a
     // machine whose app has never been opened. Log-and-continue: without the
     // detector, figures come from word gaps alone (see `page_figures`), which
     // is a recall loss and not a failure.
@@ -725,7 +724,7 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
     // 2. embed, draining so crops free as batches complete. The app caches
     // this encoder at launch (`models::ensure_clip_vision`), so normally the
     // construction below is a load from disk. It stays wrapped because the
-    // launchd worker can run on a machine whose app has never been opened,
+    // `worker` CLI can run on a machine whose app has never been opened,
     // and there the same call *downloads* ~335 MB first — minutes of
     // otherwise unexplained stall partway through someone's first ingest.
     let models_dir = ctx.data.join("models");

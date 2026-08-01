@@ -21,9 +21,9 @@ fn default_width() -> u32 {
 }
 
 /// Default data dir: the repo's ./data in dev builds, the per-user app-data
-/// dir (~/Library/Application Support/computer.flower.library/data) in
-/// release bundles — a downloaded .app must never inherit the build
-/// machine's repo path.
+/// dir (~/Library/Application Support/dev.thelibrary/data) in release
+/// bundles — a downloaded .app must never inherit the build machine's repo
+/// path.
 fn default_data(app: &AppHandle) -> PathBuf {
     pick_default_data(cfg!(debug_assertions), app.path().app_data_dir().ok())
 }

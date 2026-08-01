@@ -194,23 +194,16 @@ enum Cli {
         #[arg(long, default_value = "layout-debug")]
         out: PathBuf,
     },
-    /// Process every pending document in data/pdfs (safe to run from
-    /// launchd: exits immediately if the app holds the stores). A document
-    /// is pending when its status file (data/status/<doc>.json) is absent
-    /// or non-terminal — drop a PDF or image into data/pdfs and run this.
+    /// Process every pending document in data/pdfs (exits immediately if the
+    /// app holds the stores). A document is pending when its status file
+    /// (data/status/<doc>.json) is absent or non-terminal — drop a PDF or
+    /// image into data/pdfs and run this.
     Worker {
         #[arg(long, default_value = "data")]
         data: PathBuf,
         /// Run at full priority instead of background QoS.
         #[arg(long)]
         hot: bool,
-    },
-    /// Install (or repair) the launchd agent that runs `worker` in the
-    /// background: on login, every 15 minutes, and whenever a file lands
-    /// in data/pdfs. The app does this automatically on startup.
-    InstallAgent {
-        #[arg(long, default_value = "data")]
-        data: PathBuf,
     },
     /// Hybrid search against the store.
     Search {
@@ -448,24 +441,6 @@ fn main() -> Result<()> {
                 be_gentle();
             }
             worker(&data)
-        }
-        Cli::InstallAgent { data } => {
-            // launchd needs absolute paths; "data" relative to the repo
-            // would resolve against / when the agent fires
-            let data = std::path::absolute(&data)?;
-            let bin = std::env::current_exe()?;
-            match library_ingest::agent::install(&bin, &data)? {
-                library_ingest::agent::Install::Ready(path) => {
-                    println!("agent loaded: {}", path.display());
-                    println!("logs: {}/logs/ingest.log", data.display());
-                    println!(
-                        "disable with: launchctl bootout gui/$UID/{}",
-                        library_ingest::agent::LABEL
-                    );
-                }
-                library_ingest::agent::Install::Skipped(why) => println!("not installed: {why}"),
-            }
-            Ok(())
         }
         Cli::LayoutDebug {
             doc,

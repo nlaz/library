@@ -106,9 +106,10 @@ pub(crate) fn init_engine(app: AppHandle) {
 
     status(&app, Status::step("stores", "Opening the library"));
     let t = Instant::now();
-    // `Locked` usually means the launchd ingest worker is inside one of its
-    // brief commit windows (which include an HNSW checkpoint — tens of
-    // seconds on a big library), so retry before declaring failure.
+    // `Locked` means another process holds the stores — the `library-ingest`
+    // CLI inside one of its brief commit windows (which include an HNSW
+    // checkpoint, tens of seconds on a big library), so retry before
+    // declaring failure.
     let deadline = Instant::now() + Duration::from_secs(90);
     let (mut lib, images) = loop {
         let opened = library_core::try_open(settings.data.join("library.db")).and_then(|lib| {

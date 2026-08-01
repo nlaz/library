@@ -7,10 +7,11 @@
 //! single-writer lock is never contended.
 //!
 //! Ingest state is NOT held here: the queue is the filesystem
-//! (`data/pdfs/` + `data/status/`, see `library_ingest::worker`), shared
-//! with the `library-ingest worker` CLI that launchd runs while the app is
-//! closed. The app's worker thread sweeps that same queue — holding the
-//! stores makes it the owner — and picks up anything the CLI staged.
+//! (`data/pdfs/` + `data/status/`, see `library_ingest::worker`). The app's
+//! worker thread sweeps that queue — holding the stores makes it the owner
+//! — and picks up anything the `library-ingest worker` CLI staged while the
+//! app was closed. Indexing only happens while the app runs; there is no
+//! background agent.
 
 mod chat;
 mod commands;
@@ -26,7 +27,7 @@ use std::sync::{RwLock, mpsc};
 use tauri::Manager;
 
 use crate::engine::{AppState, init_engine};
-use crate::ingest::{ingest_worker, install_agent};
+use crate::ingest::{ingest_worker, uninstall_legacy_agent};
 use crate::serve::{serve_pages, serve_static};
 use crate::settings::load_settings;
 
@@ -70,14 +71,7 @@ pub fn run() {
             std::thread::spawn(move || init_engine(h));
             let h = app.handle().clone();
             std::thread::spawn(move || ingest_worker(h, rx));
-            let data = app.state::<AppState>().settings.data.clone();
-            std::thread::spawn(move || {
-                // data must be absolute in the plist; dev settings may be
-                // repo-relative
-                if let Ok(abs) = std::path::absolute(&data) {
-                    install_agent(&abs);
-                }
-            });
+            std::thread::spawn(uninstall_legacy_agent);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

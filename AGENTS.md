@@ -22,8 +22,8 @@ The Library app (macOS-only, in `apps/`):
   lexical+semantic ranking, typeahead/fuzzy correction, agent tools.
   **No Apple deps — builds and tests on any platform.**
 - `library-ingest` — OCR/layout/figure ingestion (Vision, PDFKit via
-  `objc2-*`) + background worker. macOS-only to *compile*, but its unit
-  tests exercise pure logic.
+  `objc2-*`) + the `worker` CLI that drains the queue when the app isn't
+  running. macOS-only to *compile*, but its unit tests exercise pure logic.
 - `library-server` — WebTransport (QUIC) + HTTP search server.
 - `library-app` — Tauri desktop app; owns stores, models, and the ingest
   worker in one process. Serves `apps/web/dist`.
@@ -132,6 +132,15 @@ changes go in their own commit so review diffs stay readable.
   cache.
 - For representative `ese` bench numbers, use
   `RUSTFLAGS="-Ctarget-cpu=native" cargo bench -p ese`.
+- The bundle identifier is **`dev.thelibrary`**, which also fixes the
+  app-support dir (`~/Library/Application Support/dev.thelibrary/`). Releases
+  up to 0.1.1 used `computer.flower.library` and installed a launchd agent
+  (`computer.flower.library.ingest`) for background ingest. That agent is
+  gone — indexing happens only while the app runs — and
+  `ingest.rs::uninstall_legacy_agent` boots out the orphan on launch, since
+  launchd would otherwise keep waking it every 15 minutes forever. Don't
+  delete that cleanup until well past the point where 0.1.x installs are
+  plausible.
 - `tauri.conf.json`'s `minimumSystemVersion` is not just `Info.plist`:
   `cargo tauri build` also exports it as `MACOSX_DEPLOYMENT_TARGET`, so it
   sets the `library-app` binary's `LC_BUILD_VERSION minos` too (check with

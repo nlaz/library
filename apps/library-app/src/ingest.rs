@@ -11,32 +11,44 @@ use library_ingest::worker::{self, Outcome};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::engine::{AppState, EngineCommitter, dev_root};
+use crate::engine::{AppState, EngineCommitter};
 use crate::settings::ingest_ctx;
 
-/// Install/repair the launchd agent so ingestion continues while the app
-/// is closed. Best-effort: a missing worker binary (e.g. a bare release
-/// bundle without the sidecar) just logs and skips.
-pub(crate) fn install_agent(data: &Path) {
-    let candidates = [
-        // bundled sidecar next to the app binary
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("library-ingest"))),
-        // dev builds share the workspace target dir
-        Some(dev_root().join("target/release/library-ingest")),
-        Some(dev_root().join("target/debug/library-ingest")),
-    ];
-    let Some(bin) = candidates.into_iter().flatten().find(|p| p.is_file()) else {
-        eprintln!("library-ingest binary not found — background ingest agent not installed");
+/// The launchd label releases up to 0.1.1 installed for background ingest.
+const LEGACY_AGENT_LABEL: &str = "computer.flower.library.ingest";
+
+/// Where that release wrote its plist. Split out so the label and path stay
+/// pinned by a test: get either wrong and the orphaned agent survives the
+/// cleanup silently, which is the whole failure this code exists to prevent.
+fn legacy_plist(home: &Path) -> PathBuf {
+    home.join("Library/LaunchAgents")
+        .join(format!("{LEGACY_AGENT_LABEL}.plist"))
+}
+
+/// Boot out and delete the pre-0.2 background ingest agent.
+///
+/// Indexing now happens only while the app runs, so that agent has no
+/// replacement — but launchd remembers it. Left alone it wakes every fifteen
+/// minutes forever, pointed at a binary path that the rename to
+/// `dev.thelibrary` made meaningless. Every launch checks for the plist
+/// (one `stat` once it's gone) so an install that predates this release is
+/// cleaned up whenever it next opens the app.
+pub(crate) fn uninstall_legacy_agent() {
+    let Ok(home) = std::env::var("HOME") else {
         return;
     };
-    use library_ingest::agent::Install;
-    match library_ingest::agent::install(&bin, data) {
-        Ok(Install::Ready(path)) => println!("ingest agent: {}", path.display()),
-        // a decline is the user's or the environment's call, not a fault
-        Ok(Install::Skipped(why)) => println!("ingest agent not installed: {why}"),
-        Err(e) => eprintln!("ingest agent install failed: {e:#}"),
+    let plist = legacy_plist(Path::new(&home));
+    if !plist.exists() {
+        return; // the common case, and the whole cost of this call
+    }
+    let uid = unsafe { libc::getuid() };
+    // bootout of an agent launchd never loaded fails; that's fine
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", &format!("gui/{uid}/{LEGACY_AGENT_LABEL}")])
+        .output();
+    match std::fs::remove_file(&plist) {
+        Ok(()) => println!("removed the legacy background ingest agent ({LEGACY_AGENT_LABEL})"),
+        Err(e) => eprintln!("could not remove {}: {e}", plist.display()),
     }
 }
 
@@ -238,4 +250,19 @@ pub(crate) fn ingest_paths(
         let _ = state.wake.send(());
     }
     Ok(queued)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_plist_is_the_path_0_1_1_actually_wrote() {
+        // verbatim from the deleted library_ingest::agent — a drift here
+        // leaves the orphaned agent loaded and this cleanup a no-op
+        assert_eq!(
+            legacy_plist(Path::new("/Users/someone")),
+            Path::new("/Users/someone/Library/LaunchAgents/computer.flower.library.ingest.plist")
+        );
+    }
 }

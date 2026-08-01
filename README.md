@@ -187,8 +187,8 @@ atomic across every index at once.
 
 fjall also locks its directory: exactly one process can open a store. The
 Library builds on that instead of working around it: **whoever holds the
-store owns ingestion**. The background worker exits if the app is running,
-and hands finished work off on disk rather than recomputing it.
+store owns ingestion**. The `library-ingest worker` CLI exits if the app is
+running, and hands finished work off on disk rather than recomputing it.
 
 ### How they stack
 
@@ -292,7 +292,7 @@ Two structural notes:
 
 - Ingestion is split into a **prepare** phase that touches no store and a
   brief **commit** phase that does. All the expensive work happens without
-  the lock, so the background worker and the app never fight over it — and
+  the lock, so the CLI worker and the app never fight over it — and
   if the store is taken when a document finishes, the prepared records
   wait on disk for whoever holds the lock to commit. Nothing is
   recomputed.

@@ -21,6 +21,7 @@
 
 pub mod clean;
 pub mod layout;
+pub mod migrate;
 pub mod models;
 pub mod ocr;
 pub mod pdftext;

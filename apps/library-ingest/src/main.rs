@@ -173,6 +173,25 @@ enum Cli {
         #[arg(long, default_value = "data")]
         data: PathBuf,
     },
+    /// Move a pre-0.2 library (data/pdfs + JSON sidecars) into the folder
+    /// layout: originals copied into shelf folders, caches re-keyed to
+    /// minted ids, sidecars imported into meta.db. Copies — the old
+    /// directory is never written to, so a failed run costs nothing.
+    Migrate {
+        /// The old data directory.
+        #[arg(long, default_value = "data")]
+        from: PathBuf,
+        /// Where the books should live (becomes the default watched folder).
+        #[arg(long)]
+        to: PathBuf,
+        /// Where caches and meta.db go. Defaults to `<to>/.library-support`
+        /// so a migration is self-contained until you point the app at it.
+        #[arg(long)]
+        support: Option<PathBuf>,
+        /// Report what would happen and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Run the layout model on specific pages and write annotated JPEGs,
     /// for tuning thresholds/classes before a re-ingest.
     LayoutDebug {
@@ -424,6 +443,39 @@ fn main() -> Result<()> {
                 be_gentle();
             }
             worker(&data)
+        }
+        Cli::Migrate {
+            from,
+            to,
+            support,
+            dry_run,
+        } => {
+            let support = support.unwrap_or_else(|| to.join(".library-support"));
+            let r = library_ingest::migrate::migrate(&from, &to, &support, dry_run)?;
+            if dry_run {
+                println!("dry run — nothing written");
+            }
+            println!("originals:  {}", r.files);
+            println!("documents:  {}", r.docs);
+            println!("shelves:    {}", r.shelves);
+            println!("titles:     {}", r.titles);
+            println!("cards:      {}", r.cards);
+            if r.orphans > 0 {
+                println!(
+                    "{} documents have caches but no original file — their pages came \n\
+                     across, but nothing watches them",
+                    r.orphans
+                );
+            }
+            if !dry_run {
+                println!("\nbooks:   {}", to.display());
+                println!("support: {}", support.display());
+                println!(
+                    "\nThe old directory was not modified. Point the app at the new\n\
+                          support directory with LIBRARY_DATA to try it."
+                );
+            }
+            Ok(())
         }
         Cli::LayoutDebug {
             doc,

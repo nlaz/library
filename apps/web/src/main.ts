@@ -12,6 +12,7 @@ import { docTitle, getDocList, prettify, setDocList } from "./format";
 import { getCol, loadCollections, renderHome, setCol } from "./home";
 import { wireDesktop } from "./ingest-ui";
 import { closeKeys, keysOpen, toggleKeys } from "./keys";
+import { closeSettings, settingsOpen, toggleSettings } from "./settings";
 import { initLaunch } from "./launch";
 import { closeNotes, notesOpen, openNotes, rerenderNotes } from "./notebox";
 import { closeSheet, openSheet, sheetOpen, startCreate } from "./sheet";
@@ -88,6 +89,12 @@ window.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       toggleAtlas();
+    } else if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === "s") {
+      // the webview would otherwise offer to save the page, which is both
+      // useless here and alarming
+      e.preventDefault();
+      e.stopPropagation();
+      toggleSettings();
     } else if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) {
       // `?` is Shift+/ on most layouts, so it can't ride the ⌘/ branch
       // above; and like `c`, it must never fire out from under a cursor
@@ -97,6 +104,10 @@ window.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       toggleKeys();
+    } else if (e.key === "Escape" && settingsOpen()) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeSettings();
     } else if (e.key === "Escape" && keysOpen()) {
       // the sheet is modal: it closes before any layer it was opened over
       e.preventDefault();

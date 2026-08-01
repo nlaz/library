@@ -57,6 +57,7 @@ const GROUPS: Group[] = [
   {
     title: "Views",
     rows: [
+      ["⌘S", "Settings — the folders your library watches"],
       ["⌘.", "Performance — 1 / 2 / 3 / 4 pick a section"],
       ["⌘/", "Corpus atlas"],
       ["?", "This list"],

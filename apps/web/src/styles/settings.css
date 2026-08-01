@@ -1,0 +1,143 @@
+/* ---------------------------------------------------------------------------
+   Settings (⌘S): the shortcut sheet's twin, deliberately. These are the two
+   surfaces you open *about* the app rather than to work in it, and reading
+   as one kind of thing is worth more than either one being distinctive.
+
+   Sits at the same level as the keys sheet (14): both are modal, and they
+   are never open at once — Escape closes this one first, so it must also
+   paint above. */
+
+#settings {
+  position: fixed;
+  inset: 0;
+  z-index: 14;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-4);
+  background: color-mix(in srgb, var(--ink) 42%, transparent);
+}
+
+#settings[hidden] {
+  display: none;
+}
+
+#settings-card {
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  max-width: 640px;
+  width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+#settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
+}
+
+#settings-body {
+  overflow-y: auto;
+  padding: var(--sp-3);
+  display: grid;
+  gap: var(--sp-4);
+}
+
+#settings-body h3 {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
+  font-weight: 400;
+  margin: 0 0 var(--sp-2);
+}
+
+.sroots {
+  display: grid;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line-strong);
+  margin-bottom: var(--sp-2);
+}
+
+.sroot {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr auto;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2);
+  background: var(--surface);
+}
+
+/* a folder we can't read: dimmed, but its documents are still counted, so
+   this must not look like an error state — it looks like something absent */
+.sroot.away {
+  color: var(--ink-dim);
+}
+
+.smark {
+  font-family: var(--font-mono);
+  color: var(--ink-dim);
+  text-align: center;
+}
+
+.sroot b {
+  display: block;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.sstatus {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
+}
+
+.sactions {
+  display: flex;
+  gap: var(--sp-1);
+}
+
+.sactions button {
+  font-size: var(--fs-meta);
+  padding: 0.15rem var(--sp-2);
+  white-space: nowrap;
+}
+
+.slink {
+  padding: 0.25rem var(--sp-2);
+}
+
+.snote {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
+  max-width: 46ch;
+}
+
+.sstorage {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-meta);
+}
+
+.sstorage dt {
+  color: var(--ink-dim);
+}
+
+.sstorage dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  text-align: right;
+}

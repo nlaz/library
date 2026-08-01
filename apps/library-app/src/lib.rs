@@ -19,6 +19,7 @@ mod docs;
 mod engine;
 mod ingest;
 mod marginalia;
+mod roots;
 mod serve;
 mod settings;
 
@@ -61,6 +62,8 @@ pub fn run() {
             // shelf; failing here is fatal in the way a missing data dir is
             let ctx = library_core::meta::Ctx::open(&settings.data)
                 .expect("opening meta.db in the data dir");
+            // a library with no folder has nowhere to put a dropped file
+            roots::ensure_default_root(&ctx);
             let (tx, rx) = mpsc::channel::<()>();
             app.manage(AppState {
                 settings,
@@ -96,6 +99,11 @@ pub fn run() {
             docs::retry_doc,
             docs::reveal_doc,
             ingest::ingest_paths,
+            roots::list_roots,
+            roots::link_root,
+            roots::unlink_root,
+            roots::set_default_root,
+            roots::storage_use,
             settings::get_settings,
             settings::set_settings,
             chat::chat_turn,

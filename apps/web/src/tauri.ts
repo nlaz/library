@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { homeDir as homeDirPath } from "@tauri-apps/api/path";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm as confirmDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Transport } from "./transport";
@@ -96,6 +97,55 @@ export async function pickFiles(): Promise<string[]> {
 export async function pickFolder(title: string): Promise<string | null> {
   const picked = await openDialog({ directory: true, multiple: false, title });
   return typeof picked === "string" ? picked : null;
+}
+
+// --- watched folders ---------------------------------------------------------
+
+export type RootInfo = {
+  id: string;
+  path: string;
+  is_default: boolean;
+  state: string;
+  added_at: number;
+  last_scan_at: number;
+  docs: number;
+  available: boolean;
+};
+
+export function listRoots(): Promise<RootInfo[]> {
+  return invoke<RootInfo[]>("list_roots");
+}
+
+export function linkRoot(path: string): Promise<RootInfo> {
+  return invoke<RootInfo>("link_root", { path });
+}
+
+export function unlinkRoot(id: string): Promise<void> {
+  return invoke("unlink_root", { id });
+}
+
+export function setDefaultRoot(id: string): Promise<void> {
+  return invoke("set_default_root", { id });
+}
+
+export function storageUse(): Promise<{
+  path: string;
+  derived_bytes: number;
+  index_bytes: number;
+  model_bytes: number;
+}> {
+  return invoke("storage_use");
+}
+
+/** The user's home dir, so paths can be shown as `~/...`. */
+export function homeDir(): Promise<string> {
+  return homeDirPath();
+}
+
+/** Unlinking is the one destructive-looking action on the Settings page,
+ * and the copy's job is to say the files are safe. */
+export function confirmUnlink(message: string): Promise<boolean> {
+  return confirmDialog(message, { title: "Remove folder", kind: "warning" });
 }
 
 export type AppSettings = { data: string; width: number };

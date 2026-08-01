@@ -482,60 +482,40 @@ impl Meta {
         })
     }
 
-    // --- collections --------------------------------------------------------
+    // --- shelves ------------------------------------------------------------
 
-    /// `collection name -> doc ids`, in insertion order within each name.
-    pub fn collections(&self) -> Collections {
+    /// `shelf -> doc ids`. A shelf is a folder: the depth-1 directory a
+    /// document's file sits in, recorded by the scanner.
+    ///
+    /// There is no shelf table and no way to file a document into one from
+    /// the app except by moving its file, which is the point — the shelves
+    /// are something the user can see and rearrange in Finder, and they
+    /// cannot drift out of step with the folders because they *are* the
+    /// folders. Documents loose at a root's top level have no shelf.
+    pub fn shelves(&self) -> Collections {
         self.read(|c| {
-            let mut q = c.prepare("SELECT name, doc FROM collections ORDER BY name, ord, rowid")?;
+            let mut q = c.prepare(
+                "SELECT shelf, id FROM docs
+                 WHERE shelf IS NOT NULL AND shelf != '' ORDER BY shelf, id",
+            )?;
             let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
             let mut out = Collections::new();
             for row in rows {
-                let (name, doc) = row?;
-                out.entry(name).or_default().push(doc);
+                let (shelf, doc) = row?;
+                out.entry(shelf).or_default().push(doc);
             }
             Ok(out)
         })
     }
 
-    /// Add `doc` to `collection`, creating it if needed. Idempotent.
-    pub fn collect(&self, collection: &str, doc: &str) -> io::Result<()> {
-        self.write(|c| {
-            let ord: i64 = c
-                .query_row(
-                    "SELECT coalesce(max(ord), -1) + 1 FROM collections WHERE name = ?1",
-                    [collection],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            c.execute(
-                "INSERT OR IGNORE INTO collections (name, doc, ord) VALUES (?1, ?2, ?3)",
-                params![collection, doc, ord],
-            )?;
-            Ok(())
-        })
-    }
-
-    /// Replace `doc`'s collection membership wholesale. Collections left
-    /// empty disappear on their own — the row *is* the membership, so
-    /// there is nothing left to prune.
-    pub fn set_collections(&self, doc: &str, cols: &[String]) -> io::Result<()> {
-        self.write(|c| {
-            c.execute("DELETE FROM collections WHERE doc = ?1", [doc])?;
-            for name in cols {
-                let ord: i64 = c
-                    .query_row(
-                        "SELECT coalesce(max(ord), -1) + 1 FROM collections WHERE name = ?1",
-                        [name],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                c.execute(
-                    "INSERT OR IGNORE INTO collections (name, doc, ord) VALUES (?1, ?2, ?3)",
-                    params![name, doc, ord],
-                )?;
-            }
-            Ok(())
+    /// The shelf one document is on.
+    pub fn shelf_of_doc(&self, doc: &str) -> Option<String> {
+        self.read(|c| {
+            c.query_row("SELECT shelf FROM docs WHERE id = ?1", [doc], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()
+            .map(Option::flatten)
         })
     }
 
@@ -752,30 +732,33 @@ mod tests {
     }
 
     #[test]
-    fn collections_round_trip_and_prune_themselves() {
+    fn shelves_come_from_folders_and_need_no_pruning() {
         let m = Meta::open_in_memory().unwrap();
-        m.collect("cookbooks", "artusi").unwrap();
-        m.collect("cookbooks", "escoffier").unwrap();
-        m.collect("software", "sicp").unwrap();
+        assert!(m.shelves().is_empty());
 
-        let cols = m.collections();
-        assert_eq!(cols["cookbooks"], vec!["artusi", "escoffier"]);
-        assert_eq!(cols["software"], vec!["sicp"]);
-
-        // idempotent: adding twice doesn't duplicate
-        m.collect("cookbooks", "artusi").unwrap();
-        assert_eq!(m.collections()["cookbooks"].len(), 2);
-
-        // wholesale replace moves a doc and empties the shelf it left
-        m.set_collections("sicp", &["cookbooks".to_string()])
+        m.set_doc_placement("artusi", "pdf", Some("cookbooks"))
             .unwrap();
-        let cols = m.collections();
-        assert!(!cols.contains_key("software"), "empty shelf must vanish");
-        assert_eq!(cols["cookbooks"].len(), 3);
+        m.set_doc_placement("escoffier", "pdf", Some("cookbooks"))
+            .unwrap();
+        m.set_doc_placement("sicp", "pdf", Some("software"))
+            .unwrap();
+        // a document loose at the top of a root is on no shelf
+        m.set_doc_placement("stray", "pdf", None).unwrap();
 
-        // clearing removes it everywhere
-        m.set_collections("artusi", &[]).unwrap();
-        assert_eq!(m.collections()["cookbooks"], vec!["escoffier", "sicp"]);
+        let shelves = m.shelves();
+        assert_eq!(shelves["cookbooks"], vec!["artusi", "escoffier"]);
+        assert_eq!(shelves["software"], vec!["sicp"]);
+        assert_eq!(shelves.len(), 2, "no shelf for the loose document");
+        assert_eq!(m.shelf_of_doc("artusi").as_deref(), Some("cookbooks"));
+        assert_eq!(m.shelf_of_doc("stray"), None);
+
+        // moving the last book off a shelf retires the shelf, with nothing
+        // to prune: the shelf only ever existed as the documents on it
+        m.set_doc_placement("sicp", "pdf", Some("cookbooks"))
+            .unwrap();
+        let shelves = m.shelves();
+        assert!(!shelves.contains_key("software"));
+        assert_eq!(shelves["cookbooks"].len(), 3);
     }
 
     #[test]

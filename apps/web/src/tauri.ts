@@ -159,9 +159,10 @@ export function setTitle(doc: string, title: string): Promise<void> {
   return invoke("set_title", { doc, title });
 }
 
-/** Replace a doc's collection membership (empty list = none). */
-export function setCollections(doc: string, collections: string[]): Promise<void> {
-  return invoke("set_collections", { doc, collections });
+/** Put a document on a shelf by moving its file into that folder. An empty
+ * shelf moves it back to the top level of its watched folder. */
+export function moveToShelf(doc: string, shelf: string): Promise<void> {
+  return invoke("move_to_shelf", { doc, shelf });
 }
 
 /** Remove a doc from the library (its source file in data/pdfs is kept). */

@@ -175,8 +175,7 @@ async fn main() -> Result<()> {
 
     // real collection names ride into the sidecar's tool schema +
     // instructions (Sidecar::spawn has no data-dir access of its own)
-    let _ =
-        chat::SIDECAR_COLLECTIONS.set(ctx.collections().into_keys().collect::<Vec<_>>().join(","));
+    let _ = chat::SIDECAR_COLLECTIONS.set(ctx.shelves().into_keys().collect::<Vec<_>>().join(","));
 
     // --- WebTransport endpoint ---------------------------------------------
     let (endpoint, cert_hash) = wt::build_endpoint(args.wt_port)?;
@@ -190,7 +189,7 @@ async fn main() -> Result<()> {
         }))
         .route("/api/collections", get({
             let ctx = ctx.clone();
-            move || async move { Json(ctx.collections()) }
+            move || async move { Json(ctx.shelves()) }
         }))
         // slim library gestalt for the chat sidecar's library_overview tool:
         // collection names, sizes, example titles — sized for a 4k-context
@@ -444,7 +443,7 @@ async fn main() -> Result<()> {
                 let ctx = ctx.clone();
                 async move {
                     let collections: Vec<String> = ctx
-                        .collections()
+                        .shelves()
                         .into_iter()
                         .filter(|(_, docs)| docs.iter().any(|d| d == &doc))
                         .map(|(name, _)| name)

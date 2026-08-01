@@ -72,7 +72,8 @@ fn fixture(name: &str) -> (Library, Ctx) {
     let ctx = Ctx::in_memory(&data).expect("meta");
     ctx.set_title("alpha", Some("Alpha Book")).expect("titles");
     for d in ["alpha", "beta"] {
-        ctx.collect("shelf", d).expect("collections");
+        ctx.set_doc_placement(d, "pdf", Some("shelf"))
+            .expect("shelf");
     }
 
     let mut lib = open(root.join("library.db"));

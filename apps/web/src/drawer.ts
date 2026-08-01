@@ -34,7 +34,7 @@ type Opts = {
   /** null = read-only (web build) */
   edit: {
     setTitle(doc: string, title: string): Promise<void>;
-    setCollections(doc: string, names: string[]): Promise<void>;
+    moveToShelf(doc: string, shelf: string): Promise<void>;
   } | null;
   /** null = no filesystem to show it in (web build) */
   reveal: ((doc: string) => Promise<void>) | null;
@@ -108,23 +108,8 @@ function renderDrawer(d: DrawerDoc, cols: Collections) {
   const rows: HTMLElement[] = [];
   rows.push(row("title", o.edit ? titleInput(d, title) : text(title)));
 
-  const { el: checklist } = collectionsChecklist(
-    Object.keys(cols),
-    d.collections,
-    async (names) => {
-      try {
-        await o.edit!.setCollections(d.id, names);
-      } catch (e) {
-        o.onError(`collections: ${e}`);
-      }
-      o.onChanged(d.id);
-      openDrawer(d.id); // re-render with fresh membership
-    },
-    !o.edit,
-  );
-  const colRow = row("collections", checklist);
-  if (o.edit) colRow.querySelector(".dval")!.append(newCollectionInput(d, checklist));
-  rows.push(colRow);
+  const shelfRow = row("shelf", shelfPicker(d, Object.keys(cols)));
+  rows.push(shelfRow);
 
   const fileRow = row("file", text(d.id));
   if (o.reveal) fileRow.querySelector(".dval")!.append(revealButton(d.id));
@@ -227,62 +212,54 @@ function titleInput(d: DrawerDoc, initial: string): HTMLElement {
   return input;
 }
 
-function newCollectionInput(d: DrawerDoc, checklist: HTMLElement): HTMLElement {
+/// The shelf a document is on, and the way to change it.
+///
+/// One shelf, not many: a shelf is the folder the file sits in, and a file
+/// is in exactly one folder. Choosing here moves the file — the same act
+/// the user could perform in Finder, which is why the two can never
+/// disagree about where a book lives.
+function shelfPicker(d: DrawerDoc, all: string[]): HTMLElement {
   const o = opts!;
-  const input = document.createElement("input");
-  input.type = "text";
-  input.placeholder = "new collection…";
-  input.addEventListener("keydown", async (e) => {
-    e.stopPropagation();
-    if (e.key !== "Enter" || !input.value.trim()) return;
-    const names = [...checkedNames(checklist), input.value.trim()];
+  const here = d.collections[0] ?? "";
+  if (!o.edit) {
+    return text(here || "none");
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "dshelf";
+
+  const move = async (shelf: string) => {
     try {
-      await o.edit!.setCollections(d.id, names);
-    } catch (err) {
-      o.onError(`collections: ${err}`);
+      await o.edit!.moveToShelf(d.id, shelf);
+    } catch (e) {
+      o.onError(`${e}`);
+      return;
     }
     o.onChanged(d.id);
     openDrawer(d.id);
+  };
+
+  const pick = document.createElement("select");
+  for (const name of ["", ...all]) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name || "— none —";
+    opt.selected = name === here;
+    pick.append(opt);
+  }
+  pick.addEventListener("change", () => void move(pick.value));
+  pick.addEventListener("keydown", (e) => e.stopPropagation());
+
+  const fresh = document.createElement("input");
+  fresh.type = "text";
+  fresh.placeholder = "new shelf…";
+  fresh.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter" && fresh.value.trim()) void move(fresh.value.trim());
   });
-  return input;
-}
 
-// ---------------------------------------------------------------------------
-// collections checklist, shared with the book-card "⋯" menu
-// ---------------------------------------------------------------------------
-
-function checkedNames(el: HTMLElement): string[] {
-  return [...el.querySelectorAll<HTMLInputElement>("input[type=checkbox]")]
-    .filter((c) => c.checked)
-    .map((c) => c.dataset.col!);
-}
-
-export function collectionsChecklist(
-  all: string[],
-  current: string[],
-  apply: (names: string[]) => void,
-  disabled = false,
-): { el: HTMLElement; checked: () => string[] } {
-  const el = document.createElement("div");
-  el.className = "mcols";
-  for (const name of all) {
-    const label = document.createElement("label");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.dataset.col = name;
-    box.checked = current.includes(name);
-    box.disabled = disabled;
-    box.addEventListener("change", () => apply(checkedNames(el)));
-    label.append(box, name);
-    el.append(label);
-  }
-  if (!all.length) {
-    const none = document.createElement("span");
-    none.className = "dnone";
-    none.textContent = "none";
-    el.append(none);
-  }
-  return { el, checked: () => checkedNames(el) };
+  wrap.append(pick, fresh);
+  return wrap;
 }
 
 function row(label: string, ...content: (Node | string)[]): HTMLElement {

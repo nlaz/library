@@ -8,9 +8,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use clap::Parser;
 use library_core::{Word, tokenize};
-use library_ingest::{
-    IngestCtx, Progress, collect, layout, prepare_figures, prepare_text, subdivide,
-};
+use library_ingest::{IngestCtx, Progress, layout, prepare_figures, prepare_text, subdivide};
 
 /// Drop the whole process (Vision OCR, ort's worker threads) to background
 /// QoS + nice 15 + throttled disk I/O so a long ingest never starves the
@@ -52,7 +50,8 @@ enum Cli {
         /// Doc id override (default: slugified file stem).
         #[arg(long)]
         name: Option<String>,
-        /// Also add the doc to this collection (see `collect`).
+        /// Put the file in this subfolder of the library folder — which
+        /// is what a shelf is.
         #[arg(long)]
         collection: Option<String>,
         /// Run at full priority instead of background QoS.
@@ -73,13 +72,6 @@ enum Cli {
         /// whose producer embedded garbage OCR). No effect on images.
         #[arg(long)]
         no_text_layer: bool,
-    },
-    /// Add an already-ingested doc to a collection (creates it if needed).
-    Collect {
-        collection: String,
-        doc: String,
-        #[arg(long, default_value = "data")]
-        data: PathBuf,
     },
     /// Rebuild a doc's full index (text + figures + markdown) from its
     /// cached OCR/page files alone — no source file needed. For docs whose
@@ -299,15 +291,6 @@ fn main() -> Result<()> {
                 no_text_layer,
             )
         }
-        Cli::Collect {
-            collection,
-            doc,
-            data,
-        } => {
-            collect(&library_core::meta::Meta::open(&data)?, &collection, &doc)?;
-            println!("collection '{collection}' += '{doc}'");
-            Ok(())
-        }
         Cli::Reindex { doc, data, hot } => {
             if !hot {
                 be_gentle();
@@ -418,7 +401,6 @@ fn main() -> Result<()> {
             }
             worker::clear_staged(&data, &doc);
             status::write(&meta, &doc, &DocStatus::new(DocState::Deleted))?;
-            library_ingest::set_collections(&meta, &doc, &[])?;
             meta.set_title(&doc, None)?;
             println!(
                 "deleted {doc} in {:?} (source file kept in data/pdfs)",
@@ -564,9 +546,6 @@ fn ingest(
     let md = library_ingest::textout::write_doc_pages(data, &doc, &pages)?;
     println!("text edition: {}", md.display());
 
-    if let Some(col) = collection {
-        collect(&ctx.meta, &col, &doc)?;
-    }
     println!("done: doc '{doc}'");
     Ok(())
 }

@@ -117,7 +117,8 @@ fn reserved_hits_are_shaped_and_scoped() {
         &embed,
     )
     .expect("create mark card");
-    ctx.collect("shelf", "moxon").expect("collections");
+    ctx.set_doc_placement("moxon", "pdf", Some("shelf"))
+        .expect("shelf");
 
     // library-wide: both kinds surface, reserved ones decorated
     let r = answer(&lib, &images, &ctx, &query("escapement", "", ""), |_| None);

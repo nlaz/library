@@ -153,12 +153,7 @@ fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
     let bin = librarian_bin(app);
     // real collection names ride into the tool schema + instructions so the
     // model can scope searches without guessing
-    let cols: Vec<String> = app
-        .state::<AppState>()
-        .ctx
-        .collections()
-        .into_keys()
-        .collect();
+    let cols: Vec<String> = app.state::<AppState>().ctx.shelves().into_keys().collect();
     let mut child = std::process::Command::new(&bin)
         .args(["serve", "--tools-stdin", "--collections", &cols.join(",")])
         .stdin(std::process::Stdio::piped())

@@ -28,7 +28,7 @@ pub struct DocInfo {
 
 #[tauri::command]
 pub(crate) fn collections(state: State<'_, AppState>) -> wire::Collections {
-    state.ctx.collections()
+    state.ctx.shelves()
 }
 
 fn is_processing(st: Option<&DocStatus>) -> bool {
@@ -42,7 +42,7 @@ fn is_processing(st: Option<&DocStatus>) -> bool {
 pub(crate) fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
     let data = &state.settings.data;
     let ctx = &state.ctx;
-    let cols = ctx.collections();
+    let cols = ctx.shelves();
     let titles = ctx.titles();
     let statuses = status::scan(ctx);
 
@@ -111,16 +111,6 @@ pub(crate) fn set_title(
         .map_err(|e| e.to_string())
 }
 
-/// Replace a doc's collection membership (empty list = in no collection).
-#[tauri::command]
-pub(crate) fn set_collections(
-    state: State<'_, AppState>,
-    doc: String,
-    collections: Vec<String>,
-) -> Result<(), String> {
-    library_ingest::set_collections(&state.ctx, &doc, &collections).map_err(|e| e.to_string())
-}
-
 /// Remove a doc: retract it from both indexes, delete its page renders and
 /// OCR cache, and prune it from collections/titles. The copied source in
 /// data/pdfs is kept; a `deleted` tombstone status stops the background
@@ -159,7 +149,6 @@ pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Resul
         }
         worker::clear_staged(&data, &doc);
         status::write(&ctx, &doc, &DocStatus::new(DocState::Deleted)).map_err(|e| e.to_string())?;
-        library_ingest::set_collections(&ctx, &doc, &[]).map_err(|e| e.to_string())?;
         ctx.set_title(&doc, None).map_err(|e| e.to_string())?;
         Ok(())
     })

@@ -5,7 +5,6 @@
 
 import { coverImg } from "./assets";
 import { $cols, $home, setPressed } from "./dom";
-import { collectionsChecklist } from "./drawer";
 import { displayTitle, prettify, setDocList, STAGE_LABEL, stageCount, statusEvent } from "./format";
 import { forgetDoc } from "./nav";
 import { onboardPanel } from "./onboard";
@@ -13,7 +12,7 @@ import { desktop, transport } from "./state";
 import { notify } from "./toast";
 import type { Collections, DocInfo, IngestEvent } from "./types";
 
-let col = ""; // "" = everything, else a collection name
+let col = ""; // "" = everything, else a shelf name
 
 export function getCol(): string {
   return col;
@@ -207,23 +206,38 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
     renameInline(card, d);
   });
 
-  const apply = async (names: string[]) => {
+  // A shelf is a folder, so filing is moving: this writes to the disk the
+  // user can see, and a book that is on a shelf is a file that is in that
+  // folder — the two can no longer disagree.
+  const moveTo = async (shelf: string) => {
+    closeMenus();
     try {
-      await desktop!.setCollections(d.id, names);
+      await desktop!.moveToShelf(d.id, shelf);
     } catch (e) {
-      notify(`collections: ${e}`, { sticky: true });
+      notify(`${e}`, { sticky: true });
+      return;
     }
     renderHome(await loadCollections());
   };
-  const { el: colList, checked } = collectionsChecklist(Object.keys(cols), d.collections, apply);
+
+  const shelfList = document.createElement("div");
+  shelfList.className = "bshelves";
+  const here = d.collections[0] ?? "";
+  for (const name of ["", ...Object.keys(cols)]) {
+    if (name === here) continue;
+    const b = document.createElement("button");
+    b.className = "divot quiet";
+    b.textContent = name ? `Move to ${name}` : "Move out of shelves";
+    b.addEventListener("click", () => void moveTo(name));
+    shelfList.append(b);
+  }
+
   const newCol = document.createElement("input");
   newCol.type = "text";
-  newCol.placeholder = "new collection…";
+  newCol.placeholder = "move to new shelf…";
   newCol.addEventListener("keydown", (e) => {
     e.stopPropagation();
-    if (e.key === "Enter" && newCol.value.trim()) {
-      apply([...checked(), newCol.value.trim()]);
-    }
+    if (e.key === "Enter" && newCol.value.trim()) void moveTo(newCol.value.trim());
     if (e.key === "Escape") closeMenus();
   });
 
@@ -256,7 +270,7 @@ function menuPanel(card: HTMLElement, d: DocInfo, cols: Collections): HTMLElemen
     renderHome(await loadCollections());
   });
 
-  panel.append(rename, colList, newCol, reveal, del);
+  panel.append(rename, shelfList, newCol, reveal, del);
   return panel;
 }
 

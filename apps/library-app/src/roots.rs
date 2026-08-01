@@ -153,6 +153,67 @@ pub(crate) fn set_default_root(state: State<'_, AppState>, id: String) -> Result
     state.ctx.set_default_root(&id).map_err(|e| e.to_string())
 }
 
+/// Put a document on a shelf by moving its file into that folder — or to
+/// the top level with an empty `shelf`.
+///
+/// Filing used to write a row in a collections table, which meant the
+/// app's idea of where a book lived and Finder's could disagree. A shelf is
+/// a folder now, so filing is a move: the same act the user could perform
+/// themselves, and the scanner picks it up either way.
+#[tauri::command]
+pub(crate) async fn move_to_shelf(
+    state: State<'_, AppState>,
+    doc: String,
+    shelf: String,
+) -> Result<(), String> {
+    let ctx = state.ctx.clone();
+    let from = ctx
+        .doc_path(&doc)
+        .ok_or("this document's file is no longer where the library last saw it")?;
+    // the shelf is one folder deep by construction; a name with a separator
+    // in it would silently nest and stop matching the shelf it named
+    let shelf = shelf.trim().replace(['/', '\\'], "-");
+    let root = ctx
+        .roots()
+        .into_iter()
+        .find(|r| from.starts_with(&r.path))
+        .ok_or("that document is not in a watched folder")?;
+
+    let name = from.file_name().ok_or("that file has no name")?.to_owned();
+    let dest_dir = if shelf.is_empty() {
+        root.path.clone()
+    } else {
+        root.path.join(&shelf)
+    };
+    let to = dest_dir.join(&name);
+    if to == from {
+        return Ok(());
+    }
+    if to.exists() {
+        return Err(format!(
+            "there is already a “{}” in that folder",
+            name.to_string_lossy()
+        ));
+    }
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+        std::fs::rename(&from, &to).map_err(|e| format!("moving the file: {e}"))?;
+        // re-scan so the shelf changes now rather than at the next sweep;
+        // the move keeps the inode, so this costs no re-indexing
+        roots::sync_root(&ctx.meta, &root, now());
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Every shelf that currently exists, for the "move to…" menu.
+#[tauri::command]
+pub(crate) fn shelves(state: State<'_, AppState>) -> Vec<String> {
+    state.ctx.shelves().into_keys().collect()
+}
+
 /// Bytes under `dir`, for the storage readout. Best-effort: an unreadable
 /// subdirectory contributes zero rather than failing the whole figure.
 pub(crate) fn dir_bytes(dir: &Path) -> u64 {

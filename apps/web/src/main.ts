@@ -218,7 +218,7 @@ async function main() {
     getCollections: () => transport.collections(),
     prettify,
     // no write path in the web build — the drawer renders read-only
-    edit: desktop ? { setTitle: desktop.setTitle, setCollections: desktop.setCollections } : null,
+    edit: desktop ? { setTitle: desktop.setTitle, moveToShelf: desktop.moveToShelf } : null,
     // the web build has no filesystem to reveal the original in
     reveal: desktop ? desktop.revealDoc : null,
     onChanged: async (id) => {

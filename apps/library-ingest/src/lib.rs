@@ -179,21 +179,6 @@ pub fn source_path(meta: &Meta, doc: &str) -> Option<PathBuf> {
     meta.doc_path(doc)
 }
 
-/// File `doc` into `collection`, creating it if it's new. Idempotent.
-pub fn collect(meta: &Meta, collection: &str, doc: &str) -> Result<()> {
-    meta.collect(collection, doc)?;
-    Ok(())
-}
-
-/// Replace `doc`'s collection membership wholesale: remove it everywhere,
-/// then add it to each of `cols` (creating new collections as needed).
-/// Collections left empty disappear — an empty shelf is unreachable in the
-/// UI, so keeping one around would just strand it.
-pub fn set_collections(meta: &Meta, doc: &str, cols: &[String]) -> Result<()> {
-    meta.set_collections(doc, cols)?;
-    Ok(())
-}
-
 /// Bring a dropped or picked file into the library by copying it into
 /// `dest_dir` (a watched root). The scanner mints the document on its next
 /// pass — this only puts the bytes somewhere it will look.
@@ -783,29 +768,5 @@ mod tests {
         assert_eq!(full[0].1, [0.0, 0.0, 1.0, 1.0]);
 
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn set_collections_replaces_and_prunes() {
-        // the storage behaviour is meta.rs's; this pins that the ingest
-        // wrappers reach it with the arguments in the right order — a
-        // (collection, doc) / (doc, collection) swap type-checks fine
-        let meta = Meta::open_in_memory().unwrap();
-
-        collect(&meta, "a", "doc-1").unwrap();
-        collect(&meta, "a", "doc-2").unwrap();
-        collect(&meta, "b", "doc-1").unwrap();
-
-        // move doc-1 from {a, b} to {b, c}; c is created on the fly
-        set_collections(&meta, "doc-1", &["b".into(), "c".into()]).unwrap();
-        let cols = meta.collections();
-        assert_eq!(cols["a"], vec!["doc-2"]);
-        assert_eq!(cols["b"], vec!["doc-1"]);
-        assert_eq!(cols["c"], vec!["doc-1"]);
-
-        // removing the last member prunes the collection entirely
-        set_collections(&meta, "doc-1", &[]).unwrap();
-        let cols = meta.collections();
-        assert_eq!(cols.keys().collect::<Vec<_>>(), vec!["a"]);
     }
 }

@@ -73,7 +73,7 @@ pub fn answer(
         Some(std::iter::once(q.doc.clone()).collect())
     } else {
         (!q.col.is_empty())
-            .then(|| ctx.collections().remove(&q.col))
+            .then(|| ctx.shelves().remove(&q.col))
             .flatten()
             .map(|docs| docs.into_iter().collect())
     };

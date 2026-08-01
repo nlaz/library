@@ -138,7 +138,7 @@ fn title_for(titles: &std::collections::BTreeMap<String, String>, doc: &str) -> 
 /// this so the model can't misattribute a doc to the wrong shelf.
 fn collection_of(ctx: &Ctx) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
-    for (name, docs) in ctx.collections() {
+    for (name, docs) in ctx.shelves() {
         for d in docs {
             out.entry(d).or_insert_with(|| name.clone());
         }
@@ -153,7 +153,7 @@ pub fn resolve_collection(ctx: &Ctx, col: &str) -> Result<Option<FxHashSet<Strin
     if col.is_empty() {
         return Ok(None);
     }
-    let cols = ctx.collections();
+    let cols = ctx.shelves();
     let norm = |s: &str| {
         s.chars()
             .filter(|c| c.is_alphanumeric())
@@ -760,7 +760,7 @@ pub fn sample_page_tool(ctx: &Ctx, col: &str, seed: Option<u64>, avoid: &[String
 
 pub fn collections_tool(ctx: &Ctx) -> Value {
     let titles = read_titles(ctx);
-    let cols = ctx.collections();
+    let cols = ctx.shelves();
     let out: serde_json::Map<String, Value> = cols
         .into_iter()
         .map(|(name, docs)| {
@@ -789,7 +789,7 @@ const OVERVIEW_EXAMPLES: usize = 3;
 /// overview to reading.
 pub fn overview_tool(ctx: &Ctx) -> Value {
     let titles = read_titles(ctx);
-    let cols = ctx.collections();
+    let cols = ctx.shelves();
     let stems: Vec<String> = std::fs::read_dir(ctx.data.join("text"))
         .map(|it| {
             it.flatten()
@@ -986,13 +986,14 @@ mod tests {
         )
         .unwrap();
         let ctx = Ctx::in_memory(&dir).unwrap();
-        for (col, doc) in [
+        // a shelf is the folder a document sits in, so one document is on
+        // exactly one shelf — doc-b used to be filed under two
+        for (shelf, doc) in [
             ("field-guides", "doc-a"),
-            ("recipes", "doc-b"),
             ("Guides", "doc-b"),
             ("garbled", "doc-garbled"),
         ] {
-            ctx.collect(col, doc).unwrap();
+            ctx.set_doc_placement(doc, "pdf", Some(shelf)).unwrap();
         }
         ctx
     }
@@ -1005,7 +1006,7 @@ mod tests {
         assert!(m.contains("doc-a"));
         let err = resolve_collection(&ctx, "bogus").unwrap_err();
         assert!(err["error"].as_str().unwrap().contains("bogus"));
-        assert!(err["collections"].as_array().unwrap().len() == 4);
+        assert!(err["collections"].as_array().unwrap().len() == 3);
         // overlapping names pick the longest match, not map order:
         // "Field Guides Collection" must hit field-guides, not Guides
         let m = resolve_collection(&ctx, "Field Guides Collection")
@@ -1030,7 +1031,7 @@ mod tests {
             "clean page must not carry a noisy note"
         );
         // doc-b's only page is blank: exhaustion is an error, not empty text
-        let blank = sample_page_tool(&ctx, "recipes", Some(1), &[]);
+        let blank = sample_page_tool(&ctx, "Guides", Some(1), &[]);
         assert!(blank["error"].as_str().unwrap().contains("readable"));
         std::fs::remove_dir_all(&ctx.data).ok();
     }
@@ -1117,7 +1118,7 @@ mod tests {
         let out = overview_tool(&ctx);
         assert_eq!(out["books"], 3); // doc-a, doc-b, doc-garbled
         let shelves = out["collections"].as_array().unwrap();
-        assert_eq!(shelves.len(), 4);
+        assert_eq!(shelves.len(), 3);
         let fg = shelves
             .iter()
             .find(|s| s["collection"] == "field-guides")

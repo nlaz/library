@@ -260,7 +260,7 @@ pub fn build(
     // BTreeMap iteration order makes "first collection wins" deterministic
     let coll_of: HashMap<String, String> = {
         let mut m = HashMap::new();
-        for (name, ids) in ctx.collections() {
+        for (name, ids) in ctx.shelves() {
             for id in ids {
                 m.entry(id).or_insert_with(|| name.clone());
             }

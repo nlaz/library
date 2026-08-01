@@ -102,10 +102,60 @@ fn emit_stage(app: &AppHandle, doc: &str, stage: &'static str) {
     );
 }
 
+/// Reconcile every watched folder against the index, and report what
+/// changed to the webview.
+///
+/// Runs on launch and once per sweep. A folder the user edited while the
+/// app was closed is picked up on the next launch; one they edit while it
+/// is open, within a sweep.
+fn sync_roots(app: &AppHandle, ctx: &library_core::meta::Ctx) -> bool {
+    let mut queued_any = false;
+    for root in ctx.roots() {
+        let applied = library_core::roots::sync_root(&ctx.meta, &root, now());
+
+        for doc in &applied.queued {
+            let st = DocStatus::new(DocState::Queued);
+            if let Err(e) = status::write(&ctx.meta, doc, &st) {
+                eprintln!("queueing {doc}: {e:#}");
+            }
+        }
+        // a file that went away stops being searchable, but its renders and
+        // its notes stay — restoring the file must not cost an OCR pass
+        for doc in &applied.missing {
+            let _ = status::write(&ctx.meta, doc, &DocStatus::new(DocState::Deleted));
+        }
+        queued_any |= !applied.queued.is_empty();
+
+        // Declining is not an error and not silence: the user is owed the
+        // reason, because from their side "my books vanished" and "the app
+        // is refusing to believe they vanished" look identical.
+        if let Some(reason) = &applied.declined {
+            let msg = match reason {
+                library_core::roots::Declined::RootUnavailable => format!(
+                    "can't read {} right now — its documents are kept until it comes back",
+                    root.path.display()
+                ),
+                library_core::roots::Declined::MassDeletion { vanished, known } => format!(
+                    "{vanished} of {known} documents disappeared from {} at once — \
+                     nothing was removed. If that was deliberate, they'll clear on the next scan \
+                     once the folder settles.",
+                    root.path.display()
+                ),
+            };
+            let _ = app.emit("app:waiting", &msg);
+        }
+        if !applied.missing.is_empty() || applied.moved > 0 || !applied.queued.is_empty() {
+            let _ = app.emit("library:changed", ());
+        }
+    }
+    queued_any
+}
+
 /// Sweep the filesystem queue until it's dry, then wait for a wake-up (a
-/// new drop, a retry) or the periodic timeout. The periodic sweep is what
-/// picks up work the CLI worker staged after this app instance launched
-/// (see `library_ingest::worker` for the handoff race).
+/// new drop, a retry) or the periodic timeout. The periodic sweep re-scans
+/// the watched folders and picks up work the CLI worker staged after this
+/// app instance launched (see `library_ingest::worker` for the handoff
+/// race).
 pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
     // utility QoS for this thread only (Vision OCR and ort inherit it);
     // the GUI stays at full priority
@@ -143,6 +193,10 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
 
     let mut committer = EngineCommitter { eng };
     loop {
+        // the folders are the queue's source: scan before draining, so a
+        // file dropped in Finder is indexed by the same pass that finds it
+        sync_roots(&app, &state.ctx);
+
         let mut committed = false;
         for doc in worker::pending(&data, &meta) {
             let outcome = worker::process_doc(&ctx, &doc, &mut committer, &mut |p| {

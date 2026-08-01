@@ -85,7 +85,7 @@ pub(crate) fn list_roots(state: State<'_, AppState>) -> Vec<RootInfo> {
         .roots()
         .into_iter()
         .map(|rec| RootInfo {
-            docs: state.ctx.files_in_root(&rec.id).len(),
+            docs: state.ctx.present_files_in_root(&rec.id),
             available: rec.path.is_dir(),
             rec,
         })
@@ -122,7 +122,7 @@ pub(crate) async fn link_root(
     .map_err(|e| e.to_string())??;
 
     Ok(RootInfo {
-        docs: state.ctx.files_in_root(&rec.id).len(),
+        docs: state.ctx.present_files_in_root(&rec.id),
         available: rec.path.is_dir(),
         rec,
     })

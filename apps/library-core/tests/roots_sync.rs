@@ -71,6 +71,16 @@ impl Lib {
         roots::sync_root(&self.ctx.meta, &root, self.clock.get())
     }
 
+    /// Files the library can actually see right now.
+    fn present_docs(&self) -> Vec<(String, String)> {
+        self.ctx
+            .files_in_root(&self.root.id)
+            .into_iter()
+            .filter(|k| !k.missing)
+            .map(|k| (k.relpath, k.doc))
+            .collect()
+    }
+
     fn docs_on_disk(&self) -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> = self
             .ctx
@@ -162,28 +172,45 @@ fn a_copy_is_recognised_as_the_same_document() {
 }
 
 #[test]
-fn deleting_a_file_marks_the_document_missing() {
+fn deleting_a_file_marks_the_document_missing_and_restoring_it_returns_the_same_one() {
     let lib = Lib::new("delete");
     for i in 0..6 {
         lib.write(&format!("book-{i}.pdf"), format!("%PDF-{i}").as_bytes());
     }
     lib.sync();
+    let before = lib.docs_on_disk();
+    let doc = before
+        .iter()
+        .find(|(p, _)| p == "book-3.pdf")
+        .map(|(_, d)| d.clone())
+        .expect("book-3");
 
     lib.remove("book-3.pdf");
     let a = lib.sync();
-    assert_eq!(a.missing.len(), 1);
+    assert_eq!(a.missing, vec![doc.clone()]);
     assert_eq!(a.declined, None);
-    assert_eq!(
-        lib.docs_on_disk().len(),
-        5,
-        "the row is out of the working set"
-    );
+    assert_eq!(lib.present_docs().len(), 5, "out of the working set");
 
-    // put it back: it returns, and nothing is re-ingested
+    // a second scan while it is still gone must not report it again —
+    // otherwise the document is re-retracted forever and the mass-deletion
+    // guard never resets
+    let quiet = lib.sync();
+    assert_eq!(quiet.missing, Vec::<String>::new());
+
+    // put it back: the *same* document returns. This is the assertion the
+    // count-only version of this test was missing, and the bug it hid was
+    // a restored file minting a second document and orphaning the first
+    // one's page renders and notes.
     lib.write("book-3.pdf", b"%PDF-3");
     let b = lib.sync();
-    assert_eq!(b.missing.len(), 0);
-    assert_eq!(lib.docs_on_disk().len(), 6);
+    assert_eq!(b.returned, 1);
+    assert_eq!(b.missing, Vec::<String>::new());
+    assert_eq!(b.queued, vec![doc.clone()], "re-indexed under its own id");
+    assert_eq!(
+        lib.docs_on_disk(),
+        before,
+        "every path maps to the document it did before"
+    );
 }
 
 #[test]

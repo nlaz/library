@@ -298,11 +298,16 @@ impl Meta {
     // --- files --------------------------------------------------------------
 
     /// Everything we have indexed under one root, as the scanner wants it.
+    ///
+    /// Missing files are included. They have to be: a file that comes back
+    /// must be recognised as the one that left, and a row we hid from the
+    /// scanner would read as a brand-new file — minting a second document
+    /// and orphaning the first one's page renders and notes.
     pub fn files_in_root(&self, root_id: &str) -> Vec<crate::roots::Known> {
         self.read(|c| {
             let mut q = c.prepare(
-                "SELECT doc_id, relpath, inode, size, mtime, content_hash
-                 FROM files WHERE root_id = ?1 AND state != 'missing' ORDER BY relpath",
+                "SELECT doc_id, relpath, inode, size, mtime, content_hash, state
+                 FROM files WHERE root_id = ?1 ORDER BY relpath",
             )?;
             let rows = q.query_map([root_id], |r| {
                 Ok(crate::roots::Known {
@@ -312,9 +317,23 @@ impl Meta {
                     size: r.get::<_, i64>(3)? as u64,
                     mtime: r.get(4)?,
                     content_hash: r.get(5)?,
+                    missing: r.get::<_, String>(6)? == "missing",
                 })
             })?;
             rows.collect()
+        })
+    }
+
+    /// Files under a root that are actually there — what the Settings page
+    /// counts, and what "N documents" means to a user.
+    pub fn present_files_in_root(&self, root_id: &str) -> usize {
+        self.read(|c| {
+            c.query_row(
+                "SELECT count(*) FROM files WHERE root_id = ?1 AND state != 'missing'",
+                [root_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n as usize)
         })
     }
 

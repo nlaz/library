@@ -71,6 +71,8 @@ pub struct Known {
     pub size: u64,
     pub mtime: i64,
     pub content_hash: Option<String>,
+    /// We looked for this file last time and it was not there.
+    pub missing: bool,
 }
 
 /// One change to apply to the index.
@@ -108,6 +110,13 @@ pub enum Change {
     /// Present but not readable right now (evicted to the cloud). Not a
     /// disappearance, and never a reason to retract anything.
     Offline { doc: String, relpath: String },
+    /// A file we had given up on is back. The same document, with its
+    /// caches and notes intact — restoring must never cost an OCR pass.
+    Returned {
+        doc: String,
+        relpath: String,
+        stat: Stat,
+    },
 }
 
 /// Why a scan's disappearances were not believed.
@@ -160,7 +169,13 @@ pub fn reconcile(known: &[Known], found: Option<&[Found]>) -> Verdict {
     for f in found {
         if let Some(k) = by_path.get(f.relpath.as_str()) {
             matched.push(k.relpath.as_str());
-            if f.stat.dataless {
+            if k.missing {
+                changes.push(Change::Returned {
+                    doc: k.doc.clone(),
+                    relpath: f.relpath.clone(),
+                    stat: f.stat.clone(),
+                });
+            } else if f.stat.dataless {
                 changes.push(Change::Offline {
                     doc: k.doc.clone(),
                     relpath: f.relpath.clone(),
@@ -204,15 +219,19 @@ pub fn reconcile(known: &[Known], found: Option<&[Found]>) -> Verdict {
     // whatever the scan never accounted for has disappeared
     let vanished: Vec<&Known> = known
         .iter()
-        .filter(|k| !matched.contains(&k.relpath.as_str()))
+        // a file that was already missing is not news; reporting it every
+        // scan would re-retract a document forever and keep the mass-
+        // deletion guard permanently tripped
+        .filter(|k| !k.missing && !matched.contains(&k.relpath.as_str()))
         .collect();
 
-    if !vanished.is_empty() && is_mass_deletion(vanished.len(), known.len()) {
+    let live = known.iter().filter(|k| !k.missing).count();
+    if !vanished.is_empty() && is_mass_deletion(vanished.len(), live) {
         return Verdict {
             changes,
             declined: Some(Declined::MassDeletion {
                 vanished: vanished.len(),
-                known: known.len(),
+                known: live,
             }),
         };
     }
@@ -356,6 +375,8 @@ pub struct Applied {
     pub missing: Vec<String>,
     pub offline: usize,
     pub duplicates: usize,
+    /// Documents whose file came back.
+    pub returned: usize,
     pub declined: Option<Declined>,
 }
 
@@ -435,6 +456,13 @@ pub fn sync_root(meta: &crate::meta::Meta, root: &crate::meta::RootRec, now: u64
                 let _ = meta.set_file_state(&root.id, &relpath, "dataless");
                 out.offline += 1;
             }
+            Change::Returned { doc, relpath, stat } => {
+                let _ = meta.put_file(&root.id, &relpath, &doc, &stat, None, now);
+                // re-index from the caches it kept: cheap, and it is what
+                // puts the document back in search
+                out.queued.push(doc);
+                out.returned += 1;
+            }
         }
     }
     out
@@ -461,6 +489,7 @@ mod tests {
             size,
             mtime,
             content_hash: None,
+            missing: false,
         }
     }
 
@@ -531,6 +560,42 @@ mod tests {
                 relpath: "a.pdf".into()
             }]
         );
+    }
+
+    #[test]
+    fn a_file_that_comes_back_is_the_same_document() {
+        // the bug this guards: hiding missing rows from the scanner made a
+        // restored file look brand new, minting a second document and
+        // orphaning the first one's renders and notes
+        let k = [Known {
+            missing: true,
+            ..known("d1", "a.pdf", 1, 10, 100)
+        }];
+        let v = reconcile(&k, Some(&[found("a.pdf", st(1, 10, 100))]));
+        assert_eq!(
+            v.changes,
+            vec![Change::Returned {
+                doc: "d1".into(),
+                relpath: "a.pdf".into(),
+                stat: st(1, 10, 100),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_already_missing_file_is_not_reported_again() {
+        // reporting it every scan would re-retract the document forever and
+        // hold the mass-deletion guard permanently open
+        let k = [
+            Known {
+                missing: true,
+                ..known("d1", "gone.pdf", 1, 10, 100)
+            },
+            known("d2", "here.pdf", 2, 10, 100),
+        ];
+        let v = reconcile(&k, Some(&[found("here.pdf", st(2, 10, 100))]));
+        assert_eq!(v.changes, vec![]);
+        assert_eq!(v.declined, None);
     }
 
     #[test]

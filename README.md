@@ -210,11 +210,34 @@ sink layer. Everything through `library-core` is cross-platform with no
 Apple dependencies, so the search engine tests anywhere; only ingestion
 and chat need macOS.
 
+## Your folders
+
+The library watches folders you choose — `~/The Library` by default, plus
+anything you link in Settings (⌘S) — and never moves, renames or
+reorganizes what is in them. Put a PDF in one and it gets indexed; rename
+it in Finder and it stays the same document; a folder inside a watched
+folder is a shelf.
+
+That last part is the whole design. What the app knows about a book and
+what you can see in Finder are the same fact, so they cannot drift apart,
+and nothing has to be imported out of the organization you already have.
+
+Identity is a minted id, never the filename — which is what lets a rename
+cost nothing. Path, inode and content hash are the evidence that ties a
+file to its document: path when nothing moved, inode across a rename,
+hash across a copy.
+
+Deleting a file removes its document, so the app is careful about what
+counts as deleted. An unmounted drive, an unreadable folder and an iCloud
+file whose contents have been evicted all look identical to "everything
+was deleted", and none of them are: a root it cannot read retracts
+nothing, and more than a fifth of a folder vanishing at once stops the
+scan rather than the library.
+
 ## Ingesting a document
 
-The queue is the filesystem — drop a file in the library's folder and it
-gets picked up. Every phase caches to disk, so an interruption costs only
-the page in progress.
+Every phase caches to disk, so an interruption costs only the page in
+progress.
 
 ```
   ┌────────┐  ┌─ text layer ┐  ┌────────┐  ┌────────┐  ┌────────┐

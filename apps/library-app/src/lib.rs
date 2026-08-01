@@ -22,6 +22,7 @@ mod marginalia;
 mod roots;
 mod serve;
 mod settings;
+mod watch;
 
 use std::sync::{RwLock, mpsc};
 
@@ -80,6 +81,11 @@ pub fn run() {
             let h = app.handle().clone();
             std::thread::spawn(move || ingest_worker(h, rx));
             std::thread::spawn(uninstall_legacy_agent);
+            // FSEvents: a latency improvement over the periodic sweep, not
+            // a second source of truth — it only wakes the same reconcile
+            let wctx = app.state::<AppState>().ctx.clone();
+            let wake = app.state::<AppState>().wake.clone();
+            std::thread::spawn(move || watch::watch_roots(wctx, wake));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

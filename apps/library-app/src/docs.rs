@@ -2,7 +2,7 @@
 //! delete/retry.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use library_core::wire;
 use library_ingest::status::{self, DocState, DocStatus};
@@ -167,23 +167,24 @@ pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Resul
     .map_err(|e| e.to_string())?
 }
 
-/// The file a "Show in Finder" points at: the doc's original in data/pdfs.
-/// Reserved ids are synthetic docs with no file at all, and a doc whose
-/// original was moved out of the library folder by hand has nothing to show.
-fn reveal_target(data: &Path, doc: &str) -> Result<PathBuf, String> {
+/// The file a "Show in Finder" points at, wherever the user keeps it.
+/// Reserved ids are synthetic docs with no file at all, and a document
+/// whose file has gone missing has nothing to show.
+fn reveal_target(meta: &library_core::meta::Meta, doc: &str) -> Result<PathBuf, String> {
     if library_core::records::is_reserved(doc) {
         return Err("not a document".into());
     }
-    library_ingest::source_path(data, doc)
-        .ok_or_else(|| "the original file is no longer in the library folder".to_string())
+    library_ingest::source_path(meta, doc).ok_or_else(|| {
+        "this document's file is no longer where the library last saw it".to_string()
+    })
 }
 
-/// Select a doc's original file in Finder. Adding a book *moves* it into the
-/// library folder, so the app is the only thing that still knows where the
-/// file went — this is the way back to it.
+/// Select a document's file in Finder. Files stay where the user put them,
+/// so this is a shortcut rather than the only way back — but it is the one
+/// that works without knowing which watched folder a book came from.
 #[tauri::command]
 pub(crate) async fn reveal_doc(state: State<'_, AppState>, doc: String) -> Result<(), String> {
-    let path = reveal_target(&state.settings.data, &doc)?;
+    let path = reveal_target(&state.ctx, &doc)?;
     // blocking: `open` waits on Finder, which can be slow to come forward
     tauri::async_runtime::spawn_blocking(move || {
         // -R reveals the file in its folder instead of opening it in Preview
@@ -246,21 +247,32 @@ mod tests {
     }
 
     #[test]
-    fn reveal_target_finds_the_original_and_refuses_what_has_none() {
+    fn reveal_target_finds_the_file_and_refuses_what_has_none() {
         let dir = std::env::temp_dir().join(format!("library-reveal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("pdfs")).unwrap();
-        std::fs::write(dir.join("pdfs/kant.pdf"), b"%PDF-").unwrap();
+        let lib = dir.join("Library");
+        std::fs::create_dir_all(&lib).expect("root dir");
+        std::fs::write(lib.join("kant.pdf"), b"%PDF-").expect("write");
 
-        assert_eq!(reveal_target(&dir, "kant"), Ok(dir.join("pdfs/kant.pdf")));
-        // a doc whose original was taken out of the library folder by hand
-        assert!(reveal_target(&dir, "hume").is_err());
+        let ctx = library_core::meta::Ctx::in_memory(&dir).expect("meta");
+        let root = ctx.add_root(&lib, 1).expect("link");
+        library_core::roots::sync_root(&ctx.meta, &root, 2);
+        let doc = ctx
+            .files_in_root(&root.id)
+            .first()
+            .expect("a file")
+            .doc
+            .clone();
+
+        assert_eq!(reveal_target(&ctx, &doc), Ok(root.path.join("kant.pdf")));
+        // a document whose file has gone
+        assert!(reveal_target(&ctx, "dGONE").is_err());
         // reserved ids contain `/` — they must never reach a path join
         assert_eq!(
-            reveal_target(&dir, "~cards/abc"),
+            reveal_target(&ctx, "~cards/abc"),
             Err("not a document".into())
         );
 
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

@@ -208,50 +208,114 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
     }
 }
 
-/// Accept dropped/picked PDFs and images: bring each into the library
-/// (`mode: "move"` relocates the file; anything else copies), mark it
-/// queued, and wake the worker. Returns the doc ids actually queued
-/// (dedup'd against docs already in flight).
+/// What an add did, per file. One bad file no longer aborts the batch: a
+/// drop of twenty scans where the third is a `.docx` should add nineteen
+/// and say so, not fail with nothing visibly added and three files already
+/// copied.
+#[derive(Serialize, Default)]
+pub(crate) struct AddResult {
+    /// Documents newly queued for ingest.
+    pub queued: Vec<String>,
+    /// Files we already had — same bytes, already in a watched folder.
+    pub duplicates: usize,
+    /// Files whose type we can't read yet.
+    pub skipped: Vec<String>,
+    /// `(filename, why)` for files that could not be copied at all.
+    pub failed: Vec<(String, String)>,
+}
+
+/// Every ingestible file under `dir`, recursively.
+///
+/// Dropping a folder is the obvious first thing anyone tries, and it used
+/// to do nothing at all — silently, because a directory has no extension
+/// and the filter dropped it without a word.
+fn expand(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    if depth > 16 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if e.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        match e.file_type() {
+            Ok(t) if t.is_dir() => expand(&p, out, depth + 1),
+            Ok(_) if library_ingest::SourceKind::of(&p).is_some() => out.push(p),
+            _ => {}
+        }
+    }
+}
+
+/// Accept dropped or picked files and folders: copy them into the default
+/// watched folder, then let the scanner mint the documents.
+///
+/// `collection` names a subfolder to drop into — the shelf *is* the folder,
+/// so filing something is putting it somewhere.
 #[tauri::command]
 pub(crate) fn ingest_paths(
     state: State<'_, AppState>,
     paths: Vec<String>,
     collection: Option<String>,
-    mode: Option<String>,
-) -> Result<Vec<String>, String> {
-    let ctx = ingest_ctx(&state.settings, &state.ctx);
+) -> Result<AddResult, String> {
     let meta = &state.ctx;
-    let mover = if mode.as_deref() == Some("move") {
-        library_ingest::move_doc
-    } else {
-        library_ingest::add_doc
+    let root = meta
+        .default_root()
+        .ok_or("no library folder is set up yet — choose one in Settings")?;
+    let dest_dir = match collection.as_deref().filter(|c| !c.is_empty()) {
+        Some(col) => root.path.join(col),
+        None => root.path.clone(),
     };
-    let mut queued = Vec::new();
-    for p in paths {
-        let path = PathBuf::from(&p);
+
+    // folders expand to their contents; a folder of scans is one drop
+    let mut files = Vec::new();
+    for p in &paths {
+        let path = PathBuf::from(p);
+        if path.is_dir() {
+            expand(&path, &mut files, 0);
+        } else {
+            files.push(path);
+        }
+    }
+
+    let mut out = AddResult::default();
+    for path in files {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         if library_ingest::SourceKind::of(&path).is_none() {
+            out.skipped.push(name);
             continue;
         }
-        let (doc, _src) = mover(&ctx, &path, None).map_err(|e| e.to_string())?;
-        // in-flight docs keep their state; terminal states re-queue
-        // (deleted tombstones revive — re-adding is an explicit user act)
-        match status::read(meta, &doc).map(|s| s.state) {
-            Some(DocState::Queued | DocState::Preparing | DocState::Staged) => continue,
-            Some(DocState::TextReady) => continue, // finishing figures already
-            _ => {}
+        // each file stands alone: a failure here costs one file, not the drop
+        if let Err(e) = library_ingest::copy_into(&path, &dest_dir) {
+            out.failed.push((name, e.to_string()));
         }
-        status::write(meta, &doc, &DocStatus::new(DocState::Queued)).map_err(|e| e.to_string())?;
-        // collections apply at enqueue time: the card lands on its shelf
-        // immediately, and the shared worker loop stays collection-free
-        if let Some(col) = &collection {
-            library_ingest::collect(meta, col, &doc).map_err(|e| e.to_string())?;
-        }
-        queued.push(doc);
     }
-    if !queued.is_empty() {
+
+    // one scan for the whole batch, which is also what mints the documents
+    let applied = library_core::roots::sync_root(&state.ctx.meta, &root, now());
+    out.duplicates = applied.duplicates;
+    for doc in &applied.queued {
+        status::write(meta, doc, &DocStatus::new(DocState::Queued)).map_err(|e| e.to_string())?;
+    }
+    out.queued = applied.queued;
+
+    if !out.queued.is_empty() {
         let _ = state.wake.send(());
     }
-    Ok(queued)
+    Ok(out)
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

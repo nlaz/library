@@ -190,37 +190,26 @@ impl Committer for ProcessCommitter {
 // the queue
 // ---------------------------------------------------------------------------
 
-/// The work list: every source file in `data/pdfs/` whose status is absent
-/// or non-terminal. `preparing` counts only when its claim is dead — a live
-/// claim means some process is already on it.
+/// The work list: every document whose status is non-terminal.
+///
+/// This used to walk `data/pdfs/` and derive an id per filename. The folder
+/// scanner ([`library_core::roots`]) owns that now — it decides what exists
+/// and what it is called — so the queue is a query, and a doc appears here
+/// only because a scan put it here.
+///
+/// `preparing` counts only when its claim is dead: a live claim means some
+/// process is already on it.
 pub fn pending(data: &Path, meta: &Meta) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(data.join("pdfs")) else {
-        return Vec::new();
-    };
-    // one query for the whole table, not one per file: a sweep over a
-    // 400-book folder used to be 400 file reads
-    let states = status::scan(meta);
-    let mut docs: Vec<String> = entries
-        .filter_map(|e| {
-            let p = e.ok()?.path();
-            crate::SourceKind::of(&p)?;
-            let doc = p.file_stem()?.to_string_lossy().into_owned();
-            let wanted = match states.get(&doc) {
-                None => true,
-                Some(st) => match st.state {
-                    DocState::Queued | DocState::Staged | DocState::TextReady => true,
-                    DocState::Preparing => !claimed(data, &doc),
-                    DocState::Ready | DocState::Failed | DocState::Deleted => false,
-                },
-            };
-            wanted.then_some(doc)
+    let mut docs: Vec<String> = status::scan(meta)
+        .into_iter()
+        .filter(|(doc, st)| match st.state {
+            DocState::Queued | DocState::Staged | DocState::TextReady => true,
+            DocState::Preparing => !claimed(data, doc),
+            DocState::Ready | DocState::Failed | DocState::Deleted => false,
         })
+        .map(|(doc, _)| doc)
         .collect();
     docs.sort();
-    // a cross-format collision on disk (photo.pdf + photo.png) must not
-    // double-process the doc; add/move refuse to create one, but the folder
-    // is user-visible and files can land there by hand
-    docs.dedup();
     docs
 }
 
@@ -450,12 +439,12 @@ pub fn process_doc(
                 Some(recs) => (recs, None),
                 None => {
                     let _ = status::write(meta, doc, &DocStatus::new(DocState::Preparing));
-                    let Some(src) = crate::source_path(data, doc) else {
+                    let Some(src) = crate::source_path(meta, doc) else {
                         let _ = status::write(
                             meta,
                             doc,
                             &DocStatus::failed(format!(
-                                "source file for '{doc}' missing from data/pdfs"
+                                "the file for '{doc}' is no longer where the library last saw it"
                             )),
                         );
                         return Outcome::Failed;
@@ -626,10 +615,6 @@ mod tests {
             std::fs::write(self.data.join("pdfs").join(format!("{doc}.pdf")), b"%PDF-").unwrap();
         }
 
-        fn touch_src(&self, name: &str) {
-            std::fs::write(self.data.join("pdfs").join(name), b"bytes").unwrap();
-        }
-
         fn set(&self, doc: &str, state: DocState) {
             status::write(&self.meta, doc, &DocStatus::new(state)).unwrap();
         }
@@ -726,20 +711,9 @@ mod tests {
 
     #[test]
     fn pending_truth_table() {
+        // the queue is a query over the docs table now: the scanner decides
+        // what exists, and a doc is work only because of its state
         let f = Fx::new("pending");
-        for doc in [
-            "absent",
-            "queued",
-            "staged",
-            "textready",
-            "prep-stale",
-            "prep-live",
-            "ready",
-            "failed",
-            "deleted",
-        ] {
-            f.touch_pdf(doc);
-        }
         f.set("queued", DocState::Queued);
         f.set("staged", DocState::Staged);
         f.set("textready", DocState::TextReady);
@@ -753,21 +727,16 @@ mod tests {
 
         assert_eq!(
             f.pending(),
-            vec!["absent", "prep-stale", "queued", "staged", "textready"]
+            vec!["prep-stale", "queued", "staged", "textready"]
         );
     }
 
     #[test]
-    fn pending_accepts_images_and_dedups_collisions() {
-        let f = Fx::new("pending-img");
-        f.touch_src("photo.png");
-        f.touch_src("scan.JPG");
-        f.touch_src("note.txt"); // not ingestible
-        // a cross-format collision that landed on disk by hand: one entry
-        f.touch_src("both.pdf");
-        f.touch_src("both.png");
-
-        assert_eq!(f.pending(), vec!["both", "photo", "scan"]);
+    fn a_doc_with_no_status_is_not_work() {
+        // nothing to sweep until a scan has minted the document
+        let f = Fx::new("pending-empty");
+        f.touch_pdf("stray");
+        assert_eq!(f.pending(), Vec::<String>::new());
     }
 
     #[test]

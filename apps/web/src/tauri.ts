@@ -65,16 +65,21 @@ export function docs(): Promise<DocInfo[]> {
   return invoke<DocInfo[]>("docs");
 }
 
-export function ingestPaths(
-  paths: string[],
-  collection: string | null,
-  mode: "move" | "copy" = "copy",
-): Promise<string[]> {
-  return invoke<string[]>("ingest_paths", { paths, collection, mode });
+/** What an add did, per file — one bad file no longer fails the batch. */
+export type AddResult = {
+  queued: string[];
+  duplicates: number;
+  skipped: string[];
+  failed: [name: string, why: string][];
+};
+
+export function ingestPaths(paths: string[], collection: string | null): Promise<AddResult> {
+  return invoke<AddResult>("ingest_paths", { paths, collection });
 }
 
-/** Native file chooser for adding books — the same set of formats the drop
- * handler and the Rust ingest gate accept. Empty when cancelled. */
+/** Native chooser for adding books. Folders are allowed and expand to their
+ * contents, because dropping a folder of scans is the obvious thing to try
+ * and the picker should accept whatever the drop handler does. */
 export async function pickFiles(): Promise<string[]> {
   const picked = await openDialog({
     multiple: true,
@@ -85,14 +90,12 @@ export async function pickFiles(): Promise<string[]> {
   return Array.isArray(picked) ? picked : [picked];
 }
 
-/** Ask before relocating files into the library folder. */
-export function confirmMove(names: string[], destDir: string): Promise<boolean> {
-  const what =
-    names.length === 1 ? `“${names[0]}”` : `${names.length} files`;
-  return confirmDialog(
-    `This will move ${what} into your library folder (${destDir}). Move ${names.length === 1 ? "it" : "them"}?`,
-    { title: "Add to library", kind: "info" },
-  );
+/** Choose a folder to watch, or to keep the library in. The native panel is
+ * also what grants us access to the location, so this is the only way a
+ * folder can be linked. */
+export async function pickFolder(title: string): Promise<string | null> {
+  const picked = await openDialog({ directory: true, multiple: false, title });
+  return typeof picked === "string" ? picked : null;
 }
 
 export type AppSettings = { data: string; width: number };

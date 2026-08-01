@@ -170,28 +170,13 @@ pub fn read_ocr(ocr_dir: &Path) -> Result<Vec<PageOcr>> {
     Ok(pages)
 }
 
-/// Resolve a doc id back to its source file in `data/pdfs`, trying each
-/// known extension. (`data/pdfs` keeps its name — it is the originals
-/// folder, now format-mixed.)
-pub fn source_path(data: &Path, doc: &str) -> Option<PathBuf> {
-    let dir = data.join("pdfs");
-    SOURCE_EXTS
-        .iter()
-        .map(|(ext, _)| dir.join(format!("{doc}.{ext}")))
-        .find(|p| p.exists())
-}
-
-pub fn doc_id(pdf: &Path) -> String {
-    let stem = pdf.file_stem().unwrap_or_default().to_string_lossy();
-    let mut id: String = stem
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect();
-    while id.contains("--") {
-        id = id.replace("--", "-");
-    }
-    id.trim_matches('-').to_string()
+/// Where a document's file lives, according to the folder scanner.
+///
+/// A doc id no longer encodes a path — this is a lookup, and it returns
+/// `None` for a document whose file has gone missing (which is a state the
+/// caller must handle, not an error).
+pub fn source_path(meta: &Meta, doc: &str) -> Option<PathBuf> {
+    meta.doc_path(doc)
 }
 
 /// File `doc` into `collection`, creating it if it's new. Idempotent.
@@ -209,52 +194,42 @@ pub fn set_collections(meta: &Meta, doc: &str, cols: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Shared add/move prelude: validate the source, derive the doc id and the
-/// in-library dest (source extension, lowercased), and refuse a cross-format
-/// collision — accepting `photo.png` after `photo.pdf` would give two files
-/// one doc id, and whichever [`source_path`] finds first would shadow the
-/// other.
-fn source_dest(ctx: &IngestCtx, src: &Path, name: Option<String>) -> Result<(String, PathBuf)> {
+/// Bring a dropped or picked file into the library by copying it into
+/// `dest_dir` (a watched root). The scanner mints the document on its next
+/// pass — this only puts the bytes somewhere it will look.
+///
+/// Name collisions get a numeric suffix rather than an error: two unrelated
+/// `scan.pdf`s are an ordinary thing to have, and the doc id no longer comes
+/// from the filename, so they cost nothing but a distinguishable name.
+pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf> {
     if !src.exists() {
         bail!("no such file: {}", src.display());
     }
-    let ext = match (
-        SourceKind::of(src),
-        src.extension().and_then(|e| e.to_str()),
-    ) {
-        (Some(_), Some(ext)) => ext.to_ascii_lowercase(),
-        _ => bail!(
+    if SourceKind::of(src).is_none() {
+        bail!(
             "unsupported file type: {} (want pdf, png, jpg, jpeg, or heic)",
             src.display()
-        ),
-    };
-    let doc = name.unwrap_or_else(|| doc_id(src));
-    if doc.is_empty() {
-        bail!("cannot derive a doc id from {}", src.display());
-    }
-    let dir = ctx.data.join("pdfs");
-    std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(format!("{doc}.{ext}"));
-    if let Some(existing) = source_path(&ctx.data, &doc)
-        && existing != dest
-    {
-        bail!(
-            "a different '{doc}' is already in the library (as .{}) — rename the file and try again",
-            existing.extension().unwrap_or_default().to_string_lossy()
         );
     }
-    Ok((doc, dest))
-}
+    std::fs::create_dir_all(dest_dir)?;
+    let stem = src.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = src
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default();
 
-/// Copy the source file into `data/pdfs/<doc>.<ext>` and return `(doc, copy)`.
-/// The library owns its documents: the drop source may be unplugged, moved,
-/// or deleted before a queued job runs.
-pub fn add_doc(ctx: &IngestCtx, src: &Path, name: Option<String>) -> Result<(String, PathBuf)> {
-    let (doc, dest) = source_dest(ctx, src, name)?;
-    if src.canonicalize().ok() != dest.canonicalize().ok() {
-        std::fs::copy(src, &dest).context("copying the file into the library")?;
+    let mut dest = dest_dir.join(src.file_name().unwrap_or_default());
+    let mut n = 1;
+    while dest.exists() {
+        // already the same bytes: it is in the library, leave it alone
+        if same_bytes(src, &dest).unwrap_or(false) {
+            return Ok(dest);
+        }
+        dest = dest_dir.join(format!("{stem} ({n}).{ext}"));
+        n += 1;
     }
-    Ok((doc, dest))
+    std::fs::copy(src, &dest).context("copying the file into the library")?;
+    Ok(dest)
 }
 
 /// Whether two files hold identical bytes (size check first).
@@ -263,48 +238,6 @@ fn same_bytes(a: &Path, b: &Path) -> Result<bool> {
         return Ok(false);
     }
     Ok(std::fs::read(a)? == std::fs::read(b)?)
-}
-
-/// Move the source file into `data/pdfs/<doc>.<ext>` and return `(doc, dest)`.
-/// Same-volume moves are a rename; across volumes it copies to a hidden
-/// temp name, verifies, renames into place, and only then deletes the
-/// source. If the doc already exists: identical bytes leave both files
-/// alone (already in the library — the source is NOT deleted); different
-/// bytes are an error rather than a silent overwrite.
-pub fn move_doc(ctx: &IngestCtx, src: &Path, name: Option<String>) -> Result<(String, PathBuf)> {
-    let (doc, dest) = source_dest(ctx, src, name)?;
-
-    if src.canonicalize().ok() == dest.canonicalize().ok() {
-        return Ok((doc, dest)); // already home
-    }
-    if dest.exists() {
-        if same_bytes(src, &dest)? {
-            return Ok((doc, dest));
-        }
-        bail!("a different '{doc}' is already in the library — rename the file and try again");
-    }
-
-    match std::fs::rename(src, &dest) {
-        Ok(()) => {}
-        // EXDEV: source is on another volume (drive, DMG). Copy safely,
-        // then remove the source only after the copy is in place.
-        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-            let tmp = dest.with_file_name(format!(
-                ".{}.tmp",
-                dest.file_name().unwrap_or_default().to_string_lossy()
-            ));
-            let n = std::fs::copy(src, &tmp).context("copying the file into the library")?;
-            if n != std::fs::metadata(src)?.len() {
-                let _ = std::fs::remove_file(&tmp);
-                bail!("short copy moving {} into the library", src.display());
-            }
-            std::fs::File::open(&tmp)?.sync_all()?;
-            std::fs::rename(&tmp, &dest)?;
-            std::fs::remove_file(src).context("removing the moved source file")?;
-        }
-        Err(e) => return Err(e).context("moving the file into the library"),
-    }
-    Ok((doc, dest))
 }
 
 /// Render + extract words (cached per page), chunk, and embed a doc.
@@ -627,7 +560,7 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
     // PDFs (including cache-only reindexes whose source is gone) keep
     // their exact pre-image behavior — the guarantee is image-docs only
     let ensure_full = matches!(
-        source_path(&ctx.data, doc)
+        source_path(&ctx.meta, doc)
             .as_deref()
             .and_then(SourceKind::of),
         Some(SourceKind::Image)
@@ -730,29 +663,6 @@ pub fn commit_figures(st: &mut Images, doc: &str, recs: &[ImageRec]) -> (usize, 
 mod tests {
     use super::*;
 
-    fn test_ctx(dir: &Path) -> IngestCtx {
-        IngestCtx {
-            data: dir.join("data"),
-            meta: std::sync::Arc::new(Meta::open_in_memory().unwrap()),
-            width: 1600,
-            clean: false,
-            text_layer: true,
-        }
-    }
-
-    #[test]
-    fn doc_ids_never_look_reserved() {
-        // synthetic search docs live under `~card/…` / `~annot/…`; the
-        // sanitizer must make those unreachable from any real filename
-        for name in ["~card/abc.pdf", "~annot/x.png", "a/b~c.pdf", "~~.pdf"] {
-            let id = doc_id(Path::new(name));
-            assert!(
-                !library_core::records::is_reserved(&id) && !id.contains('/'),
-                "{name} -> {id}"
-            );
-        }
-    }
-
     #[test]
     fn source_kind_classifies_by_extension() {
         assert_eq!(SourceKind::of(Path::new("a.pdf")), Some(SourceKind::Pdf));
@@ -766,76 +676,69 @@ mod tests {
     }
 
     #[test]
-    fn source_path_resolves_known_extensions() {
+    fn source_path_follows_the_file_to_wherever_it_lives() {
         let dir = std::env::temp_dir().join(format!("fold-srcpath-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("pdfs")).unwrap();
-        std::fs::write(dir.join("pdfs/photo.png"), b"png").unwrap();
-        std::fs::write(dir.join("pdfs/book.pdf"), b"pdf").unwrap();
+        let root_dir = dir.join("Library");
+        std::fs::create_dir_all(&root_dir).expect("root");
+        std::fs::write(root_dir.join("book.pdf"), b"%PDF").expect("book");
 
-        assert_eq!(source_path(&dir, "photo"), Some(dir.join("pdfs/photo.png")));
-        assert_eq!(source_path(&dir, "book"), Some(dir.join("pdfs/book.pdf")));
-        assert_eq!(source_path(&dir, "absent"), None);
+        let ctx = library_core::meta::Ctx::in_memory(&dir).expect("meta");
+        let root = ctx.add_root(&root_dir, 1).expect("link");
+        library_core::roots::sync_root(&ctx.meta, &root, 2);
 
-        std::fs::remove_dir_all(&dir).unwrap();
+        let doc = ctx
+            .files_in_root(&root.id)
+            .first()
+            .expect("one file")
+            .doc
+            .clone();
+        // the root's own path, not the one we passed in: linking
+        // canonicalizes, and on macOS /var is a symlink to /private/var
+        assert_eq!(
+            source_path(&ctx.meta, &doc),
+            Some(root.path.join("book.pdf"))
+        );
+        // a doc we have never heard of resolves to nothing, not an error
+        assert_eq!(source_path(&ctx.meta, "dNOPE"), None);
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
-    fn add_doc_keeps_image_extension_and_rejects_cross_format() {
-        let dir = std::env::temp_dir().join(format!("fold-adddoc-{}", std::process::id()));
+    fn copy_into_never_clobbers_and_dedups_identical_bytes() {
+        let dir = std::env::temp_dir().join(format!("fold-copyinto-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        let ctx = test_ctx(&dir);
+        let src_dir = dir.join("Desktop");
+        let lib = dir.join("Library");
+        std::fs::create_dir_all(&src_dir).expect("src dir");
 
-        let src = dir.join("src/My Photo.PNG");
-        std::fs::write(&src, b"png-bytes").unwrap();
-        let (doc, dest) = add_doc(&ctx, &src, None).unwrap();
-        assert_eq!(doc, "my-photo");
-        assert_eq!(dest, ctx.data.join("pdfs/my-photo.png"));
-        assert!(src.exists(), "add copies, never moves");
+        let a = src_dir.join("scan.pdf");
+        std::fs::write(&a, b"%PDF-alpha").expect("write a");
+        assert_eq!(copy_into(&a, &lib).expect("copy"), lib.join("scan.pdf"));
+        assert!(a.exists(), "the source is copied, never moved");
 
-        // same doc id under a different format: refuse both add and move
-        let pdf = dir.join("src/My Photo.pdf");
-        std::fs::write(&pdf, b"%PDF").unwrap();
-        assert!(add_doc(&ctx, &pdf, None).is_err());
-        assert!(move_doc(&ctx, &pdf, None).is_err());
-        assert!(pdf.exists(), "rejected source must be left in place");
+        // the same bytes again: already in the library, no second file
+        assert_eq!(copy_into(&a, &lib).expect("copy"), lib.join("scan.pdf"));
+        assert_eq!(std::fs::read_dir(&lib).expect("ls").count(), 1);
+
+        // a *different* file that happens to share a name gets a suffix
+        // rather than an error — the doc id no longer comes from the name
+        std::fs::write(&a, b"%PDF-beta").expect("rewrite a");
+        assert_eq!(copy_into(&a, &lib).expect("copy"), lib.join("scan (1).pdf"));
+        assert_eq!(
+            std::fs::read(lib.join("scan.pdf")).expect("read"),
+            b"%PDF-alpha",
+            "the first file is never overwritten"
+        );
 
         // not an ingestible type at all
-        let txt = dir.join("src/notes.txt");
-        std::fs::write(&txt, b"hi").unwrap();
-        assert!(add_doc(&ctx, &txt, None).is_err());
+        let txt = src_dir.join("notes.txt");
+        std::fs::write(&txt, b"hi").expect("write txt");
+        assert!(copy_into(&txt, &lib).is_err());
+        assert!(copy_into(&src_dir.join("nope.pdf"), &lib).is_err());
 
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn move_doc_relocates_dedups_and_rejects_conflicts() {
-        let dir = std::env::temp_dir().join(format!("fold-move-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        let ctx = test_ctx(&dir);
-
-        // move: source disappears, dest exists
-        let src = dir.join("src/My Book.pdf");
-        std::fs::write(&src, b"%PDF-alpha").unwrap();
-        let (doc, dest) = move_doc(&ctx, &src, None).unwrap();
-        assert_eq!(doc, "my-book");
-        assert!(!src.exists());
-        assert_eq!(std::fs::read(&dest).unwrap(), b"%PDF-alpha");
-
-        // identical bytes already in the library: no-op, source kept
-        std::fs::write(&src, b"%PDF-alpha").unwrap();
-        let (doc2, _) = move_doc(&ctx, &src, None).unwrap();
-        assert_eq!(doc2, "my-book");
-        assert!(src.exists(), "duplicate source must not be deleted");
-
-        // different bytes under the same doc id: refuse, don't overwrite
-        std::fs::write(&src, b"%PDF-beta").unwrap();
-        assert!(move_doc(&ctx, &src, None).is_err());
-        assert_eq!(std::fs::read(&dest).unwrap(), b"%PDF-alpha");
-
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     /// The full-page guarantee: an image-sourced doc always yields at least

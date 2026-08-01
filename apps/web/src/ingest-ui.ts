@@ -8,22 +8,35 @@ import { setOnboardPicker } from "./onboard";
 import { desktop } from "./state";
 import { notify } from "./toast";
 
-let libraryDir = ""; // <data>/pdfs, for the move-confirm dialog
+/** Sentence for what an add actually did. Silence is only correct when
+ * everything worked — a skipped or failed file has to say so, because the
+ * old handler dropped folders and unsupported files without a word. */
+function addSummary(r: {
+  queued: string[];
+  duplicates: number;
+  skipped: string[];
+  failed: [string, string][];
+}): string | null {
+  const parts: string[] = [];
+  if (r.duplicates) parts.push(`${r.duplicates} already in your library`);
+  if (r.skipped.length) {
+    const kinds = [...new Set(r.skipped.map((n) => n.split(".").pop()?.toLowerCase() ?? "?"))];
+    parts.push(`${r.skipped.length} can't be read yet (${kinds.join(", ")})`);
+  }
+  for (const [name, why] of r.failed) parts.push(`${name}: ${why}`);
+  if (!parts.length) return r.queued.length ? null : "nothing to add";
+  return parts.join(" · ");
+}
 
 async function queueFiles(paths: string[]) {
   if (!desktop) return;
-  // UX pre-filter only — the Rust ingest gate is authoritative
-  const exts = [".pdf", ".png", ".jpg", ".jpeg", ".heic"];
-  const files = paths.filter((p) => exts.some((e) => p.toLowerCase().endsWith(e)));
-  if (!files.length) return;
-  // the library owns its documents: adding a file MOVES it into the
-  // library folder, and that never happens without the user saying so
-  const names = files.map((p) => p.split("/").pop() ?? p);
-  if (!(await desktop.confirmMove(names, libraryDir))) return;
+  if (!paths.length) return;
   try {
-    const queued = await desktop.ingestPaths(files, getCol() || null, "move");
-    // queued docs show up on the shelves; only silence needs explaining
-    if (!queued.length) notify("already in the queue");
+    const r = await desktop.ingestPaths(paths, getCol() || null);
+    // queued books announce themselves by appearing on a shelf; everything
+    // else needs explaining
+    const msg = addSummary(r);
+    if (msg) notify(msg, { sticky: r.failed.length > 0 });
   } catch (e) {
     notify(`add failed: ${e}`, { sticky: true });
   }
@@ -31,8 +44,8 @@ async function queueFiles(paths: string[]) {
 }
 
 /** Open the native chooser and queue whatever comes back. Shared by the
- * first-run panel's button and ⌘O — one path, so the move-confirm and the
- * extension gate can't diverge between them. */
+ * first-run panel's button and ⌘O — one path, so the folder handling and
+ * the extension gate can't diverge between them. */
 export async function pickAndQueue() {
   if (!desktop) return;
   try {
@@ -45,10 +58,6 @@ export async function pickAndQueue() {
 export function wireDesktop() {
   if (!desktop) return;
   setOnboardPicker(() => void pickAndQueue());
-  desktop
-    .getSettings()
-    .then((s) => (libraryDir = `${s.data}/pdfs`))
-    .catch(() => {});
 
   // ⌘O adds books from anywhere in the app, the way every other Mac app
   // opens a file — but never out from under someone typing.

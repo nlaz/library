@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use library_core::{Word, tokenize};
 use library_ingest::{
-    IngestCtx, Progress, add_doc, collect, layout, prepare_figures, prepare_text, subdivide,
+    IngestCtx, Progress, collect, layout, prepare_figures, prepare_text, subdivide,
 };
 
 /// Drop the whole process (Vision OCR, ort's worker threads) to background
@@ -216,6 +216,13 @@ enum Cli {
         #[arg(long)]
         lex_only: bool,
     },
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn ctx(data: &Path, width: u32) -> Result<IngestCtx> {
@@ -513,7 +520,28 @@ fn ingest(
     let mut ctx = ctx(data, width)?;
     ctx.clean = clean;
     ctx.text_layer = !no_text_layer;
-    let (doc, src) = add_doc(&ctx, file, name)?;
+
+    // copy into the default watched folder (or the one named), then let the
+    // scanner mint the document — the same path the app takes
+    let root = ctx
+        .meta
+        .default_root()
+        .context("no watched folder is set up — run `library-ingest link <dir>` first")?;
+    let dest_dir = match collection.as_deref() {
+        Some(col) => root.path.join(col),
+        None => root.path.clone(),
+    };
+    library_ingest::copy_into(file, &dest_dir)?;
+    let applied = library_core::roots::sync_root(&ctx.meta, &root, now_secs());
+    let doc = match (applied.queued.first(), name) {
+        (Some(d), _) => d.clone(),
+        // already indexed under a document we hold: nothing new to ingest
+        (None, _) => {
+            println!("already in the library ({} duplicate)", applied.duplicates);
+            return Ok(());
+        }
+    };
+    let src = library_ingest::source_path(&ctx.meta, &doc).context("the file we just copied")?;
 
     let t = Instant::now();
     let (recs, pages) = prepare_text(&ctx, &src, &doc, limit, &mut print_progress)?;
@@ -664,9 +692,10 @@ fn audit(data: &Path, col: Option<&str>, worst: usize) -> Result<()> {
 
 /// Vision-forced re-OCR from the source file, then a full per-doc reindex.
 fn reocr(doc: &str, data: &Path, width: u32) -> Result<()> {
-    let Some(src) = library_ingest::source_path(data, doc) else {
+    let meta = library_core::meta::Meta::open(data)?;
+    let Some(src) = library_ingest::source_path(&meta, doc) else {
         anyhow::bail!(
-            "no source file for '{doc}' in data/pdfs — re-OCR needs the original; `reindex` only rebuilds from caches"
+            "the file for '{doc}' is not where the library last saw it — re-OCR needs the original; `reindex` only rebuilds from caches"
         );
     };
     // clear every derivative of the old OCR: raw pages, and the clean/edits

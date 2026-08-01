@@ -4,9 +4,10 @@
 //! the shared library_core::tools — the same implementations the server's
 //! HTTP routes use. Model sessions live in the sidecar, keyed by `conv`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use library_core::ClipEmb;
+use library_core::meta::Ctx;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::engine::{AppState, Engine, dev_root, engine};
@@ -152,10 +153,12 @@ fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
     let bin = librarian_bin(app);
     // real collection names ride into the tool schema + instructions so the
     // model can scope searches without guessing
-    let cols: Vec<String> =
-        library_core::wire::read_collections(&app.state::<AppState>().settings.data)
-            .into_keys()
-            .collect();
+    let cols: Vec<String> = app
+        .state::<AppState>()
+        .ctx
+        .collections()
+        .into_keys()
+        .collect();
     let mut child = std::process::Command::new(&bin)
         .args(["serve", "--tools-stdin", "--collections", &cols.join(",")])
         .stdin(std::process::Stdio::piped())
@@ -183,12 +186,12 @@ fn spawn_chat(app: &AppHandle) -> Result<ChatBridge, String> {
     })
 }
 
-fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value) -> String {
+fn execute_tool(eng: &Engine, ctx: &Ctx, name: &str, args: &serde_json::Value) -> String {
     use library_core::tools;
     // tool results must be JSON: a bare string here gets injected into the
     // model prompt verbatim instead of riding the sidecar's error path
     let figure_search = |q: &str, col: &str| -> String {
-        let member = match tools::resolve_collection(data, col) {
+        let member = match tools::resolve_collection(ctx, col) {
             Ok(m) => m,
             Err(e) => return serde_json::json!({ "error": e.to_string() }).to_string(),
         };
@@ -210,14 +213,14 @@ fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value)
                 })
             })
             .unwrap_or_default();
-        tools::image_hits_for_tool(&found, data, tools::TOOL_K).to_string()
+        tools::image_hits_for_tool(&found, ctx, tools::TOOL_K).to_string()
     };
     let q = args["query"].as_str().unwrap_or("");
     let col = args["collection"].as_str().unwrap_or("");
     match name {
         "search_library" => {
             let lib = eng.lib.read().expect("library lock poisoned");
-            lib.rtx(|r| tools::search_tool(&r, &lib, data, q, col, tools::TOOL_K))
+            lib.rtx(|r| tools::search_tool(&r, &lib, ctx, q, col, tools::TOOL_K))
                 .to_string()
         }
         "search_figures" => figure_search(q, col),
@@ -230,16 +233,16 @@ fn execute_tool(eng: &Engine, data: &Path, name: &str, args: &serde_json::Value)
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned)
                 .collect();
-            tools::sample_page_tool(data, col, None, &avoid).to_string()
+            tools::sample_page_tool(ctx, col, None, &avoid).to_string()
         }
         "read_pages" => {
             let doc = args["doc"].as_str().unwrap_or("");
             let from = args["from"].as_u64().map(|n| n as u32);
             let to = args["to"].as_u64().map(|n| n as u32);
-            tools::read_pages_tool(data, doc, from, to).to_string()
+            tools::read_pages_tool(ctx, doc, from, to).to_string()
         }
-        "library_overview" => tools::overview_tool(data).to_string(),
-        "list_collections" => tools::collections_tool(data).to_string(),
+        "library_overview" => tools::overview_tool(ctx).to_string(),
+        "list_collections" => tools::collections_tool(ctx).to_string(),
         _ => serde_json::json!({ "error": format!("unknown tool {name:?}") }).to_string(),
     }
 }
@@ -257,7 +260,7 @@ fn chat_turn_blocking(
 
     let state = app.state::<AppState>();
     let eng = engine(&state)?;
-    let data = state.settings.data.clone();
+    let ctx = state.ctx.clone();
 
     let mut guard = state.chat.lock().expect("chat bridge lock poisoned");
     if guard.is_none()
@@ -296,7 +299,7 @@ fn chat_turn_blocking(
                     Some("tool_request") => {
                         let result = execute_tool(
                             &eng,
-                            &data,
+                            &ctx,
                             ev["name"].as_str().unwrap_or(""),
                             &ev["args"],
                         );

@@ -5,6 +5,7 @@
 //! queries are exactly the modes that never touch ese, and CLIP is a
 //! caller-supplied closure fed synthetic embeddings.
 
+use library_core::meta::Ctx;
 use library_core::{
     CLIP_DIM, ChunkKey, ChunkRec, ClipEmb, EMB_DIM, ImageKey, ImageRec, Images, Library, Query,
     Word, answer, open, open_images, perf,
@@ -76,6 +77,12 @@ fn synthetic_images(name: &str) -> Images {
     images
 }
 
+/// answer() needs a Ctx for the collection filter; these tests never set
+/// one, so an empty in-memory db over the temp dir is the whole fixture.
+fn ctx() -> Ctx {
+    Ctx::in_memory(std::env::temp_dir()).expect("meta")
+}
+
 fn query(q: &str, mode: &str, kind: &str) -> Query {
     Query {
         seq: 1,
@@ -102,7 +109,7 @@ fn instant_text_query_reports_lexical_stage_breakdown() {
     let lib = synthetic_library("instant");
     let images = synthetic_images("instant");
     let q = query("escapement instant-stage-probe", "instant", "");
-    let resp = answer(&lib, &images, &std::env::temp_dir(), &q, |_| None);
+    let resp = answer(&lib, &images, &ctx(), &q, |_| None);
 
     // instant mode: lexical only — no image track, no query embedding
     assert_eq!(resp.phase, "lex");
@@ -131,7 +138,7 @@ fn images_query_runs_image_track_and_reports_stages() {
     let q = query("figure image-stage-probe", "full", "images");
     // synthetic CLIP embedding aligned with the first figure: the second
     // (orthogonal) one lands on the noise floor and the spread cutoff kills it
-    let resp = answer(&lib, &images, &std::env::temp_dir(), &q, |_| {
+    let resp = answer(&lib, &images, &ctx(), &q, |_| {
         let mut e: ClipEmb = [0.0f32; CLIP_DIM];
         e[0] = 1.0;
         Some(e)
@@ -152,7 +159,7 @@ fn failed_clip_embed_skips_image_search_stage() {
     let images = synthetic_images("noclip");
     let q = query("figure noclip-stage-probe", "full", "images");
     // encoder not loaded yet: the track records its attempt and yields nothing
-    let resp = answer(&lib, &images, &std::env::temp_dir(), &q, |_| None);
+    let resp = answer(&lib, &images, &ctx(), &q, |_| None);
 
     assert!(resp.hits.is_empty());
     let rec = record_for(&q.q);

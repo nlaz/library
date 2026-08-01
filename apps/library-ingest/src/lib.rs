@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use fastembed::{ImageEmbedding, ImageEmbeddingModel, ImageInitOptions};
+use library_core::meta::Meta;
 use library_core::{
     Bbox, ChunkKey, ChunkRec, ClipEmb, Emb, FxHashSet, ImageKey, ImageRec, Images, Library, Word,
 };
@@ -64,6 +65,10 @@ const CROP_MAX_PX: u32 = 448;
 #[derive(Clone)]
 pub struct IngestCtx {
     pub data: PathBuf,
+    /// The metadata database. Shared rather than owned: one process opens
+    /// it once, and the ingest loop, the search surfaces and the commands
+    /// all write through the same handle.
+    pub meta: std::sync::Arc<library_core::meta::Meta>,
     /// Rendered page-image width in pixels.
     pub width: u32,
     /// Run the model-backed OCR cleanup during `prepare_text`. Off by
@@ -220,47 +225,19 @@ pub fn doc_id(pdf: &Path) -> String {
     id.trim_matches('-').to_string()
 }
 
-type Collections = std::collections::BTreeMap<String, Vec<String>>;
-
-fn load_collections(data: &Path) -> Result<Collections> {
-    match std::fs::read(data.join("collections.json")) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("bad collections.json"),
-        Err(_) => Ok(Default::default()),
-    }
-}
-
-/// Written via tmp + rename: searches read this file per query.
-fn store_collections(data: &Path, cols: &Collections) -> Result<()> {
-    status::write_json_atomic(&data.join("collections.json"), cols)
-}
-
-/// data/collections.json: {"archive": ["doc-a", "doc-b"], ...}
-pub fn collect(data: &Path, collection: &str, doc: &str) -> Result<()> {
-    let mut cols = load_collections(data)?;
-    let docs = cols.entry(collection.to_string()).or_default();
-    if !docs.iter().any(|d| d == doc) {
-        docs.push(doc.to_string());
-    }
-    store_collections(data, &cols)
+/// File `doc` into `collection`, creating it if it's new. Idempotent.
+pub fn collect(meta: &Meta, collection: &str, doc: &str) -> Result<()> {
+    meta.collect(collection, doc)?;
+    Ok(())
 }
 
 /// Replace `doc`'s collection membership wholesale: remove it everywhere,
 /// then add it to each of `cols` (creating new collections as needed).
-/// Collections left empty are pruned — an empty shelf is unreachable in
-/// the UI, so keeping one around would just strand it.
-pub fn set_collections(data: &Path, doc: &str, cols: &[String]) -> Result<()> {
-    let mut all = load_collections(data)?;
-    for docs in all.values_mut() {
-        docs.retain(|d| d != doc);
-    }
-    for col in cols {
-        let docs = all.entry(col.clone()).or_default();
-        if !docs.iter().any(|d| d == doc) {
-            docs.push(doc.to_string());
-        }
-    }
-    all.retain(|_, docs| !docs.is_empty());
-    store_collections(data, &all)
+/// Collections left empty disappear — an empty shelf is unreachable in the
+/// UI, so keeping one around would just strand it.
+pub fn set_collections(meta: &Meta, doc: &str, cols: &[String]) -> Result<()> {
+    meta.set_collections(doc, cols)?;
+    Ok(())
 }
 
 /// Shared add/move prelude: validate the source, derive the doc id and the
@@ -787,6 +764,7 @@ mod tests {
     fn test_ctx(dir: &Path) -> IngestCtx {
         IngestCtx {
             data: dir.join("data"),
+            meta: std::sync::Arc::new(Meta::open_in_memory().unwrap()),
             width: 1600,
             clean: false,
             text_layer: true,
@@ -937,25 +915,25 @@ mod tests {
 
     #[test]
     fn set_collections_replaces_and_prunes() {
-        let dir = std::env::temp_dir().join(format!("fold-cols-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // the storage behaviour is meta.rs's; this pins that the ingest
+        // wrappers reach it with the arguments in the right order — a
+        // (collection, doc) / (doc, collection) swap type-checks fine
+        let meta = Meta::open_in_memory().unwrap();
 
-        collect(&dir, "a", "doc-1").unwrap();
-        collect(&dir, "a", "doc-2").unwrap();
-        collect(&dir, "b", "doc-1").unwrap();
+        collect(&meta, "a", "doc-1").unwrap();
+        collect(&meta, "a", "doc-2").unwrap();
+        collect(&meta, "b", "doc-1").unwrap();
 
         // move doc-1 from {a, b} to {b, c}; c is created on the fly
-        set_collections(&dir, "doc-1", &["b".into(), "c".into()]).unwrap();
-        let cols = load_collections(&dir).unwrap();
+        set_collections(&meta, "doc-1", &["b".into(), "c".into()]).unwrap();
+        let cols = meta.collections();
         assert_eq!(cols["a"], vec!["doc-2"]);
         assert_eq!(cols["b"], vec!["doc-1"]);
         assert_eq!(cols["c"], vec!["doc-1"]);
 
         // removing the last member prunes the collection entirely
-        set_collections(&dir, "doc-1", &[]).unwrap();
-        let cols = load_collections(&dir).unwrap();
+        set_collections(&meta, "doc-1", &[]).unwrap();
+        let cols = meta.collections();
         assert_eq!(cols.keys().collect::<Vec<_>>(), vec!["a"]);
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

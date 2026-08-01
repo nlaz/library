@@ -6,9 +6,9 @@
 //! brief atomic swap — so the app can search while it ingests, and the fjall
 //! single-writer lock is never contended.
 //!
-//! Ingest state is NOT held here: the queue is the filesystem
-//! (`data/pdfs/` + `data/status/`, see `library_ingest::worker`). The app's
-//! worker thread sweeps that queue — holding the stores makes it the owner
+//! Ingest state is NOT held here: the queue is `data/pdfs/` filtered by the
+//! `docs` table (see `library_ingest::worker`). The app's worker thread
+//! sweeps that queue — holding the stores makes it the owner
 //! — and picks up anything the `library-ingest worker` CLI staged while the
 //! app was closed. Indexing only happens while the app runs; there is no
 //! background agent.
@@ -57,9 +57,14 @@ pub fn run() {
         })
         .setup(|app| {
             let settings = load_settings(app.handle());
+            // the metadata db must open before anything reads a title or a
+            // shelf; failing here is fatal in the way a missing data dir is
+            let ctx = library_core::meta::Ctx::open(&settings.data)
+                .expect("opening meta.db in the data dir");
             let (tx, rx) = mpsc::channel::<()>();
             app.manage(AppState {
                 settings,
+                ctx,
                 engine: RwLock::new(None),
                 status: std::sync::Mutex::new(crate::engine::Status::default()),
                 wake: tx,

@@ -1,15 +1,19 @@
-//! Durable per-document ingest status: `data/status/<doc>.json`.
+//! Durable per-document ingest status, in the `docs` table of `meta.db`.
 //!
-//! One file per doc, written atomically (tmp + rename), so the app, the
-//! background worker, and any CLI run share one crash-safe view of what
-//! still needs ingesting. The filesystem is the source of truth: a source
-//! file in `data/pdfs/` whose status is not terminal is pending work —
-//! there is no other queue.
+//! This was one JSON file per doc under `data/status/`, written tmp+rename
+//! so the app and any CLI run shared a crash-safe view of what still needed
+//! ingesting. The rows live in SQLite now — same states, same transitions,
+//! but a transition updates six columns instead of rewriting a file, and
+//! two processes can write different docs at once.
+//!
+//! The state machine itself is unchanged: a source file whose status is not
+//! terminal is pending work, and there is no other queue.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+use library_core::meta::Meta;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +42,34 @@ impl DocState {
     /// Terminal states are not pending work.
     pub fn terminal(self) -> bool {
         matches!(self, DocState::Ready | DocState::Failed | DocState::Deleted)
+    }
+
+    /// The stored form. Identical to the serde representation because the
+    /// same strings cross the wire to the frontend — `states_match_serde`
+    /// pins that.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DocState::Queued => "queued",
+            DocState::Preparing => "preparing",
+            DocState::Staged => "staged",
+            DocState::TextReady => "text_ready",
+            DocState::Ready => "ready",
+            DocState::Failed => "failed",
+            DocState::Deleted => "deleted",
+        }
+    }
+
+    fn parse(s: &str) -> Option<DocState> {
+        Some(match s {
+            "queued" => DocState::Queued,
+            "preparing" => DocState::Preparing,
+            "staged" => DocState::Staged,
+            "text_ready" => DocState::TextReady,
+            "ready" => DocState::Ready,
+            "failed" => DocState::Failed,
+            "deleted" => DocState::Deleted,
+            _ => return None,
+        })
     }
 }
 
@@ -91,110 +123,228 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-pub fn dir(data: &Path) -> PathBuf {
-    data.join("status")
-}
-
-fn path(data: &Path, doc: &str) -> PathBuf {
-    dir(data).join(format!("{doc}.json"))
-}
-
-/// Serialize `v` as pretty JSON via tmp + rename, so concurrent readers
-/// never see a torn file. Delegates to the core helper (shared with cards
-/// and annotations), keeping the anyhow context ingest callers expect.
-pub fn write_json_atomic<T: Serialize>(path: &Path, v: &T) -> Result<()> {
-    library_core::sidecar::write_json_atomic(path, v)
-        .with_context(|| format!("writing {}", path.display()))
-}
-
-pub fn read(data: &Path, doc: &str) -> Option<DocStatus> {
-    let bytes = std::fs::read(path(data, doc)).ok()?;
-    // a corrupt status file means "unknown" — the doc just counts as
-    // pending again, and the next transition rewrites it
-    serde_json::from_slice(&bytes).ok()
-}
-
-pub fn write(data: &Path, doc: &str, st: &DocStatus) -> Result<()> {
-    std::fs::create_dir_all(dir(data))?;
-    write_json_atomic(&path(data, doc), st)
-}
-
-pub fn remove(data: &Path, doc: &str) {
-    let _ = std::fs::remove_file(path(data, doc));
-}
-
-/// Every doc with a status file. Claim files (`.lock`) and strays are
-/// skipped.
-pub fn scan(data: &Path) -> BTreeMap<String, DocStatus> {
-    let mut out = BTreeMap::new();
-    let Ok(entries) = std::fs::read_dir(dir(data)) else {
-        return out;
+/// Build a `DocStatus` from a `docs` row selected in this column order:
+/// state, stage, done, total, error, metrics, updated_at.
+fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<DocStatus>> {
+    let state: Option<String> = row.get(0)?;
+    // a row that exists only to hold a title has no ingest state yet
+    let Some(state) = state.as_deref().and_then(DocState::parse) else {
+        return Ok(None);
     };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().is_none_or(|x| x != "json") {
-            continue;
+    let metrics: Option<String> = row.get(5)?;
+    Ok(Some(DocStatus {
+        state,
+        stage: row.get(1)?,
+        done: row.get::<_, i64>(2)? as u64,
+        total: row.get::<_, i64>(3)? as u64,
+        error: row.get(4)?,
+        // a metrics blob we can't parse costs the perf view one row, not
+        // the doc's status
+        metrics: metrics.and_then(|m| serde_json::from_str(&m).ok()),
+        updated: row.get::<_, i64>(6)? as u64,
+    }))
+}
+
+/// The columns `from_row` expects, in its order. Just the list — callers
+/// add their own `SELECT`/`FROM`, so neither can accidentally inherit the
+/// other's clauses.
+const COLS: &str = "state, stage, done, total, error, metrics, updated_at";
+
+pub fn read(meta: &Meta, doc: &str) -> Option<DocStatus> {
+    meta.read(|c| {
+        c.query_row(
+            &format!("SELECT {COLS} FROM docs WHERE id = ?1"),
+            [doc],
+            from_row,
+        )
+        .optional()
+        .map(Option::flatten)
+    })
+}
+
+pub fn write(meta: &Meta, doc: &str, st: &DocStatus) -> Result<()> {
+    let metrics = match &st.metrics {
+        Some(m) => Some(serde_json::to_string(m)?),
+        None => None,
+    };
+    meta.write(|c| {
+        c.execute(
+            "INSERT INTO docs (id, state, stage, done, total, error, metrics, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+               state = excluded.state, stage = excluded.stage,
+               done = excluded.done, total = excluded.total,
+               error = excluded.error, metrics = excluded.metrics,
+               updated_at = excluded.updated_at",
+            rusqlite::params![
+                doc,
+                st.state.as_str(),
+                st.stage,
+                st.done as i64,
+                st.total as i64,
+                st.error,
+                metrics,
+                st.updated as i64,
+            ],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Forget a doc's ingest state without touching its title — the row may
+/// still be carrying one.
+pub fn remove(meta: &Meta, doc: &str) {
+    let _ = meta.write(|c| {
+        c.execute(
+            "UPDATE docs SET state = NULL, stage = NULL, done = 0, total = 0,
+                             error = NULL, metrics = NULL WHERE id = ?1",
+            [doc],
+        )?;
+        Ok(())
+    });
+}
+
+/// Every doc that has an ingest state.
+pub fn scan(meta: &Meta) -> BTreeMap<String, DocStatus> {
+    meta.read(|c| {
+        let mut q = c.prepare(&format!(
+            "SELECT {COLS}, id FROM docs WHERE state IS NOT NULL"
+        ))?;
+        let rows = q.query_map([], |row| {
+            let id: String = row.get(7)?;
+            Ok(from_row(row)?.map(|st| (id, st)))
+        })?;
+        let mut out = BTreeMap::new();
+        for row in rows {
+            if let Some((id, st)) = row? {
+                out.insert(id, st);
+            }
         }
-        let Some(doc) = p.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
-            continue;
-        };
-        if let Ok(bytes) = std::fs::read(&p)
-            && let Ok(st) = serde_json::from_slice(&bytes)
-        {
-            out.insert(doc, st);
-        }
-    }
-    out
+        Ok(out)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("status-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn meta() -> Meta {
+        Meta::open_in_memory().unwrap()
     }
 
     #[test]
     fn round_trip_and_scan() {
-        let data = tmp("rt");
-        assert!(read(&data, "a").is_none());
+        let m = meta();
+        assert!(read(&m, "a").is_none());
 
-        write(&data, "a", &DocStatus::new(DocState::Queued)).unwrap();
-        write(&data, "b", &DocStatus::failed("boom".into())).unwrap();
-        // claim files must not show up in a scan
-        std::fs::write(dir(&data).join("a.lock"), "123").unwrap();
+        write(&m, "a", &DocStatus::new(DocState::Queued)).unwrap();
+        write(&m, "b", &DocStatus::failed("boom".into())).unwrap();
 
-        assert_eq!(read(&data, "a").unwrap().state, DocState::Queued);
-        let b = read(&data, "b").unwrap();
+        assert_eq!(read(&m, "a").unwrap().state, DocState::Queued);
+        let b = read(&m, "b").unwrap();
         assert_eq!(b.state, DocState::Failed);
         assert_eq!(b.error.as_deref(), Some("boom"));
 
-        let all = scan(&data);
+        let all = scan(&m);
         assert_eq!(all.keys().collect::<Vec<_>>(), vec!["a", "b"]);
 
-        remove(&data, "a");
-        assert!(read(&data, "a").is_none());
-        std::fs::remove_dir_all(&data).unwrap();
+        remove(&m, "a");
+        assert!(read(&m, "a").is_none());
+        assert_eq!(scan(&m).keys().collect::<Vec<_>>(), vec!["b"]);
+    }
+
+    /// `Meta::doc_status_json` rebuilds this struct's JSON shape from the
+    /// columns, in a crate that can't see the struct. Two independent
+    /// spellings of one wire format — the frontend reads whichever the host
+    /// happens to serve, so they must agree exactly.
+    #[test]
+    fn status_json_matches_docstatus() {
+        let m = meta();
+        let mut st = DocStatus::new(DocState::Preparing);
+        st.stage = Some("ocr".into());
+        st.done = 12;
+        st.total = 406;
+        st.metrics = Some(library_core::perf::IngestMetrics {
+            pages: Some(406),
+            ..Default::default()
+        });
+        write(&m, "a", &st).unwrap();
+        assert_eq!(m.doc_status_json("a"), serde_json::to_value(&st).unwrap());
+
+        // and the sparse case: no stage, no error, no metrics
+        let bare = DocStatus::new(DocState::Ready);
+        write(&m, "b", &bare).unwrap();
+        assert_eq!(m.doc_status_json("b"), serde_json::to_value(&bare).unwrap());
+
+        // a failure carries its message
+        let failed = DocStatus::failed("boom".into());
+        write(&m, "c", &failed).unwrap();
+        assert_eq!(
+            m.doc_status_json("c"),
+            serde_json::to_value(&failed).unwrap()
+        );
     }
 
     #[test]
-    fn corrupt_status_reads_as_none() {
-        let data = tmp("corrupt");
-        std::fs::create_dir_all(dir(&data)).unwrap();
-        std::fs::write(dir(&data).join("bad.json"), b"{not json").unwrap();
-        assert!(read(&data, "bad").is_none());
-        assert!(scan(&data).is_empty());
-        std::fs::remove_dir_all(&data).unwrap();
+    fn a_transition_replaces_the_prior_state() {
+        let m = meta();
+        write(&m, "a", &DocStatus::failed("boom".into())).unwrap();
+        write(&m, "a", &DocStatus::new(DocState::Ready)).unwrap();
+
+        let st = read(&m, "a").unwrap();
+        assert_eq!(st.state, DocState::Ready);
+        assert_eq!(st.error, None, "the old error must not linger");
+        assert_eq!(scan(&m).len(), 1, "one row per doc, not one per write");
     }
 
     #[test]
-    fn states_serialize_snake_case() {
-        // the TS side matches on these exact strings
-        let s = serde_json::to_string(&DocState::TextReady).unwrap();
-        assert_eq!(s, "\"text_ready\"");
+    fn a_title_only_row_has_no_status() {
+        // set_title creates the docs row; that must not read as a doc
+        // waiting to be ingested
+        let m = meta();
+        m.set_title("a", Some("Some Book")).unwrap();
+        assert!(read(&m, "a").is_none());
+        assert!(scan(&m).is_empty());
+    }
+
+    #[test]
+    fn removing_status_keeps_the_title() {
+        let m = meta();
+        m.set_title("a", Some("Some Book")).unwrap();
+        write(&m, "a", &DocStatus::new(DocState::Ready)).unwrap();
+        remove(&m, "a");
+        assert_eq!(m.titles().get("a").map(String::as_str), Some("Some Book"));
+    }
+
+    #[test]
+    fn metrics_survive_the_round_trip() {
+        let m = meta();
+        let mut st = DocStatus::new(DocState::Ready);
+        st.metrics = Some(library_core::perf::IngestMetrics {
+            pages: Some(406),
+            ..Default::default()
+        });
+        write(&m, "a", &st).unwrap();
+        assert_eq!(read(&m, "a").unwrap().metrics.unwrap().pages, Some(406));
+    }
+
+    #[test]
+    fn states_match_serde() {
+        // the TS side matches on these exact strings, and so does the
+        // stored column — the two must not drift apart
+        for s in [
+            DocState::Queued,
+            DocState::Preparing,
+            DocState::Staged,
+            DocState::TextReady,
+            DocState::Ready,
+            DocState::Failed,
+            DocState::Deleted,
+        ] {
+            let json = serde_json::to_string(&s).unwrap();
+            assert_eq!(json, format!("\"{}\"", s.as_str()));
+            assert_eq!(DocState::parse(s.as_str()), Some(s));
+        }
     }
 }

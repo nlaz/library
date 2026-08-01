@@ -71,11 +71,12 @@ fn save_settings(app: &AppHandle, s: &Settings) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-pub(crate) fn ingest_ctx(s: &Settings) -> IngestCtx {
+pub(crate) fn ingest_ctx(s: &Settings, ctx: &library_core::meta::Ctx) -> IngestCtx {
     // clean: false — the in-app ingest must never park the ~2GB on-device
     // model in memory implicitly; cached edits still get applied
     IngestCtx {
         data: s.data.clone(),
+        meta: ctx.meta.clone(),
         width: s.width,
         clean: false,
         text_layer: true,

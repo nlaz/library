@@ -1,7 +1,7 @@
 //! The engine: fold stores + embedding model behind read/write locks, and
 //! the app state that owns it.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock, mpsc};
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,9 @@ pub struct Engine {
 
 pub struct AppState {
     pub(crate) settings: Settings,
+    /// Cache dir + metadata db, opened once at startup and shared by every
+    /// command, the ingest worker and the chat tools.
+    pub(crate) ctx: library_core::meta::Ctx,
     pub(crate) engine: RwLock<Option<std::sync::Arc<Engine>>>,
     /// Last launch-screen status, latched so a late webview can catch up.
     pub(crate) status: std::sync::Mutex<Status>,
@@ -145,9 +148,11 @@ pub(crate) fn init_engine(app: AppHandle) {
     // one-time: noted annotations become notebox cards; log-and-continue —
     // a failed migration must not brick startup (no marker means the next
     // launch retries)
-    match library_core::annots::migrate_annots_to_cards(&mut lib, &settings.data, &|s| {
-        ese::encode_single(s)
-    }) {
+    match library_core::annots::migrate_annots_to_cards(
+        &mut lib,
+        &app.state::<AppState>().ctx,
+        &|s| ese::encode_single(s),
+    ) {
         Ok(0) => {}
         Ok(n) => println!("migrated {n} margin notes into cards"),
         Err(e) => eprintln!("annotation migration skipped: {e}"),
@@ -270,10 +275,10 @@ pub(crate) fn engine(state: &AppState) -> Result<std::sync::Arc<Engine>, String>
         .ok_or_else(|| "warming up".to_string())
 }
 
-pub(crate) fn answer(eng: &Engine, data: &Path, q: &Query) -> Response {
+pub(crate) fn answer(eng: &Engine, ctx: &library_core::meta::Ctx, q: &Query) -> Response {
     let lib = eng.lib.read().expect("library lock poisoned");
     let images = eng.images.read().expect("images lock poisoned");
-    library_core::answer(&lib, &images, data, q, |s| {
+    library_core::answer(&lib, &images, ctx, q, |s| {
         eng.clip_text
             .get()?
             .embed(vec![s.to_string()], None)

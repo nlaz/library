@@ -3,9 +3,8 @@
 //! the bucket is the first word of the text, so same-topic fixtures land
 //! in the same bucket and everything is deterministic.
 
-use std::path::PathBuf;
-
 use library_core::annots::{AnnotKind, AnnotRec, annot_doc, store_annots};
+use library_core::meta::Ctx;
 use library_core::notes::{AnchorKind, NewCard, QuoteAnchor, create_card, load_cards, update_card};
 use library_core::{ChunkKey, ChunkRec, EMB_DIM, Emb, Library, Word, open, search};
 
@@ -25,11 +24,12 @@ fn embed(text: &str) -> Emb {
     one_hot(bucket)
 }
 
-fn fixture(name: &str) -> (Library, PathBuf) {
+fn fixture(name: &str) -> (Library, Ctx) {
     let dir = std::env::temp_dir().join(format!("library-core-notebox-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create fixture dir");
-    (open(dir.join("library.db")), dir)
+    let lib = open(dir.join("library.db"));
+    (lib, Ctx::in_memory(&dir).expect("meta"))
 }
 
 /// Docs of the lexical hits for `query`, in rank order.
@@ -115,7 +115,7 @@ fn commit_legacy_annot_chunk(lib: &mut Library, id: &str, text: &str) {
 
 #[test]
 fn card_lifecycle_in_search() {
-    let (mut lib, data) = fixture("card-life");
+    let (mut lib, ctx) = fixture("card-life");
 
     let mut input = new_card("casting speed is a boast");
     input.evidence.push(QuoteAnchor {
@@ -128,7 +128,7 @@ fn card_lifecycle_in_search() {
             boxes: vec![[0.1, 0.4, 0.5, 0.02]],
         },
     });
-    let card = create_card(&mut lib, &data, input, &embed).unwrap();
+    let card = create_card(&mut lib, &ctx, input, &embed).unwrap();
 
     // findable by claim AND by quoted evidence, under the reserved doc
     let doc = format!("~card/{}", card.id);
@@ -139,7 +139,7 @@ fn card_lifecycle_in_search() {
     let mut edit = card.clone();
     edit.title = "casting speed is a ceiling".into();
     edit.created = 999_999;
-    let saved = update_card(&mut lib, &data, edit, &embed).unwrap();
+    let saved = update_card(&mut lib, &ctx, edit, &embed).unwrap();
     assert_eq!(saved.id, card.id);
     assert_eq!(saved.created, card.created, "created stamp is immutable");
     assert!(lexical_docs(&lib, "boast").is_empty());
@@ -148,17 +148,17 @@ fn card_lifecycle_in_search() {
     // filing retracts from search but keeps the record
     let mut filed = saved.clone();
     filed.filed = true;
-    update_card(&mut lib, &data, filed, &embed).unwrap();
+    update_card(&mut lib, &ctx, filed, &embed).unwrap();
     assert!(lexical_docs(&lib, "ceiling").is_empty());
-    assert!(load_cards(&data).iter().any(|c| c.id == card.id && c.filed));
+    assert!(load_cards(&ctx).iter().any(|c| c.id == card.id && c.filed));
 
     // and unfiling brings it back
-    let mut back = load_cards(&data)
+    let mut back = load_cards(&ctx)
         .into_iter()
         .find(|c| c.id == card.id)
         .unwrap();
     back.filed = false;
-    update_card(&mut lib, &data, back, &embed).unwrap();
+    update_card(&mut lib, &ctx, back, &embed).unwrap();
     assert_eq!(lexical_docs(&lib, "ceiling"), vec![doc]);
 }
 
@@ -167,10 +167,10 @@ fn card_lifecycle_in_search() {
 /// boost can order them (and without it the `~` doc id would sort last).
 #[test]
 fn cards_outrank_pages_on_equal_evidence() {
-    let (mut lib, data) = fixture("note-boost");
+    let (mut lib, ctx) = fixture("note-boost");
     let text = "gear train sketch";
     commit_page_chunk(&mut lib, "moxon", 215, text);
-    let card = create_card(&mut lib, &data, new_card(text), &embed).unwrap();
+    let card = create_card(&mut lib, &ctx, new_card(text), &embed).unwrap();
 
     assert_eq!(
         lexical_docs(&lib, "gear train"),
@@ -180,13 +180,13 @@ fn cards_outrank_pages_on_equal_evidence() {
 
 #[test]
 fn card_births_append_to_the_timeline() {
-    let (mut lib, data) = fixture("card-birth");
-    let first = create_card(&mut lib, &data, new_card("gears one"), &embed).unwrap();
-    let second = create_card(&mut lib, &data, new_card("gears two"), &embed).unwrap();
-    let third = create_card(&mut lib, &data, new_card("cooking stock"), &embed).unwrap();
+    let (mut lib, ctx) = fixture("card-birth");
+    let first = create_card(&mut lib, &ctx, new_card("gears one"), &embed).unwrap();
+    let second = create_card(&mut lib, &ctx, new_card("gears two"), &embed).unwrap();
+    let third = create_card(&mut lib, &ctx, new_card("cooking stock"), &embed).unwrap();
 
     // fresh unique ids, appended in birth order
-    let ids: Vec<String> = load_cards(&data).into_iter().map(|c| c.id).collect();
+    let ids: Vec<String> = load_cards(&ctx).into_iter().map(|c| c.id).collect();
     assert_eq!(ids, vec![first.id, second.id, third.id]);
     assert_eq!(
         ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
@@ -194,16 +194,16 @@ fn card_births_append_to_the_timeline() {
     );
 
     // editing an unknown card is an input error
-    let mut ghost = create_card(&mut lib, &data, new_card("gears ghost"), &embed).unwrap();
+    let mut ghost = create_card(&mut lib, &ctx, new_card("gears ghost"), &embed).unwrap();
     ghost.id = "c000000000000".into();
-    assert!(update_card(&mut lib, &data, ghost, &embed).is_err());
+    assert!(update_card(&mut lib, &ctx, ghost, &embed).is_err());
 }
 
 #[test]
 fn migration_moves_noted_marks_into_cards() {
     use library_core::annots::migrate_annots_to_cards;
 
-    let (mut lib, data) = fixture("annot-migrate");
+    let (mut lib, ctx) = fixture("annot-migrate");
 
     // seed what the old pen left behind: two noted marks + a bare
     // highlight on "moxon", one noted mark on "fournier" — noted ones
@@ -230,19 +230,24 @@ fn migration_moves_noted_marks_into_cards() {
     let mut other = mk("a4", 1, 0.1, "fournier measured the foot");
     other.doc = "fournier".into();
     // stored out of reading order on purpose
-    store_annots(&data, "moxon", &[late.clone(), early.clone(), bare.clone()]).unwrap();
-    store_annots(&data, "fournier", &[other.clone()]).unwrap();
+    store_annots(
+        &ctx.data,
+        "moxon",
+        &[late.clone(), early.clone(), bare.clone()],
+    )
+    .unwrap();
+    store_annots(&ctx.data, "fournier", &[other.clone()]).unwrap();
     for a in [&late, &early, &other] {
         commit_legacy_annot_chunk(&mut lib, &a.id, &a.note);
     }
     assert_eq!(lexical_docs(&lib, "plantin").len(), 1);
-    let sidecar_bytes = std::fs::read(data.join("annotations").join("moxon.json")).unwrap();
+    let sidecar_bytes = std::fs::read(ctx.data.join("annotations").join("moxon.json")).unwrap();
 
-    let n = migrate_annots_to_cards(&mut lib, &data, &embed).unwrap();
+    let n = migrate_annots_to_cards(&mut lib, &ctx, &embed).unwrap();
     assert_eq!(n, 3);
 
     // noted marks only, reading order within each doc, stamps kept
-    let cards = load_cards(&data);
+    let cards = load_cards(&ctx);
     assert_eq!(cards.len(), 3);
     let moxon_titles: Vec<&str> = cards
         .iter()
@@ -274,11 +279,11 @@ fn migration_moves_noted_marks_into_cards() {
 
     // the sidecar files were left byte-for-byte alone
     assert_eq!(
-        std::fs::read(data.join("annotations").join("moxon.json")).unwrap(),
+        std::fs::read(ctx.data.join("annotations").join("moxon.json")).unwrap(),
         sidecar_bytes
     );
 
     // second run is a no-op
-    assert_eq!(migrate_annots_to_cards(&mut lib, &data, &embed).unwrap(), 0);
-    assert_eq!(load_cards(&data).len(), 3);
+    assert_eq!(migrate_annots_to_cards(&mut lib, &ctx, &embed).unwrap(), 0);
+    assert_eq!(load_cards(&ctx).len(), 3);
 }

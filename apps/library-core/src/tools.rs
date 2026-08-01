@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use crate::legibility::{
     LEGIBLE_OK, NOISY_MIN, legibility, legible_excerpt, min_window, squash_ws,
 };
-use crate::wire::read_collections;
+use crate::meta::Ctx;
 use crate::{ChunkKey, Emb, FxHashSet, Hit, Library, MIN_REL, Readers, perf, search};
 
 /// Hits returned to the model per search (each ~40 tokens slim).
@@ -98,15 +98,15 @@ fn query_coverage(query: &str, hits: &[Hit]) -> f32 {
         .fold(0.0, f32::max)
 }
 
-fn read_titles(data: &Path) -> std::collections::BTreeMap<String, String> {
-    crate::wire::read_titles(data)
+fn read_titles(ctx: &Ctx) -> std::collections::BTreeMap<String, String> {
+    ctx.titles()
 }
 
 /// Human-readable title derived from a doc id, for docs missing from
-/// titles.json. Download filenames often carry the title before a
+/// a stored title. Download filenames often carry the title before a
 /// parenthetical tag (`Title (Author) (source).pdf`); kebab-case ids
 /// prettify word-by-word. Opaque scanned-archive ids (e.g. `somebook00abcd`)
-/// derive badly — those need real titles.json entries.
+/// derive badly — those need a real title set on the doc.
 pub fn derive_title(doc: &str) -> String {
     let base = doc.split(" (").next().unwrap_or(doc).trim();
     if base.contains(' ') {
@@ -125,7 +125,7 @@ pub fn derive_title(doc: &str) -> String {
         .join(" ")
 }
 
-/// The model-facing title: titles.json first, derived otherwise — never
+/// The model-facing title: the stored one first, derived otherwise — never
 /// null, so the model always has something better than a raw id to say.
 fn title_for(titles: &std::collections::BTreeMap<String, String>, doc: &str) -> String {
     titles
@@ -136,9 +136,9 @@ fn title_for(titles: &std::collections::BTreeMap<String, String>, doc: &str) -> 
 
 /// Reverse doc → collection-name map (first collection wins). Hits carry
 /// this so the model can't misattribute a doc to the wrong shelf.
-fn collection_of(data: &Path) -> std::collections::BTreeMap<String, String> {
+fn collection_of(ctx: &Ctx) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
-    for (name, docs) in read_collections(data) {
+    for (name, docs) in ctx.collections() {
         for d in docs {
             out.entry(d).or_insert_with(|| name.clone());
         }
@@ -149,11 +149,11 @@ fn collection_of(data: &Path) -> std::collections::BTreeMap<String, String> {
 /// Resolve a collection argument: Ok(None) for "", Ok(Some(docs)) on a
 /// fuzzy match ("Field Guides" resolves to "field-guides"), Err(json) the
 /// model can act on when nothing matches — never a silent search-everything.
-pub fn resolve_collection(data: &Path, col: &str) -> Result<Option<FxHashSet<String>>, Value> {
+pub fn resolve_collection(ctx: &Ctx, col: &str) -> Result<Option<FxHashSet<String>>, Value> {
     if col.is_empty() {
         return Ok(None);
     }
-    let cols = read_collections(data);
+    let cols = ctx.collections();
     let norm = |s: &str| {
         s.chars()
             .filter(|c| c.is_alphanumeric())
@@ -248,12 +248,12 @@ pub fn truncate_chars(s: &mut String, max: usize) {
 pub fn search_tool<R: fold::stream::Readable>(
     r: &Readers<'_, R>,
     lib: &Library,
-    data: &Path,
+    ctx: &Ctx,
     query: &str,
     col: &str,
     k: usize,
 ) -> Value {
-    let member = match resolve_collection(data, col) {
+    let member = match resolve_collection(ctx, col) {
         Ok(m) => m,
         Err(e) => return e,
     };
@@ -313,8 +313,8 @@ pub fn search_tool<R: fold::stream::Readable>(
     let top_bm25 = hits.iter().map(|h| h.bm25).fold(0.0f32, f32::max);
     let coverage = query_coverage(query, &hits);
     let conf = confidence(top_bm25, coverage);
-    let titles = read_titles(data);
-    let cols = collection_of(data);
+    let titles = read_titles(ctx);
+    let cols = collection_of(ctx);
 
     let slim: Vec<Value> = hits.iter().map(|h| slim_hit(h, &titles, &cols)).collect();
 
@@ -341,7 +341,7 @@ pub fn search_tool<R: fold::stream::Readable>(
         && let Some(top) = hits.first()
     {
         // one hop instead of two: the top hit's whole page rides along
-        if let Some(text) = page_slice(data, &top.key.doc, top.key.page, top.key.page) {
+        if let Some(text) = page_slice(&ctx.data, &top.key.doc, top.key.page, top.key.page) {
             let mut text = squash_ws(&text);
             truncate_chars(&mut text, TOP_PAGE_CHARS);
             if text.len() >= BLANK_CHARS {
@@ -420,9 +420,9 @@ fn slim_hit(
 
 /// Figure-search results for kind="images"; `found` comes from the host's
 /// `image_search` call (the CLIP query embedding lives host-side).
-pub fn image_hits_for_tool(found: &[crate::ImageHit], data: &Path, k: usize) -> Value {
-    let titles = read_titles(data);
-    let cols = collection_of(data);
+pub fn image_hits_for_tool(found: &[crate::ImageHit], ctx: &Ctx, k: usize) -> Value {
+    let titles = read_titles(ctx);
+    let cols = collection_of(ctx);
     let keep = {
         let keys: Vec<(&str, u32)> = found
             .iter()
@@ -459,7 +459,7 @@ pub fn image_hits_for_tool(found: &[crate::ImageHit], data: &Path, k: usize) -> 
                      pages have no readable text. Point the user at the page \
                      ([Title p.N]) — do not describe what a figure shows." });
     if let Some(top) = found.first()
-        && let Some(text) = page_slice(data, &top.key.doc, top.key.page, top.key.page)
+        && let Some(text) = page_slice(&ctx.data, &top.key.doc, top.key.page, top.key.page)
     {
         let mut text = squash_ws(&text);
         truncate_chars(&mut text, TOP_PAGE_CHARS);
@@ -492,12 +492,12 @@ pub fn image_hits_for_tool(found: &[crate::ImageHit], data: &Path, k: usize) -> 
 /// models mangle long ids), hard caps, and *loud* errors for blank pages —
 /// the model treats explicit errors correctly but confabulates over
 /// silently-empty text.
-pub fn read_pages_tool(data: &Path, doc: &str, from: Option<u32>, to: Option<u32>) -> Value {
+pub fn read_pages_tool(ctx: &Ctx, doc: &str, from: Option<u32>, to: Option<u32>) -> Value {
     if crate::records::is_reserved(doc) {
         // reserved ids contain `/` and must never reach a path join
         return serde_json::json!({ "error": "no such document" });
     }
-    let dir = data.join("text");
+    let dir = ctx.data.join("text");
     let stems: Vec<String> = std::fs::read_dir(&dir)
         .map(|it| {
             it.flatten()
@@ -516,14 +516,14 @@ pub fn read_pages_tool(data: &Path, doc: &str, from: Option<u32>, to: Option<u32
         // titles, and small models mangle long ids anyway — match on a
         // normalized (alphanumeric, lowercase) form of the stem and of the
         // stem's title, so "The Art of Plain Cookery" finds
-        // the-art-of-plain-cookery and titles.json entries alike.
+        // the-art-of-plain-cookery and stored titles alike.
         let norm = |s: &str| {
             s.chars()
                 .filter(|c| c.is_alphanumeric())
                 .collect::<String>()
                 .to_lowercase()
         };
-        let titles = read_titles(data);
+        let titles = read_titles(ctx);
         let needle = norm(doc);
         let mut m: Vec<&String> = if needle.is_empty() {
             Vec::new()
@@ -590,8 +590,8 @@ pub fn read_pages_tool(data: &Path, doc: &str, from: Option<u32>, to: Option<u32
     truncate_chars(&mut text, MAX_TEXT_CHARS);
     let mut out = json!({
         "doc": resolved,
-        "title": title_for(&read_titles(data), &resolved),
-        "col": collection_of(data).get(&resolved),
+        "title": title_for(&read_titles(ctx), &resolved),
+        "col": collection_of(ctx).get(&resolved),
         "from": from,
         "to": to,
         "total_pages": last_page,
@@ -650,12 +650,12 @@ fn page_slice(data: &Path, doc: &str, from: u32, to: u32) -> Option<String> {
 /// "doc:page" strings of recently served pages (host-side session state,
 /// never model-visible) so "another one" walks new shelves; it is ignored
 /// rather than erroring when it would exhaust the candidates.
-pub fn sample_page_tool(data: &Path, col: &str, seed: Option<u64>, avoid: &[String]) -> Value {
-    let member = match resolve_collection(data, col) {
+pub fn sample_page_tool(ctx: &Ctx, col: &str, seed: Option<u64>, avoid: &[String]) -> Value {
+    let member = match resolve_collection(ctx, col) {
         Ok(m) => m,
         Err(e) => return e,
     };
-    let dir = data.join("text");
+    let dir = ctx.data.join("text");
     let mut docs: Vec<String> = std::fs::read_dir(&dir)
         .map(|it| {
             it.flatten()
@@ -690,8 +690,8 @@ pub fn sample_page_tool(data: &Path, col: &str, seed: Option<u64>, avoid: &[Stri
         z ^ (z >> 31)
     };
 
-    let titles = read_titles(data);
-    let cols = collection_of(data);
+    let titles = read_titles(ctx);
+    let cols = collection_of(ctx);
     // best low-scoring candidate seen, served (with a note) only if the
     // draw budget never lands on a legible page
     let mut best: Option<(f32, Value)> = None;
@@ -758,9 +758,9 @@ pub fn sample_page_tool(data: &Path, col: &str, seed: Option<u64>, avoid: &[Stri
 // list_collections
 // ---------------------------------------------------------------------------
 
-pub fn collections_tool(data: &Path) -> Value {
-    let titles = read_titles(data);
-    let cols = read_collections(data);
+pub fn collections_tool(ctx: &Ctx) -> Value {
+    let titles = read_titles(ctx);
+    let cols = ctx.collections();
     let out: serde_json::Map<String, Value> = cols
         .into_iter()
         .map(|(name, docs)| {
@@ -787,10 +787,10 @@ const OVERVIEW_EXAMPLES: usize = 3;
 /// doc-id dump — that one serves UIs. Titles here resolve in `read_pages`
 /// (see the normalized match there), so the model can go straight from the
 /// overview to reading.
-pub fn overview_tool(data: &Path) -> Value {
-    let titles = read_titles(data);
-    let cols = read_collections(data);
-    let stems: Vec<String> = std::fs::read_dir(data.join("text"))
+pub fn overview_tool(ctx: &Ctx) -> Value {
+    let titles = read_titles(ctx);
+    let cols = ctx.collections();
+    let stems: Vec<String> = std::fs::read_dir(ctx.data.join("text"))
         .map(|it| {
             it.flatten()
                 .filter_map(|f| {
@@ -846,18 +846,19 @@ mod tests {
     fn blank_page_is_an_error_not_content() {
         let dir = std::env::temp_dir().join("tools-test-blank");
         std::fs::create_dir_all(dir.join("text")).unwrap();
+        let ctx = Ctx::in_memory(&dir).unwrap();
         std::fs::write(
             dir.join("text/somedoc.md"),
             "# somedoc\n<!-- page 1 -->\n\n<!-- page 2 -->\nreal text on page two that is long enough to pass the blank floor\n",
         )
         .unwrap();
-        let blank = read_pages_tool(&dir, "somedoc", Some(1), Some(1));
+        let blank = read_pages_tool(&ctx, "somedoc", Some(1), Some(1));
         assert!(blank["error"].as_str().unwrap().contains("blank"));
-        let ok = read_pages_tool(&dir, "somedoc", Some(2), Some(2));
+        let ok = read_pages_tool(&ctx, "somedoc", Some(2), Some(2));
         assert!(ok["error"].is_null());
         assert!(ok["text"].as_str().unwrap().contains("real text"));
         // fuzzy id still resolves
-        let fuzzy = read_pages_tool(&dir, "SomeDoc", Some(2), Some(2));
+        let fuzzy = read_pages_tool(&ctx, "SomeDoc", Some(2), Some(2));
         assert_eq!(fuzzy["doc"], "somedoc");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -962,11 +963,14 @@ mod tests {
         let snippet = out["snippet"].as_str().unwrap();
         assert!(snippet.ends_with('…'));
         assert!(snippet.len() <= 200 + '…'.len_utf8());
-        // no titles.json entry: falls back to derive_title
+        // no stored title: falls back to derive_title
         assert_eq!(out["title"], "Doc a");
     }
 
-    fn sample_fixture(name: &str) -> std::path::PathBuf {
+    /// A synthetic on-disk library: markdown editions in the cache dir plus
+    /// the metadata that describes them. Returns a `Ctx` because the tools
+    /// need both halves — the text comes off disk, the shelves out of the db.
+    fn sample_fixture(name: &str) -> Ctx {
         let dir = std::env::temp_dir().join(format!("tools-test-{name}"));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(dir.join("text")).unwrap();
@@ -981,37 +985,41 @@ mod tests {
             "# g\n<!-- page 1 -->\nGotu iicher cs Veckly sty Merkel Stece ee 7 ee ee cs Seeeetca Uriters ay ck vb 9 zz qf om Veckly Stece ee cs ee ay ck\n",
         )
         .unwrap();
-        std::fs::write(
-            dir.join("collections.json"),
-            r#"{"field-guides": ["doc-a"], "recipes": ["doc-b"], "Guides": ["doc-b"], "garbled": ["doc-garbled"]}"#,
-        )
-        .unwrap();
-        dir
+        let ctx = Ctx::in_memory(&dir).unwrap();
+        for (col, doc) in [
+            ("field-guides", "doc-a"),
+            ("recipes", "doc-b"),
+            ("Guides", "doc-b"),
+            ("garbled", "doc-garbled"),
+        ] {
+            ctx.collect(col, doc).unwrap();
+        }
+        ctx
     }
 
     #[test]
     fn resolve_collection_is_fuzzy_and_loud() {
-        let dir = sample_fixture("resolve");
-        assert!(resolve_collection(&dir, "").unwrap().is_none());
-        let m = resolve_collection(&dir, "Field Guides").unwrap().unwrap();
+        let ctx = sample_fixture("resolve");
+        assert!(resolve_collection(&ctx, "").unwrap().is_none());
+        let m = resolve_collection(&ctx, "Field Guides").unwrap().unwrap();
         assert!(m.contains("doc-a"));
-        let err = resolve_collection(&dir, "bogus").unwrap_err();
+        let err = resolve_collection(&ctx, "bogus").unwrap_err();
         assert!(err["error"].as_str().unwrap().contains("bogus"));
         assert!(err["collections"].as_array().unwrap().len() == 4);
         // overlapping names pick the longest match, not map order:
         // "Field Guides Collection" must hit field-guides, not Guides
-        let m = resolve_collection(&dir, "Field Guides Collection")
+        let m = resolve_collection(&ctx, "Field Guides Collection")
             .unwrap()
             .unwrap();
         assert!(m.contains("doc-a"));
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&ctx.data).ok();
     }
 
     #[test]
     fn sample_page_is_seeded_and_skips_blanks() {
-        let dir = sample_fixture("sample");
-        let a = sample_page_tool(&dir, "field-guides", Some(42), &[]);
-        let b = sample_page_tool(&dir, "field-guides", Some(42), &[]);
+        let ctx = sample_fixture("sample");
+        let a = sample_page_tool(&ctx, "field-guides", Some(42), &[]);
+        let b = sample_page_tool(&ctx, "field-guides", Some(42), &[]);
         assert_eq!(a, b); // seed determinism
         assert_eq!(a["doc"], "doc-a");
         assert!(a["text"].as_str().unwrap().len() >= BLANK_CHARS);
@@ -1022,33 +1030,33 @@ mod tests {
             "clean page must not carry a noisy note"
         );
         // doc-b's only page is blank: exhaustion is an error, not empty text
-        let blank = sample_page_tool(&dir, "recipes", Some(1), &[]);
+        let blank = sample_page_tool(&ctx, "recipes", Some(1), &[]);
         assert!(blank["error"].as_str().unwrap().contains("readable"));
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&ctx.data).ok();
     }
 
     #[test]
     fn sample_page_skips_garbled_pages_and_honors_avoid() {
-        let dir = sample_fixture("sample-gate");
+        let ctx = sample_fixture("sample-gate");
         // the garbled collection's only page has no quotable stretch: it is
         // skipped like a blank, and exhaustion stays an explicit error
-        let g = sample_page_tool(&dir, "garbled", Some(7), &[]);
+        let g = sample_page_tool(&ctx, "garbled", Some(7), &[]);
         assert!(
             g["error"].as_str().unwrap().contains("readable"),
             "got: {g}"
         );
         // avoid steers to the other readable page of doc-a...
-        let first = sample_page_tool(&dir, "field-guides", Some(42), &[]);
+        let first = sample_page_tool(&ctx, "field-guides", Some(42), &[]);
         let avoid = format!("doc-a:{}", first["page"].as_u64().unwrap());
-        let second = sample_page_tool(&dir, "field-guides", Some(42), std::slice::from_ref(&avoid));
+        let second = sample_page_tool(&ctx, "field-guides", Some(42), std::slice::from_ref(&avoid));
         assert_eq!(second["doc"], "doc-a");
         assert_ne!(first["page"], second["page"]);
         // ...and is ignored, not fatal, when every candidate is avoided
         let both = vec!["doc-a:1".to_owned(), "doc-a:2".to_owned()];
-        let anyway = sample_page_tool(&dir, "field-guides", Some(42), &both);
+        let anyway = sample_page_tool(&ctx, "field-guides", Some(42), &both);
         assert_eq!(anyway["doc"], "doc-a");
         assert!(anyway["error"].is_null());
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&ctx.data).ok();
     }
 
     #[test]
@@ -1086,33 +1094,27 @@ mod tests {
 
     #[test]
     fn read_pages_resolves_titles_not_just_ids() {
-        let dir = sample_fixture("resolve-title");
-        std::fs::write(
-            dir.join("titles.json"),
-            r#"{"doc-a": "A Winter Cookery Primer"}"#,
-        )
-        .unwrap();
-        // titles.json title, with different casing and punctuation
-        let by_title = read_pages_tool(&dir, "winter cookery primer", Some(1), Some(1));
+        let ctx = sample_fixture("resolve-title");
+        ctx.set_title("doc-a", Some("A Winter Cookery Primer"))
+            .unwrap();
+        // stored title, with different casing and punctuation
+        let by_title = read_pages_tool(&ctx, "winter cookery primer", Some(1), Some(1));
         assert_eq!(by_title["doc"], "doc-a", "got: {by_title}");
-        // derived-title path (no titles.json entry) still resolves
-        let by_derived = read_pages_tool(&dir, "Doc A", Some(1), Some(1));
+        // derived-title path (no stored title) still resolves
+        let by_derived = read_pages_tool(&ctx, "Doc A", Some(1), Some(1));
         assert_eq!(by_derived["doc"], "doc-a");
         // empty needle is an error, not match-everything
-        let empty = read_pages_tool(&dir, "", Some(1), Some(1));
+        let empty = read_pages_tool(&ctx, "", Some(1), Some(1));
         assert!(empty["error"].as_str().unwrap().contains("no document"));
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&ctx.data).ok();
     }
 
     #[test]
     fn overview_is_slim_and_counts_loose_docs() {
-        let dir = sample_fixture("overview");
-        std::fs::write(
-            dir.join("titles.json"),
-            r#"{"doc-a": "A Winter Cookery Primer"}"#,
-        )
-        .unwrap();
-        let out = overview_tool(&dir);
+        let ctx = sample_fixture("overview");
+        ctx.set_title("doc-a", Some("A Winter Cookery Primer"))
+            .unwrap();
+        let out = overview_tool(&ctx);
         assert_eq!(out["books"], 3); // doc-a, doc-b, doc-garbled
         let shelves = out["collections"].as_array().unwrap();
         assert_eq!(shelves.len(), 4);
@@ -1125,20 +1127,20 @@ mod tests {
         assert_eq!(fg["examples"][0], "A Winter Cookery Primer");
         // every doc is filed in the fixture: no uncollected count
         assert!(out["uncollected_books"].is_null());
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&ctx.data).ok();
     }
 
     #[test]
     fn read_pages_squashes_newlines_and_marks_page_boundaries() {
-        let dir = sample_fixture("read-squash");
-        let one = read_pages_tool(&dir, "doc-a", Some(1), Some(1));
+        let ctx = sample_fixture("read-squash");
+        let one = read_pages_tool(&ctx, "doc-a", Some(1), Some(1));
         let t = one["text"].as_str().unwrap();
         assert!(!t.contains('\n'));
         assert!(!t.contains("[p."), "single-page reads carry no marker");
-        let two = read_pages_tool(&dir, "doc-a", Some(1), Some(2));
+        let two = read_pages_tool(&ctx, "doc-a", Some(1), Some(2));
         let t = two["text"].as_str().unwrap();
         assert!(!t.contains('\n'));
         assert!(t.contains("[p.1]") && t.contains("[p.2]"), "got: {t}");
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&ctx.data).ok();
     }
 }

@@ -27,22 +27,6 @@ pub fn count_pages(doc_pages_dir: &std::path::Path) -> u32 {
         .unwrap_or(0)
 }
 
-pub fn read_collections(data: &std::path::Path) -> Collections {
-    std::fs::read(data.join("collections.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
-}
-
-/// `data/titles.json`: doc id → display title. Missing or corrupt reads as
-/// empty — callers fall back to deriving a title from the id.
-pub fn read_titles(data: &std::path::Path) -> std::collections::BTreeMap<String, String> {
-    std::fs::read(data.join("titles.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
-}
-
 #[derive(Serialize)]
 pub struct SnippetWord {
     pub t: String,
@@ -260,15 +244,15 @@ pub fn wire_hit(hit: &Hit, qtoks: &[String]) -> WireHit {
 /// kind. Synthetic chunks rank through the normal text path on merit;
 /// this is the one place their page-scan assumptions (the `/pages/…`
 /// img URL, all-zero word boxes) get stripped and their note-box
-/// context attached. No-op — and no sidecar reads — unless a reserved
+/// context attached. No-op — and no metadata reads — unless a reserved
 /// hit is actually present.
-pub fn decorate_reserved_hits(hits: &mut [WireHit], data: &std::path::Path) {
+pub fn decorate_reserved_hits(hits: &mut [WireHit], meta: &crate::meta::Meta) {
     use crate::records::is_reserved;
 
     if !hits.iter().any(|h| is_reserved(&h.doc)) {
         return;
     }
-    let cards = crate::notes::load_cards(data);
+    let cards = meta.cards();
     for h in hits.iter_mut() {
         if let Some(id) = h.doc.strip_prefix("~card/") {
             h.kind = "card";

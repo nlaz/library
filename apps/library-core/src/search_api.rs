@@ -7,11 +7,11 @@
 //! so library-core need not depend on the host's embedding crate — it is only
 //! invoked when image results are actually wanted.
 
-use std::path::Path;
 use std::time::Instant;
 
 use serde::Deserialize;
 
+use crate::meta::Ctx;
 use crate::perf;
 use crate::wire::{self, Response, WireHit};
 use crate::{ClipEmb, Emb, FxHashSet, Images, Library, MIN_REL, tokenize};
@@ -28,7 +28,7 @@ pub struct Query {
     /// "instant" = lexical only (every keystroke), "full" = hybrid (debounced)
     #[serde(default)]
     pub mode: String,
-    /// restrict to a collection from data/collections.json; empty = everything
+    /// restrict to a collection (see the `collections` table); empty = everything
     #[serde(default)]
     pub col: String,
     /// Which kinds of hit to return: "all" | "text" | "images" (empty =
@@ -54,7 +54,7 @@ pub struct Query {
 pub fn answer(
     lib: &Library,
     images: &Images,
-    data: &Path,
+    ctx: &Ctx,
     q: &Query,
     clip_embed: impl Fn(&str) -> Option<ClipEmb> + Sync,
 ) -> Response {
@@ -73,7 +73,7 @@ pub fn answer(
         Some(std::iter::once(q.doc.clone()).collect())
     } else {
         (!q.col.is_empty())
-            .then(|| wire::read_collections(data).remove(&q.col))
+            .then(|| ctx.collections().remove(&q.col))
             .flatten()
             .map(|docs| docs.into_iter().collect())
     };
@@ -111,7 +111,7 @@ pub fn answer(
         rel_killed = t.rel_killed;
         // note-box cards and annotation notes ranked through the normal
         // text path; strip their page-scan assumptions before the wire
-        wire::decorate_reserved_hits(&mut text_hits, data);
+        wire::decorate_reserved_hits(&mut text_hits, &ctx.meta);
     }
     if let Some(i) = img {
         if i.embedded {

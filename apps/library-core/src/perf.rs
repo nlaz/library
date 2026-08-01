@@ -6,7 +6,7 @@
 //! (library-server, library-app) expose the ring read-only. Ingest metrics
 //! are written by the ingest worker going forward; [`ingest_rows`] lazily
 //! backfills legibility for docs ingested before metrics existed and caches
-//! the result back into `data/status/<doc>.json`.
+//! the result back into the doc's row.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -19,6 +19,7 @@ use fold::pipeline::terminal::search::HnswSinkStats;
 use fold::stream::DbStats;
 
 use crate::legibility::{NOISY_MIN, legibility, min_window};
+use crate::meta::Ctx;
 use crate::tools::BLANK_CHARS;
 use crate::{Hit, ImageHit, Images, Library, Word};
 
@@ -603,31 +604,12 @@ fn terminal(state: &str) -> bool {
 /// terminal status lacks legibility get it computed here and cached back
 /// into the status file (atomic tmp+rename), so the first open backfills
 /// the pre-existing library and later opens are cheap.
-pub fn ingest_rows(data: &Path) -> Vec<Value> {
-    let titles: BTreeMap<String, String> = std::fs::read(data.join("titles.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+pub fn ingest_rows(ctx: &Ctx) -> Vec<Value> {
+    let data = &ctx.data;
+    let titles = ctx.titles();
 
-    let Ok(entries) = std::fs::read_dir(data.join("status")) else {
-        return Vec::new();
-    };
     let mut rows: Vec<Value> = Vec::new();
-    for e in entries {
-        let Ok(e) = e else { continue };
-        let path = e.path();
-        if path.extension().is_none_or(|x| x != "json") {
-            continue;
-        }
-        let Some(doc) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
-            continue;
-        };
-        let Some(mut status): Option<Value> = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-        else {
-            continue;
-        };
+    for (doc, mut status) in ctx.doc_status_rows() {
         let state = status["state"].as_str().unwrap_or("").to_owned();
         if state == "deleted" {
             continue;
@@ -648,12 +630,17 @@ pub fn ingest_rows(data: &Path) -> Vec<Value> {
                 m.at = now_ms();
             }
             if let (Some(obj), Ok(mv)) = (status.as_object_mut(), serde_json::to_value(&m)) {
-                obj.insert("metrics".into(), mv);
-                let tmp = path.with_extension("json.tmp");
-                if let Ok(bytes) = serde_json::to_vec_pretty(&status)
-                    && std::fs::write(&tmp, bytes).is_ok()
-                {
-                    let _ = std::fs::rename(&tmp, &path);
+                obj.insert("metrics".into(), mv.clone());
+                // persist it: the backfill is seconds-per-doc on a big
+                // library and must happen once, not on every view open
+                if let Ok(text) = serde_json::to_string(&m) {
+                    let _ = ctx.write(|c| {
+                        c.execute(
+                            "UPDATE docs SET metrics = ?1 WHERE id = ?2",
+                            rusqlite::params![text, doc],
+                        )?;
+                        Ok(())
+                    });
                 }
             }
         }
@@ -716,7 +703,6 @@ mod tests {
             std::env::temp_dir().join(format!("library-core-perf-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data);
         let data = data.as_path();
-        std::fs::create_dir_all(data.join("status")).unwrap();
         std::fs::create_dir_all(data.join("ocr/somedoc")).unwrap();
         let words: Vec<Value> = "the quick brown fox jumps over the lazy dog and keeps running"
             .split(' ')
@@ -727,21 +713,22 @@ mod tests {
             serde_json::to_vec(&json!({"page": 1, "words": words})).unwrap(),
         )
         .unwrap();
-        std::fs::write(
-            data.join("status/somedoc.json"),
-            serde_json::to_vec(&json!({"state": "ready", "done": 0, "total": 0, "updated": 1}))
-                .unwrap(),
-        )
+        let ctx = Ctx::in_memory(data).unwrap();
+        ctx.write(|c| {
+            c.execute(
+                "INSERT INTO docs (id, state, updated_at) VALUES ('somedoc', 'ready', 1)",
+                [],
+            )?;
+            Ok(())
+        })
         .unwrap();
 
-        let rows = ingest_rows(data);
+        let rows = ingest_rows(&ctx);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["doc"], "somedoc");
         assert!(rows[0]["metrics"]["legibility"]["mean"].as_f64().unwrap() > 0.0);
-        // cached back into the status file
-        let cached: Value =
-            serde_json::from_slice(&std::fs::read(data.join("status/somedoc.json")).unwrap())
-                .unwrap();
+        // and written back, so the next view open doesn't rescore the doc
+        let cached = ctx.doc_status_json("somedoc");
         assert!(cached["metrics"]["legibility"].is_object());
         let _ = std::fs::remove_dir_all(data);
     }

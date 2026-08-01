@@ -4,8 +4,8 @@
 //! the live `data/`.
 
 use library_core::atlas;
+use library_core::meta::Ctx;
 use library_core::{ChunkKey, ChunkRec, EMB_DIM, Emb, Library, Word, open};
-use std::path::PathBuf;
 
 fn key(doc: &str, page: u32, idx: u32) -> ChunkKey {
     ChunkKey {
@@ -55,7 +55,7 @@ fn chunk(doc: &str, page: u32, idx: u32, text: &str, emb: Emb) -> ChunkRec {
 
 /// Store + data dir: four distinct works sharing one embedding cluster,
 /// a `-2` physical copy, off-cluster noise, and one reserved card chunk.
-fn fixture(name: &str) -> (Library, PathBuf) {
+fn fixture(name: &str) -> (Library, Ctx) {
     let root = std::env::temp_dir().join(format!("atlas-e2e-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let data = root.join("data");
@@ -69,12 +69,11 @@ fn fixture(name: &str) -> (Library, PathBuf) {
         )
         .expect("stub markdown");
     }
-    std::fs::write(data.join("titles.json"), r#"{"alpha": "Alpha Book"}"#).expect("titles");
-    std::fs::write(
-        data.join("collections.json"),
-        r#"{"shelf": ["alpha", "beta"]}"#,
-    )
-    .expect("collections");
+    let ctx = Ctx::in_memory(&data).expect("meta");
+    ctx.set_title("alpha", Some("Alpha Book")).expect("titles");
+    for d in ["alpha", "beta"] {
+        ctx.collect("shelf", d).expect("collections");
+    }
 
     let mut lib = open(root.join("library.db"));
     let mut chunks = Vec::new();
@@ -126,18 +125,21 @@ fn fixture(name: &str) -> (Library, PathBuf) {
             tx.upsert(&c.key, c);
         }
     });
-    (lib, data)
+    (lib, ctx)
 }
 
 #[test]
 fn atlas_builds_themes_trails_and_fresh_sidecar() {
-    let (mut lib, data) = fixture("full");
-    let fp = atlas::fingerprint(&lib, &data);
+    let (mut lib, ctx) = fixture("full");
+    let fp = atlas::fingerprint(&lib, &ctx.data);
     assert_eq!(fp.docs, 5);
-    assert!(atlas::load_fresh(&data, &fp).is_none(), "no sidecar yet");
+    assert!(
+        atlas::load_fresh(&ctx.data, &fp).is_none(),
+        "no sidecar yet"
+    );
 
     let claim = atlas::try_claim().expect("no concurrent build in tests");
-    let built = atlas::build(claim, &lib, &data, None).expect("build succeeds");
+    let built = atlas::build(claim, &lib, &ctx, None).expect("build succeeds");
 
     // themes: the cluster spans 4 works (5 docs), 40 chunks ≥ threshold
     let theme = built
@@ -189,16 +191,16 @@ fn atlas_builds_themes_trails_and_fresh_sidecar() {
     assert_eq!(alpha.collection, "shelf");
 
     // sidecar round trip: fresh now, stale after another commit
-    assert!(atlas::sidecar_path(&data).exists());
-    assert!(atlas::load_fresh(&data, &fp).is_some());
+    assert!(atlas::sidecar_path(&ctx.data).exists());
+    assert!(atlas::load_fresh(&ctx.data, &fp).is_some());
     lib.wtx(|tx| {
         let extra = chunk("alpha", 50, 0, "an appendix afterthought", noise_emb(77));
         tx.upsert(&extra.key, &extra);
     });
-    let fp2 = atlas::fingerprint(&lib, &data);
+    let fp2 = atlas::fingerprint(&lib, &ctx.data);
     assert_ne!(fp, fp2);
     assert!(
-        atlas::load_fresh(&data, &fp2).is_none(),
+        atlas::load_fresh(&ctx.data, &fp2).is_none(),
         "stale after commit"
     );
 }

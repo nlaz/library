@@ -30,6 +30,7 @@ ort = { version = "=2.0.0-rc.9", default-features = false, features = ["ndarray"
 rayon = "1"
 sha2 = "0.10"
 ureq = "2"
+rusqlite = { version = "0.40.1", default-features = false }
 
 [lints]
 workspace = true

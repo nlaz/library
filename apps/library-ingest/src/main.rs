@@ -196,7 +196,7 @@ enum Cli {
     },
     /// Process every pending document in data/pdfs (exits immediately if the
     /// app holds the stores). A document is pending when its status file
-    /// (data/status/<doc>.json) is absent or non-terminal — drop a PDF or
+    /// (its row in meta.db) is absent or non-terminal — drop a PDF or
     /// image into data/pdfs and run this.
     Worker {
         #[arg(long, default_value = "data")]
@@ -218,13 +218,14 @@ enum Cli {
     },
 }
 
-fn ctx(data: &Path, width: u32) -> IngestCtx {
-    IngestCtx {
+fn ctx(data: &Path, width: u32) -> Result<IngestCtx> {
+    Ok(IngestCtx {
         data: data.to_path_buf(),
+        meta: std::sync::Arc::new(library_core::meta::Meta::open(data)?),
         width,
         clean: false,
         text_layer: true,
-    }
+    })
 }
 
 /// Render pipeline progress the way the old monolithic CLI did.
@@ -296,7 +297,7 @@ fn main() -> Result<()> {
             doc,
             data,
         } => {
-            collect(&data, &collection, &doc)?;
+            collect(&library_core::meta::Meta::open(&data)?, &collection, &doc)?;
             println!("collection '{collection}' += '{doc}'");
             Ok(())
         }
@@ -375,8 +376,9 @@ fn main() -> Result<()> {
         Cli::Delete { doc, data } => {
             use library_ingest::status::{self, DocState, DocStatus};
             use library_ingest::worker;
+            let meta = library_core::meta::Meta::open(&data)?;
             if worker::claimed(&data, &doc)
-                || status::read(&data, &doc).map(|s| s.state) == Some(DocState::Preparing)
+                || status::read(&meta, &doc).map(|s| s.state) == Some(DocState::Preparing)
             {
                 anyhow::bail!("{doc}: still processing — try again when ingest finishes");
             }
@@ -408,17 +410,9 @@ fn main() -> Result<()> {
                 anyhow::bail!("removing {}: {e}", md.display());
             }
             worker::clear_staged(&data, &doc);
-            status::write(&data, &doc, &DocStatus::new(DocState::Deleted))?;
-            library_ingest::set_collections(&data, &doc, &[])?;
-            let titles_path = data.join("titles.json");
-            let mut titles: std::collections::BTreeMap<String, String> =
-                std::fs::read(&titles_path)
-                    .ok()
-                    .and_then(|b| serde_json::from_slice(&b).ok())
-                    .unwrap_or_default();
-            if titles.remove(&doc).is_some() {
-                std::fs::write(&titles_path, serde_json::to_vec_pretty(&titles)?)?;
-            }
+            status::write(&meta, &doc, &DocStatus::new(DocState::Deleted))?;
+            library_ingest::set_collections(&meta, &doc, &[])?;
+            meta.set_title(&doc, None)?;
             println!(
                 "deleted {doc} in {:?} (source file kept in data/pdfs)",
                 t.elapsed()
@@ -463,27 +457,32 @@ fn main() -> Result<()> {
 fn worker(data: &Path) -> Result<()> {
     use library_ingest::worker::{self, Outcome, ProcessCommitter};
 
-    let mut pend = worker::pending(data);
+    // one ctx for the whole run: it owns the metadata db handle, and
+    // reopening it per doc would be a fresh connection per book
+    let ctx = ctx(data, 1600)?;
+    let meta = &*ctx.meta;
+
+    let mut pend = worker::pending(data, meta);
     if pend.is_empty() {
         println!("nothing to ingest");
         return Ok(());
     }
 
-    // Pre-status-era docs are already indexed but have no status file;
+    // Pre-status-era docs are already indexed but have no status row;
     // mark them ready before treating "no status" as work. This open also
     // doubles as the cheap lock probe: locked -> the app is running.
-    if !worker::backfill_ready(data, &pend)? {
+    if !worker::backfill_ready(data, meta, &pend)? {
         println!("stores locked (app running) — its worker owns the queue");
         return Ok(());
     }
-    pend = worker::pending(data);
+    pend = worker::pending(data, meta);
 
     let mut committer = ProcessCommitter {
         data: data.to_path_buf(),
     };
     for doc in pend {
         println!("→ {doc}");
-        match worker::process_doc(&ctx(data, 1600), &doc, &mut committer, &mut print_progress) {
+        match worker::process_doc(&ctx, &doc, &mut committer, &mut print_progress) {
             Outcome::Ready => println!("done: {doc}"),
             Outcome::Staged => {
                 println!("stores locked mid-run — staged '{doc}' for the app; exiting");
@@ -491,7 +490,7 @@ fn worker(data: &Path) -> Result<()> {
             }
             Outcome::Skipped => println!("skipped (another process has it): {doc}"),
             // keep going: one bad doc must not wedge the queue
-            Outcome::Failed => eprintln!("failed: {doc} (see data/status/{doc}.json)"),
+            Outcome::Failed => eprintln!("failed: {doc} (its error is in the docs table)"),
         }
     }
     Ok(())
@@ -511,7 +510,7 @@ fn ingest(
     text_only: bool,
     no_text_layer: bool,
 ) -> Result<()> {
-    let mut ctx = ctx(data, width);
+    let mut ctx = ctx(data, width)?;
     ctx.clean = clean;
     ctx.text_layer = !no_text_layer;
     let (doc, src) = add_doc(&ctx, file, name)?;
@@ -538,7 +537,7 @@ fn ingest(
     println!("text edition: {}", md.display());
 
     if let Some(col) = collection {
-        collect(data, &col, &doc)?;
+        collect(&ctx.meta, &col, &doc)?;
     }
     println!("done: doc '{doc}'");
     Ok(())
@@ -606,7 +605,8 @@ fn audit_doc(data: &Path, doc: &str) -> Result<DocAudit> {
 }
 
 fn audit(data: &Path, col: Option<&str>, worst: usize) -> Result<()> {
-    let member = match library_core::tools::resolve_collection(data, col.unwrap_or("")) {
+    let ctx = library_core::meta::Ctx::open(data)?;
+    let member = match library_core::tools::resolve_collection(&ctx, col.unwrap_or("")) {
         Ok(m) => m,
         Err(e) => anyhow::bail!("{e}"),
     };
@@ -710,7 +710,7 @@ fn reocr(doc: &str, data: &Path, width: u32) -> Result<()> {
 /// need. One store session for the whole pass; per-doc failures are
 /// reported and skipped so one damaged cache can't strand the rest.
 fn reembed(data: &Path) -> Result<()> {
-    let ctx = ctx(data, 1600);
+    let ctx = ctx(data, 1600)?;
     let mut docs: Vec<String> = std::fs::read_dir(data.join("text"))
         .context("read data/text — is this the data dir?")?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -754,7 +754,7 @@ fn reembed(data: &Path) -> Result<()> {
 
 /// Rebuild text + figure indexes and the markdown edition from caches.
 fn reindex(doc: &str, data: &Path) -> Result<()> {
-    let ctx = ctx(data, 1600);
+    let ctx = ctx(data, 1600)?;
     let t = Instant::now();
     let (recs, pages) = library_ingest::prepare_text_cached(&ctx, doc, None, &mut print_progress)?;
     println!("prepared: {} chunks in {:?}", recs.len(), t.elapsed());
@@ -772,7 +772,7 @@ fn reindex(doc: &str, data: &Path) -> Result<()> {
 }
 
 fn ingest_images(doc: &str, data: &Path) -> Result<()> {
-    let ctx = ctx(data, 1600);
+    let ctx = ctx(data, 1600)?;
     let t = Instant::now();
     let recs = prepare_figures(&ctx, doc, &mut print_progress)?;
     println!("figures: {} regions in {:?}", recs.len(), t.elapsed());

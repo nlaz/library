@@ -7,19 +7,19 @@
 //! so links and the search namespace survive anything the display layer
 //! does.
 //!
-//! Source of truth is `data/notes/cards.json` (one atomic sidecar, see
-//! [`crate::sidecar`]); the search index holds derived synthetic chunks.
+//! Source of truth is the `cards` table in `meta.db`; the search index
+//! holds derived synthetic chunks.
 //! Cards written by the old threaded schema carry extra `thread`/`addr`
 //! keys — serde ignores them on load and the next save drops them.
 
 use std::io;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::meta::Meta;
 use crate::store::commit_chunks;
-use crate::{ChunkKey, ChunkRec, Emb, Library, Word, sidecar};
+use crate::{ChunkKey, ChunkRec, Emb, Library, Word};
 
 /// The shape of an evidence anchor on its page. Mirrors the mark
 /// geometry the reader draws: snapshots are taken at mark time, so a
@@ -135,18 +135,15 @@ pub fn mint_id(prefix: char) -> String {
 
 // --- sidecar ---------------------------------------------------------------
 
-fn cards_path(data: &Path) -> PathBuf {
-    data.join("notes").join("cards.json")
+/// Every card in the box, oldest first.
+pub fn load_cards(meta: &Meta) -> Vec<CardRec> {
+    meta.cards()
 }
 
-/// Every card in the box. Missing or corrupt sidecar reads as empty.
-pub fn load_cards(data: &Path) -> Vec<CardRec> {
-    sidecar::read_json(&cards_path(data)).unwrap_or_default()
-}
-
-pub fn store_cards(data: &Path, cards: &[CardRec]) -> std::io::Result<()> {
-    std::fs::create_dir_all(data.join("notes"))?;
-    sidecar::write_json_atomic(&cards_path(data), &cards)
+/// Replace the whole set. Ordinary edits go through [`create_card`] /
+/// [`update_card`], which write one row.
+pub fn store_cards(meta: &Meta, cards: &[CardRec]) -> std::io::Result<()> {
+    meta.put_cards(cards)
 }
 
 // --- search integration ----------------------------------------------------
@@ -237,11 +234,10 @@ pub struct NewCard {
 /// Mint and persist a new card: sidecar write, then the synthetic chunk.
 pub fn create_card(
     lib: &mut Library,
-    data: &Path,
+    meta: &Meta,
     input: NewCard,
     embed: &dyn Fn(&str) -> Emb,
 ) -> io::Result<CardRec> {
-    let mut cards = load_cards(data);
     let ts = now();
     let card = CardRec {
         id: mint_id('c'),
@@ -254,8 +250,7 @@ pub fn create_card(
         filed: false,
         split_hinted: false,
     };
-    cards.push(card.clone());
-    store_cards(data, &cards)?;
+    meta.put_card(&card)?;
     reindex_card(lib, &card, embed);
     Ok(card)
 }
@@ -264,23 +259,20 @@ pub fn create_card(
 /// win over whatever the client sent.
 pub fn update_card(
     lib: &mut Library,
-    data: &Path,
+    meta: &Meta,
     card: CardRec,
     embed: &dyn Fn(&str) -> Emb,
 ) -> io::Result<CardRec> {
-    let mut cards = load_cards(data);
-    let slot = cards
-        .iter_mut()
-        .find(|c| c.id == card.id)
+    let stored = meta
+        .card(&card.id)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "unknown card"))?;
     let saved = CardRec {
-        id: slot.id.clone(),
-        created: slot.created,
+        id: stored.id,
+        created: stored.created,
         modified: now(),
         ..card
     };
-    *slot = saved.clone();
-    store_cards(data, &cards)?;
+    meta.put_card(&saved)?;
     reindex_card(lib, &saved, embed);
     Ok(saved)
 }
@@ -337,12 +329,10 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_round_trip() {
-        let dir = std::env::temp_dir().join(format!("notes-sidecar-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn store_round_trip() {
+        let meta = Meta::open_in_memory().unwrap();
 
-        assert!(load_cards(&dir).is_empty());
+        assert!(load_cards(&meta).is_empty());
         let mut c = card("c1");
         c.evidence.push(QuoteAnchor {
             doc: "moxon".into(),
@@ -365,9 +355,8 @@ mod tests {
             to: "c2".into(),
             kind: LinkKind::Relates,
         });
-        store_cards(&dir, &[c.clone()]).unwrap();
-        assert_eq!(load_cards(&dir), vec![c]);
-        std::fs::remove_dir_all(&dir).unwrap();
+        store_cards(&meta, &[c.clone()]).unwrap();
+        assert_eq!(load_cards(&meta), vec![c]);
     }
 
     #[test]

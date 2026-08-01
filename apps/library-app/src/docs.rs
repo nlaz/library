@@ -21,29 +21,14 @@ pub struct DocInfo {
     pub collections: Vec<String>,
     /// Not yet searchable: queued, preparing, or staged.
     pub processing: bool,
-    /// Durable ingest status (`data/status/<doc>.json`); `None` for docs
+    /// Durable ingest status (the `docs` table); `None` for docs
     /// that predate status tracking.
     pub status: Option<DocStatus>,
 }
 
-/// data/titles.json: {"doc-id": "Display Title", ...}. The doc id is the
-/// primary key across the index and filesystem, so renames live here.
-type Titles = std::collections::BTreeMap<String, String>;
-
-fn read_titles(data: &Path) -> Titles {
-    std::fs::read(data.join("titles.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
-}
-
-fn write_titles(data: &Path, titles: &Titles) -> Result<(), String> {
-    status::write_json_atomic(&data.join("titles.json"), titles).map_err(|e| e.to_string())
-}
-
 #[tauri::command]
 pub(crate) fn collections(state: State<'_, AppState>) -> wire::Collections {
-    wire::read_collections(&state.settings.data)
+    state.ctx.collections()
 }
 
 fn is_processing(st: Option<&DocStatus>) -> bool {
@@ -56,9 +41,10 @@ fn is_processing(st: Option<&DocStatus>) -> bool {
 #[tauri::command]
 pub(crate) fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
     let data = &state.settings.data;
-    let cols = wire::read_collections(data);
-    let titles = read_titles(data);
-    let statuses = status::scan(data);
+    let ctx = &state.ctx;
+    let cols = ctx.collections();
+    let titles = ctx.titles();
+    let statuses = status::scan(ctx);
 
     let mut out: Vec<DocInfo> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -118,18 +104,11 @@ pub(crate) fn set_title(
     doc: String,
     title: String,
 ) -> Result<(), String> {
-    let data = &state.settings.data;
-    let mut titles = read_titles(data);
     let title = title.trim();
-    let changed = if title.is_empty() {
-        titles.remove(&doc).is_some()
-    } else {
-        titles.insert(doc, title.to_string()) != Some(title.to_string())
-    };
-    if changed {
-        write_titles(data, &titles)?;
-    }
-    Ok(())
+    state
+        .ctx
+        .set_title(&doc, (!title.is_empty()).then_some(title))
+        .map_err(|e| e.to_string())
 }
 
 /// Replace a doc's collection membership (empty list = in no collection).
@@ -139,8 +118,7 @@ pub(crate) fn set_collections(
     doc: String,
     collections: Vec<String>,
 ) -> Result<(), String> {
-    library_ingest::set_collections(&state.settings.data, &doc, &collections)
-        .map_err(|e| e.to_string())
+    library_ingest::set_collections(&state.ctx, &doc, &collections).map_err(|e| e.to_string())
 }
 
 /// Remove a doc: retract it from both indexes, delete its page renders and
@@ -154,8 +132,9 @@ pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Resul
         return Err("not a document".into());
     }
     let data = state.settings.data.clone();
+    let ctx = state.ctx.clone();
     if worker::claimed(&data, &doc)
-        || status::read(&data, &doc).map(|s| s.state) == Some(DocState::Preparing)
+        || status::read(&ctx, &doc).map(|s| s.state) == Some(DocState::Preparing)
     {
         return Err("still processing — try again when ingest finishes".into());
     }
@@ -179,13 +158,9 @@ pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Resul
             }
         }
         worker::clear_staged(&data, &doc);
-        status::write(&data, &doc, &DocStatus::new(DocState::Deleted))
-            .map_err(|e| e.to_string())?;
-        library_ingest::set_collections(&data, &doc, &[]).map_err(|e| e.to_string())?;
-        let mut titles = read_titles(&data);
-        if titles.remove(&doc).is_some() {
-            write_titles(&data, &titles)?;
-        }
+        status::write(&ctx, &doc, &DocStatus::new(DocState::Deleted)).map_err(|e| e.to_string())?;
+        library_ingest::set_collections(&ctx, &doc, &[]).map_err(|e| e.to_string())?;
+        ctx.set_title(&doc, None).map_err(|e| e.to_string())?;
         Ok(())
     })
     .await
@@ -229,11 +204,11 @@ pub(crate) async fn reveal_doc(state: State<'_, AppState>, doc: String) -> Resul
 /// Re-queue a doc whose ingest failed.
 #[tauri::command]
 pub(crate) fn retry_doc(state: State<'_, AppState>, doc: String) -> Result<(), String> {
-    let data = &state.settings.data;
-    if status::read(data, &doc).map(|s| s.state) != Some(DocState::Failed) {
+    if status::read(&state.ctx, &doc).map(|s| s.state) != Some(DocState::Failed) {
         return Err("not in a failed state".into());
     }
-    status::write(data, &doc, &DocStatus::new(DocState::Queued)).map_err(|e| e.to_string())?;
+    status::write(&state.ctx, &doc, &DocStatus::new(DocState::Queued))
+        .map_err(|e| e.to_string())?;
     let _ = state.wake.send(());
     Ok(())
 }

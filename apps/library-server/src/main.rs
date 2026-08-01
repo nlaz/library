@@ -25,7 +25,8 @@ use axum::{
 };
 use clap::Parser;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use library_core::wire::{count_pages, read_collections};
+use library_core::meta::Ctx;
+use library_core::wire::count_pages;
 use library_core::{ClipEmb, Images, Library, Query};
 use serde::Deserialize;
 use tower_http::cors::CorsLayer;
@@ -109,14 +110,16 @@ struct App {
     /// CLIP text encoder: embeds queries into the shared text/image space
     /// for figure search. Text-chunk queries use ese (no model object).
     clip: TextEmbedding,
-    data: PathBuf,
+    /// The cache dir plus the metadata db. Reads here run concurrently with
+    /// the desktop app's writes — that is what WAL buys us.
+    ctx: Ctx,
 }
 
 impl App {
     fn answer(&self, q: &Query) -> library_core::wire::Response {
         let lib = self.lib.read().expect("library lock poisoned");
         let images = self.images.read().expect("images lock poisoned");
-        library_core::answer(&lib, &images, &self.data, q, |s| {
+        library_core::answer(&lib, &images, &self.ctx, q, |s| {
             self.clip
                 .embed(vec![s.to_string()], None)
                 .ok()
@@ -130,6 +133,8 @@ impl App {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    let ctx = Ctx::open(&args.data)?;
+
     let t = Instant::now();
     let mut lib = library_core::open(args.data.join("library.db"));
     let n = lib.rtx(|((_, vec), _)| vec.len());
@@ -141,7 +146,7 @@ async fn main() -> Result<()> {
     // one-time: noted annotations become notebox cards; a failure must
     // not brick startup (the marker is only written on success, so the
     // next launch retries)
-    match library_core::annots::migrate_annots_to_cards(&mut lib, &args.data, &embed) {
+    match library_core::annots::migrate_annots_to_cards(&mut lib, &ctx, &embed) {
         Ok(0) => {}
         Ok(n) => println!("migrated {n} margin notes into cards"),
         Err(e) => eprintln!("annotation migration skipped: {e}"),
@@ -165,17 +170,13 @@ async fn main() -> Result<()> {
         lib: RwLock::new(lib),
         images: RwLock::new(images),
         clip,
-        data: args.data.clone(),
+        ctx: ctx.clone(),
     });
 
     // real collection names ride into the sidecar's tool schema +
     // instructions (Sidecar::spawn has no data-dir access of its own)
-    let _ = chat::SIDECAR_COLLECTIONS.set(
-        read_collections(&args.data)
-            .into_keys()
-            .collect::<Vec<_>>()
-            .join(","),
-    );
+    let _ =
+        chat::SIDECAR_COLLECTIONS.set(ctx.collections().into_keys().collect::<Vec<_>>().join(","));
 
     // --- WebTransport endpoint ---------------------------------------------
     let (endpoint, cert_hash) = wt::build_endpoint(args.wt_port)?;
@@ -188,15 +189,15 @@ async fn main() -> Result<()> {
             move || async move { Json(h) }
         }))
         .route("/api/collections", get({
-            let data = args.data.clone();
-            move || async move { Json(read_collections(&data)) }
+            let ctx = ctx.clone();
+            move || async move { Json(ctx.collections()) }
         }))
         // slim library gestalt for the chat sidecar's library_overview tool:
         // collection names, sizes, example titles — sized for a 4k-context
         // model to orient with, unlike /api/collections' full id dump
         .route("/api/overview", get({
-            let data = args.data.clone();
-            move || async move { Json(library_core::tools::overview_tool(&data)) }
+            let ctx = ctx.clone();
+            move || async move { Json(library_core::tools::overview_tool(&ctx)) }
         }))
         // plain-JSON search for programmatic callers (the chat sidecar's
         // search_library tool, the eval harness). Delegates to the shared
@@ -211,7 +212,7 @@ async fn main() -> Result<()> {
                         let k = p.k.unwrap_or(library_core::tools::TOOL_K);
                         if p.kind == "images" {
                             let member = match library_core::tools::resolve_collection(
-                                &app.data, &p.col,
+                                &app.ctx, &p.col,
                             ) {
                                 Ok(m) => m,
                                 Err(e) => return e,
@@ -236,12 +237,12 @@ async fn main() -> Result<()> {
                                     })
                                 })
                                 .unwrap_or_default();
-                            library_core::tools::image_hits_for_tool(&found, &app.data, k)
+                            library_core::tools::image_hits_for_tool(&found, &app.ctx, k)
                         } else {
                             let lib = app.lib.read().expect("library lock poisoned");
                             lib.rtx(|r| {
                                 library_core::tools::search_tool(
-                                    &r, &lib, &app.data, &p.q, &p.col, k,
+                                    &r, &lib, &app.ctx, &p.q, &p.col, k,
                                 )
                             })
                         }
@@ -294,7 +295,7 @@ async fn main() -> Result<()> {
                             .read()
                             .expect("images lock poisoned")
                             .rtx(|(vec, _)| vec.len());
-                        let docs = std::fs::read_dir(app.data.join("pages"))
+                        let docs = std::fs::read_dir(app.ctx.data.join("pages"))
                             .map(|d| d.filter_map(|e| e.ok()).count())
                             .unwrap_or(0);
                         serde_json::json!({
@@ -319,7 +320,7 @@ async fn main() -> Result<()> {
                         let rss = memory_stats::memory_stats().map(|m| m.physical_mem as u64);
                         let lib = app.lib.read().expect("library lock poisoned");
                         let images = app.images.read().expect("images lock poisoned");
-                        library_core::perf::memory(&lib, &images, &app.data, rss)
+                        library_core::perf::memory(&lib, &images, &app.ctx.data, rss)
                     })
                     .await
                     .expect("perf memory task panicked");
@@ -330,12 +331,12 @@ async fn main() -> Result<()> {
         // per-doc ingest metrics; lazily backfills legibility for docs from
         // before metrics existed (first call on a big library takes seconds)
         .route("/api/perf/ingest", get({
-            let data = args.data.clone();
+            let ctx = ctx.clone();
             move || {
-                let data = data.clone();
+                let ctx = ctx.clone();
                 async move {
                     let out = tokio::task::spawn_blocking(move || {
-                        library_core::perf::ingest_rows(&data)
+                        library_core::perf::ingest_rows(&ctx)
                     })
                     .await
                     .expect("perf ingest task panicked");
@@ -355,10 +356,10 @@ async fn main() -> Result<()> {
                     let out = tokio::task::spawn_blocking(move || {
                         let fp = {
                             let lib = app.lib.read().expect("library lock poisoned");
-                            library_core::atlas::fingerprint(&lib, &app.data)
+                            library_core::atlas::fingerprint(&lib, &app.ctx.data)
                         };
                         if !refresh
-                            && let Some(a) = library_core::atlas::load_fresh(&app.data, &fp)
+                            && let Some(a) = library_core::atlas::load_fresh(&app.ctx.data, &fp)
                         {
                             // a manual rebuild may be running behind a still-
                             // fresh sidecar; the flag keeps the client polling
@@ -382,7 +383,7 @@ async fn main() -> Result<()> {
                                 if let Err(e) = library_core::atlas::build(
                                     claim,
                                     &lib,
-                                    &app.data,
+                                    &app.ctx,
                                     Some(&librarian),
                                 ) {
                                     eprintln!("atlas build failed: {e:#}");
@@ -408,12 +409,12 @@ async fn main() -> Result<()> {
         // with a 4k-token context, and errors go back as content it can act
         // on, never a bare status code.
         .route("/api/text/{doc}", get({
-            let data = args.data.clone();
+            let ctx = ctx.clone();
             move |UrlPath(doc): UrlPath<String>,
                   axum::extract::Query(p): axum::extract::Query<TextParams>| {
-                let data = data.clone();
+                let ctx = ctx.clone();
                 async move {
-                    Json(library_core::tools::read_pages_tool(&data, &doc, p.from, p.to))
+                    Json(library_core::tools::read_pages_tool(&ctx, &doc, p.from, p.to))
                 }
             }
         }))
@@ -421,9 +422,9 @@ async fn main() -> Result<()> {
         // sample_page tool ("tell me something interesting"). `seed` is a
         // test hook for the eval harness.
         .route("/api/sample", get({
-            let data = args.data.clone();
+            let ctx = ctx.clone();
             move |axum::extract::Query(p): axum::extract::Query<SampleParams>| {
-                let data = data.clone();
+                let ctx = ctx.clone();
                 async move {
                     let avoid: Vec<String> = p
                         .avoid
@@ -431,38 +432,29 @@ async fn main() -> Result<()> {
                         .filter(|s| !s.is_empty())
                         .map(str::to_owned)
                         .collect();
-                    Json(library_core::tools::sample_page_tool(&data, &p.col, p.seed, &avoid))
+                    Json(library_core::tools::sample_page_tool(&ctx, &p.col, p.seed, &avoid))
                 }
             }
         }))
         // metadata for the reader drawer in the plain-web build (read-only;
         // the desktop build gets the same facts from the `docs` command)
         .route("/api/doc/{doc}", get({
-            let data = args.data.clone();
+            let ctx = ctx.clone();
             move |UrlPath(doc): UrlPath<String>| {
-                let data = data.clone();
+                let ctx = ctx.clone();
                 async move {
-                    let titles: std::collections::BTreeMap<String, String> =
-                        std::fs::read(data.join("titles.json"))
-                            .ok()
-                            .and_then(|b| serde_json::from_slice(&b).ok())
-                            .unwrap_or_default();
-                    let collections: Vec<String> = read_collections(&data)
+                    let collections: Vec<String> = ctx
+                        .collections()
                         .into_iter()
                         .filter(|(_, docs)| docs.iter().any(|d| d == &doc))
                         .map(|(name, _)| name)
                         .collect();
-                    let status: serde_json::Value =
-                        std::fs::read(data.join("status").join(format!("{doc}.json")))
-                            .ok()
-                            .and_then(|b| serde_json::from_slice(&b).ok())
-                            .unwrap_or(serde_json::Value::Null);
                     Json(serde_json::json!({
                         "id": doc,
-                        "title": titles.get(&doc),
-                        "pages": count_pages(&data.join("pages").join(&doc)),
+                        "title": ctx.titles().get(&doc),
+                        "pages": count_pages(&ctx.data.join("pages").join(&doc)),
                         "collections": collections,
-                        "status": status,
+                        "status": ctx.doc_status_json(&doc),
                     }))
                 }
             }
@@ -486,7 +478,7 @@ async fn main() -> Result<()> {
                 let app = app.clone();
                 async move {
                     let out = tokio::task::spawn_blocking(move || {
-                        library_core::notes::load_cards(&app.data)
+                        library_core::notes::load_cards(&app.ctx)
                     })
                     .await
                     .expect("cards task panicked");
@@ -501,7 +493,7 @@ async fn main() -> Result<()> {
                 async move {
                     tokio::task::spawn_blocking(move || {
                         let mut lib = app.lib.write().expect("library lock poisoned");
-                        library_core::notes::create_card(&mut lib, &app.data, input, &embed)
+                        library_core::notes::create_card(&mut lib, &app.ctx, input, &embed)
                             .map(Json)
                             .map_err(bad)
                     })
@@ -517,7 +509,7 @@ async fn main() -> Result<()> {
                 async move {
                     tokio::task::spawn_blocking(move || {
                         let mut lib = app.lib.write().expect("library lock poisoned");
-                        library_core::notes::update_card(&mut lib, &app.data, card, &embed)
+                        library_core::notes::update_card(&mut lib, &app.ctx, card, &embed)
                             .map(Json)
                             .map_err(bad)
                     })

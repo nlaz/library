@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::meta::Ctx;
 use crate::notes::{self, CardRec};
 use crate::{Emb, Library, sidecar};
 
@@ -119,16 +120,17 @@ fn anchor_of(a: &AnnotRec) -> notes::QuoteAnchor {
 
 /// One-time migration: every *noted* mark becomes a note card, minted
 /// doc by doc (sorted) in reading order — `load_annots` sorts by
-/// `(page, y)`, and cards.json array order preserves it — with birth
+/// `(page, y)`, and the cards table's insertion order preserves it — with birth
 /// stamps kept. Bare highlights are left behind (marks without notes no
 /// longer exist as a concept) and the sidecar files are never modified —
 /// only their `~annot/` search chunks retract. Idempotent via a marker
 /// file written only on success, so a failed run retries next launch.
 pub fn migrate_annots_to_cards(
     lib: &mut Library,
-    data: &Path,
+    ctx: &Ctx,
     embed: &dyn Fn(&str) -> Emb,
 ) -> std::io::Result<usize> {
+    let data = &ctx.data;
     let marker = dir(data).join(".migrated-to-cards");
     if marker.exists() {
         return Ok(0);
@@ -149,7 +151,7 @@ pub fn migrate_annots_to_cards(
     };
     docs.sort();
 
-    let mut cards = notes::load_cards(data);
+    let mut cards = notes::load_cards(&ctx.meta);
     let mut minted: Vec<CardRec> = Vec::new();
     let mut retract: Vec<String> = Vec::new();
     for doc in &docs {
@@ -180,7 +182,7 @@ pub fn migrate_annots_to_cards(
     }
 
     if !minted.is_empty() {
-        notes::store_cards(data, &cards)?;
+        notes::store_cards(&ctx.meta, &cards)?;
     }
     for card in &minted {
         crate::store::commit_chunks(

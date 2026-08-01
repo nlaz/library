@@ -25,8 +25,9 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use crate::meta::Ctx;
 use crate::records::is_reserved;
-use crate::{ChunkKey, Emb, Library, perf, sidecar, tools, wire};
+use crate::{ChunkKey, Emb, Library, perf, sidecar, tools};
 
 /// Bump when the sidecar schema or the algorithm changes meaningfully; a
 /// version mismatch reads as stale and triggers a rebuild.
@@ -244,9 +245,10 @@ struct ChunkMeta {
 pub fn build(
     claim: BuildClaim,
     lib: &Library,
-    data: &Path,
+    ctx: &Ctx,
     librarian: Option<&Path>,
 ) -> io::Result<Atlas> {
+    let data = &ctx.data;
     let t0 = std::time::Instant::now();
 
     claim.stage("loading");
@@ -254,11 +256,11 @@ pub fn build(
     // fingerprint predates it and the sidecar reads as stale — self-healing
     let fp = fingerprint(lib, data);
     let doc_ids = list_docs(data);
-    let titles = wire::read_titles(data);
+    let titles = ctx.titles();
     // BTreeMap iteration order makes "first collection wins" deterministic
     let coll_of: HashMap<String, String> = {
         let mut m = HashMap::new();
-        for (name, ids) in wire::read_collections(data) {
+        for (name, ids) in ctx.collections() {
             for id in ids {
                 m.entry(id).or_insert_with(|| name.clone());
             }

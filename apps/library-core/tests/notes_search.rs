@@ -5,8 +5,7 @@
 //! doc-scoped queries (member sets hold real doc ids only — pinned here
 //! as intended behavior).
 
-use std::path::PathBuf;
-
+use library_core::meta::Ctx;
 use library_core::notes::{AnchorKind, NewCard, QuoteAnchor, create_card};
 use library_core::{
     ChunkKey, ChunkRec, EMB_DIM, Emb, Images, Library, Query, Word, answer, commit_chunks, open,
@@ -19,14 +18,14 @@ fn embed(_: &str) -> Emb {
     e
 }
 
-fn fixture(name: &str) -> (Library, Images, PathBuf) {
+fn fixture(name: &str) -> (Library, Images, Ctx) {
     let dir = std::env::temp_dir().join(format!("library-core-noteswire-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create fixture dir");
     (
         open(dir.join("library.db")),
         open_images(dir.join("images.db")),
-        dir,
+        Ctx::in_memory(&dir).expect("meta"),
     )
 }
 
@@ -76,7 +75,7 @@ fn kind_query(q: &str, kind: &str) -> Query {
 
 #[test]
 fn reserved_hits_are_shaped_and_scoped() {
-    let (mut lib, images, data) = fixture("shape");
+    let (mut lib, images, ctx) = fixture("shape");
 
     commit_chunks(
         &mut lib,
@@ -89,7 +88,7 @@ fn reserved_hits_are_shaped_and_scoped() {
     );
     let card = create_card(
         &mut lib,
-        &data,
+        &ctx,
         NewCard {
             title: "escapement is the governor".into(),
             body: String::new(),
@@ -102,7 +101,7 @@ fn reserved_hits_are_shaped_and_scoped() {
     // a mark-card: born from the reader with an anchored page
     let mark = create_card(
         &mut lib,
-        &data,
+        &ctx,
         NewCard {
             title: "escapement sketch compare".into(),
             body: String::new(),
@@ -118,14 +117,10 @@ fn reserved_hits_are_shaped_and_scoped() {
         &embed,
     )
     .expect("create mark card");
-    library_core::sidecar::write_json_atomic(
-        &data.join("collections.json"),
-        &serde_json::json!({ "shelf": ["moxon"] }),
-    )
-    .expect("collections sidecar");
+    ctx.collect("shelf", "moxon").expect("collections");
 
     // library-wide: both kinds surface, reserved ones decorated
-    let r = answer(&lib, &images, &data, &query("escapement", "", ""), |_| None);
+    let r = answer(&lib, &images, &ctx, &query("escapement", "", ""), |_| None);
     let kinds: Vec<&str> = r.hits.iter().map(|h| h.kind).collect();
     assert!(kinds.contains(&"text") && kinds.contains(&"card"));
 
@@ -174,7 +169,7 @@ fn reserved_hits_are_shaped_and_scoped() {
     let r = answer(
         &lib,
         &images,
-        &data,
+        &ctx,
         &query("escapement", "shelf", ""),
         |_| None,
     );
@@ -184,7 +179,7 @@ fn reserved_hits_are_shaped_and_scoped() {
     let r = answer(
         &lib,
         &images,
-        &data,
+        &ctx,
         &query("escapement", "", "moxon"),
         |_| None,
     );
@@ -197,7 +192,7 @@ fn reserved_hits_are_shaped_and_scoped() {
     let r = answer(
         &lib,
         &images,
-        &data,
+        &ctx,
         &kind_query("escapement", "text"),
         |_| None,
     );
@@ -216,7 +211,7 @@ fn reserved_hits_are_shaped_and_scoped() {
     let r = answer(
         &lib,
         &images,
-        &data,
+        &ctx,
         &kind_query("escapement", "images"),
         |_| None,
     );
@@ -224,7 +219,7 @@ fn reserved_hits_are_shaped_and_scoped() {
 
     // "all" (and the empty default) keep the blend
     for k in ["", "all"] {
-        let r = answer(&lib, &images, &data, &kind_query("escapement", k), |_| None);
+        let r = answer(&lib, &images, &ctx, &kind_query("escapement", k), |_| None);
         let kinds: Vec<&str> = r.hits.iter().map(|h| h.kind).collect();
         assert!(
             kinds.contains(&"text") && kinds.contains(&"card"),

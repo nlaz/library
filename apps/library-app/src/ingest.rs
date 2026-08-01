@@ -113,8 +113,9 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
         libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
     }
     let state = app.state::<AppState>();
-    let ctx = ingest_ctx(&state.settings);
+    let ctx = ingest_ctx(&state.settings, &state.ctx);
     let data = ctx.data.clone();
+    let meta = ctx.meta.clone();
 
     // engine must be up before we can commit (stores are shared)
     let eng = loop {
@@ -132,9 +133,9 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
     // startup recovery doubles as backfill: pre-status-era docs that are
     // already in the manifest get `ready` so the sweep never re-ingests them
     {
-        let pend = worker::pending(&data);
+        let pend = worker::pending(&data, &meta);
         let lib = eng.lib.read().expect("library lock poisoned");
-        if let Err(e) = worker::backfill_ready_with(&data, &pend, |d| worker::manifest_has(&lib, d))
+        if let Err(e) = worker::backfill_ready_with(&meta, &pend, |d| worker::manifest_has(&lib, d))
         {
             eprintln!("status backfill failed: {e:#}");
         }
@@ -143,7 +144,7 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
     let mut committer = EngineCommitter { eng };
     loop {
         let mut committed = false;
-        for doc in worker::pending(&data) {
+        for doc in worker::pending(&data, &meta) {
             let outcome = worker::process_doc(&ctx, &doc, &mut committer, &mut |p| {
                 emit_progress(&app, &doc, p)
             });
@@ -153,7 +154,7 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
                     emit_stage(&app, &doc, "done");
                 }
                 Outcome::Failed => {
-                    let msg = status::read(&data, &doc)
+                    let msg = status::read(&meta, &doc)
                         .and_then(|s| s.error)
                         .unwrap_or_else(|| "ingest failed".into());
                     eprintln!("ingest '{doc}' failed: {msg}");
@@ -187,11 +188,12 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
             if library_core::atlas::load_fresh(&data, &fp).is_none()
                 && let Some(claim) = library_core::atlas::try_claim()
             {
-                let data = data.clone();
+                let build_ctx = library_core::meta::Ctx::new(data.clone(), meta.clone());
                 let librarian = crate::chat::librarian_bin(&app);
                 std::thread::spawn(move || {
                     let lib = eng.lib.read().expect("library lock poisoned");
-                    if let Err(e) = library_core::atlas::build(claim, &lib, &data, Some(&librarian))
+                    if let Err(e) =
+                        library_core::atlas::build(claim, &lib, &build_ctx, Some(&librarian))
                     {
                         eprintln!("atlas build failed: {e:#}");
                     }
@@ -217,8 +219,8 @@ pub(crate) fn ingest_paths(
     collection: Option<String>,
     mode: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let ctx = ingest_ctx(&state.settings);
-    let data = &state.settings.data;
+    let ctx = ingest_ctx(&state.settings, &state.ctx);
+    let meta = &state.ctx;
     let mover = if mode.as_deref() == Some("move") {
         library_ingest::move_doc
     } else {
@@ -233,16 +235,16 @@ pub(crate) fn ingest_paths(
         let (doc, _src) = mover(&ctx, &path, None).map_err(|e| e.to_string())?;
         // in-flight docs keep their state; terminal states re-queue
         // (deleted tombstones revive — re-adding is an explicit user act)
-        match status::read(data, &doc).map(|s| s.state) {
+        match status::read(meta, &doc).map(|s| s.state) {
             Some(DocState::Queued | DocState::Preparing | DocState::Staged) => continue,
             Some(DocState::TextReady) => continue, // finishing figures already
             _ => {}
         }
-        status::write(data, &doc, &DocStatus::new(DocState::Queued)).map_err(|e| e.to_string())?;
+        status::write(meta, &doc, &DocStatus::new(DocState::Queued)).map_err(|e| e.to_string())?;
         // collections apply at enqueue time: the card lands on its shelf
         // immediately, and the shared worker loop stays collection-free
         if let Some(col) = &collection {
-            library_ingest::collect(data, col, &doc).map_err(|e| e.to_string())?;
+            library_ingest::collect(meta, col, &doc).map_err(|e| e.to_string())?;
         }
         queued.push(doc);
     }

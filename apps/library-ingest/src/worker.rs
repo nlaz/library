@@ -4,7 +4,7 @@
 //! Two rules make multi-process coordination safe:
 //!
 //! 1. **The filesystem is the queue.** [`pending`] derives the work list
-//!    from `data/pdfs/` + the status files; nothing is queued in memory.
+//!    from `data/pdfs/` + the `docs` table; nothing is queued in memory.
 //! 2. **Whoever holds the fjall store owns ingestion.** The store is
 //!    single-process (fjall's directory lock), so commits arbitrate
 //!    naturally: the app commits through its live engine, the CLI worker
@@ -23,6 +23,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use library_core::meta::Meta;
 use library_core::perf::IngestMetrics;
 use library_core::{ChunkRec, ImageRec, Images, Library};
 use serde::Serialize;
@@ -35,7 +36,19 @@ use crate::{IngestCtx, Progress, ProgressFn};
 // per-doc claims
 // ---------------------------------------------------------------------------
 
-/// Exclusive right to work on one doc, backed by `data/status/<doc>.lock`
+/// `data/run/` — cross-process coordination, and the only thing ingest
+/// still keeps on the filesystem now that status lives in `meta.db`. These
+/// are locks and scratch, not user data: deleting the directory while
+/// nothing is running costs nothing.
+pub fn run_dir(data: &Path) -> PathBuf {
+    data.join("run")
+}
+
+fn claims_dir(data: &Path) -> PathBuf {
+    run_dir(data).join("claims")
+}
+
+/// Exclusive right to work on one doc, backed by `data/run/claims/<doc>`
 /// holding the owner's PID. Removed on drop; a claim whose PID is dead is
 /// stale and gets broken by the next claimant.
 pub struct Claim {
@@ -49,7 +62,7 @@ impl Drop for Claim {
 }
 
 fn claim_path(data: &Path, doc: &str) -> PathBuf {
-    status::dir(data).join(format!("{doc}.lock"))
+    claims_dir(data).join(doc)
 }
 
 fn pid_alive(pid: i32) -> bool {
@@ -74,7 +87,7 @@ pub fn claimed(data: &Path, doc: &str) -> bool {
 /// Try to claim `doc`, breaking a stale (dead-PID) claim once.
 pub fn claim(data: &Path, doc: &str) -> Option<Claim> {
     let path = claim_path(data, doc);
-    std::fs::create_dir_all(status::dir(data)).ok()?;
+    std::fs::create_dir_all(claims_dir(data)).ok()?;
     for _ in 0..2 {
         match std::fs::OpenOptions::new()
             .write(true)
@@ -103,7 +116,7 @@ pub fn claim(data: &Path, doc: &str) -> Option<Claim> {
 // ---------------------------------------------------------------------------
 
 fn staged_dir(data: &Path, doc: &str) -> PathBuf {
-    data.join("staged").join(doc)
+    run_dir(data).join("staged").join(doc)
 }
 
 fn stage<T: Serialize>(data: &Path, doc: &str, file: &str, recs: &T) -> Result<()> {
@@ -180,16 +193,19 @@ impl Committer for ProcessCommitter {
 /// The work list: every source file in `data/pdfs/` whose status is absent
 /// or non-terminal. `preparing` counts only when its claim is dead — a live
 /// claim means some process is already on it.
-pub fn pending(data: &Path) -> Vec<String> {
+pub fn pending(data: &Path, meta: &Meta) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(data.join("pdfs")) else {
         return Vec::new();
     };
+    // one query for the whole table, not one per file: a sweep over a
+    // 400-book folder used to be 400 file reads
+    let states = status::scan(meta);
     let mut docs: Vec<String> = entries
         .filter_map(|e| {
             let p = e.ok()?.path();
             crate::SourceKind::of(&p)?;
             let doc = p.file_stem()?.to_string_lossy().into_owned();
-            let wanted = match status::read(data, &doc) {
+            let wanted = match states.get(&doc) {
                 None => true,
                 Some(st) => match st.state {
                     DocState::Queued | DocState::Staged | DocState::TextReady => true,
@@ -208,17 +224,17 @@ pub fn pending(data: &Path) -> Vec<String> {
     docs
 }
 
-/// Backfill core: docs with no status file at all that `indexed` confirms
-/// are already in the library — pre-status-era ingests. Writes `ready` for
+/// Backfill core: docs with no status at all that `indexed` confirms are
+/// already in the library — pre-status-era ingests. Writes `ready` for
 /// them so they never get pointlessly re-ingested.
 pub fn backfill_ready_with(
-    data: &Path,
+    meta: &Meta,
     docs: &[String],
     mut indexed: impl FnMut(&str) -> bool,
 ) -> Result<()> {
     for doc in docs {
-        if status::read(data, doc).is_none() && indexed(doc) {
-            status::write(data, doc, &DocStatus::new(DocState::Ready))?;
+        if status::read(meta, doc).is_none() && indexed(doc) {
+            status::write(meta, doc, &DocStatus::new(DocState::Ready))?;
         }
     }
     Ok(())
@@ -232,8 +248,8 @@ pub fn manifest_has(st: &Library, doc: &str) -> bool {
 /// [`backfill_ready_with`] for a process that doesn't hold the store open.
 /// Returns `false` without writing anything if the store is locked (the
 /// lock holder runs its own backfill).
-pub fn backfill_ready(data: &Path, docs: &[String]) -> Result<bool> {
-    if docs.iter().all(|d| status::read(data, d).is_some()) {
+pub fn backfill_ready(data: &Path, meta: &Meta, docs: &[String]) -> Result<bool> {
+    if docs.iter().all(|d| status::read(meta, d).is_some()) {
         return Ok(true); // nothing to backfill: skip the store open
     }
     let st = match library_core::try_open(data.join("library.db")) {
@@ -241,7 +257,7 @@ pub fn backfill_ready(data: &Path, docs: &[String]) -> Result<bool> {
         Err(fjall::Error::Locked) => return Ok(false),
         Err(e) => return Err(e.into()),
     };
-    backfill_ready_with(data, docs, |doc| manifest_has(&st, doc))?;
+    backfill_ready_with(meta, docs, |doc| manifest_has(&st, doc))?;
     Ok(true)
 }
 
@@ -261,10 +277,10 @@ pub enum Outcome {
     Failed,
 }
 
-/// Mirror `Progress` into the doc's status file, throttled so OCR of a
-/// 400-page book doesn't fsync 400 times.
+/// Mirror `Progress` into the doc's status row, throttled so OCR of a
+/// 400-page book doesn't write 400 transactions.
 struct StatusMirror<'a> {
-    data: &'a Path,
+    meta: &'a Meta,
     doc: &'a str,
     last: std::time::Instant,
     stage: &'static str,
@@ -290,7 +306,7 @@ impl StatusMirror<'_> {
         self.stage = stage;
         self.last = std::time::Instant::now();
         let _ = status::write(
-            self.data,
+            self.meta,
             self.doc,
             &DocStatus {
                 stage: Some(stage.to_string()),
@@ -401,10 +417,11 @@ pub fn process_doc(
     progress: ProgressFn,
 ) -> Outcome {
     let data = &ctx.data;
+    let meta = &*ctx.meta;
     let Some(_claim) = claim(data, doc) else {
         return Outcome::Skipped;
     };
-    let prior_status = status::read(data, doc);
+    let prior_status = status::read(meta, doc);
     let prior = prior_status.as_ref().map(|s| s.state);
     if prior == Some(DocState::Ready) || prior == Some(DocState::Deleted) {
         return Outcome::Ready; // nothing to do; don't resurrect tombstones
@@ -413,7 +430,7 @@ pub fn process_doc(
     let t0 = std::time::Instant::now();
     let mut clock = MetricsClock::new(prior_status.and_then(|s| s.metrics));
     let mut mirror = StatusMirror {
-        data,
+        meta,
         doc,
         last: std::time::Instant::now(),
         stage: "",
@@ -432,10 +449,10 @@ pub fn process_doc(
             match staged(data, doc, "text.postcard") {
                 Some(recs) => (recs, None),
                 None => {
-                    let _ = status::write(data, doc, &DocStatus::new(DocState::Preparing));
+                    let _ = status::write(meta, doc, &DocStatus::new(DocState::Preparing));
                     let Some(src) = crate::source_path(data, doc) else {
                         let _ = status::write(
-                            data,
+                            meta,
                             doc,
                             &DocStatus::failed(format!(
                                 "source file for '{doc}' missing from data/pdfs"
@@ -451,14 +468,14 @@ pub fn process_doc(
                     match res {
                         Ok((recs, pages)) => (recs, Some(pages)),
                         Err(e) => {
-                            let _ = status::write(data, doc, &DocStatus::failed(format!("{e:#}")));
+                            let _ = status::write(meta, doc, &DocStatus::failed(format!("{e:#}")));
                             return Outcome::Failed;
                         }
                     }
                 }
             };
 
-        let _ = status::write(data, doc, &indexing());
+        let _ = status::write(meta, doc, &indexing());
         let t = std::time::Instant::now();
         match committer.text(doc, &recs) {
             Ok((removed, added)) => {
@@ -478,7 +495,7 @@ pub fn process_doc(
                 clock.m.legibility = library_core::perf::legibility_summary(data, doc);
                 clock.add("legibility", t.elapsed().as_millis() as u64);
                 let _ = status::write(
-                    data,
+                    meta,
                     doc,
                     &DocStatus {
                         stage: Some("figures".to_string()),
@@ -493,11 +510,11 @@ pub fn process_doc(
                     // the next sweep redoes prepare from the caches
                     return Outcome::Failed;
                 }
-                let _ = status::write(data, doc, &DocStatus::new(DocState::Staged));
+                let _ = status::write(meta, doc, &DocStatus::new(DocState::Staged));
                 return Outcome::Staged;
             }
             Err(CommitErr::Other(e)) => {
-                let _ = status::write(data, doc, &DocStatus::failed(format!("{e:#}")));
+                let _ = status::write(meta, doc, &DocStatus::failed(format!("{e:#}")));
                 return Outcome::Failed;
             }
         }
@@ -515,14 +532,14 @@ pub fn process_doc(
             match res {
                 Ok(figs) => figs,
                 Err(e) => {
-                    let _ = status::write(data, doc, &DocStatus::failed(format!("{e:#}")));
+                    let _ = status::write(meta, doc, &DocStatus::failed(format!("{e:#}")));
                     return Outcome::Failed;
                 }
             }
         }
     };
 
-    let _ = status::write(data, doc, &indexing());
+    let _ = status::write(meta, doc, &indexing());
     let t = std::time::Instant::now();
     match committer.figures(doc, &figs) {
         Ok((removed, added)) => {
@@ -530,7 +547,7 @@ pub fn process_doc(
             clock.m.figures = Some((added as u32, removed as u32));
             clear_staged(data, doc);
             let _ = status::write(
-                data,
+                meta,
                 doc,
                 &DocStatus {
                     metrics: Some(clock.snapshot(t0)),
@@ -546,7 +563,7 @@ pub fn process_doc(
             // stay `text_ready`, not `staged`: text is committed, and the
             // resume path must skip straight to the staged figures
             let _ = status::write(
-                data,
+                meta,
                 doc,
                 &DocStatus {
                     stage: Some("staged".to_string()),
@@ -556,7 +573,7 @@ pub fn process_doc(
             Outcome::Staged
         }
         Err(CommitErr::Other(e)) => {
-            let _ = status::write(data, doc, &DocStatus::failed(format!("{e:#}")));
+            let _ = status::write(meta, doc, &DocStatus::failed(format!("{e:#}")));
             Outcome::Failed
         }
     }
@@ -565,33 +582,94 @@ pub fn process_doc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
-    fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("worker-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("pdfs")).unwrap();
-        dir
+    /// A temp data dir and the metadata db that belongs to it.
+    ///
+    /// The two are held together because [`Fx::ctx`] must hand out the
+    /// *same* `Meta` every time: an in-memory database per call would give
+    /// each `process_doc` its own empty status table, and the resume tests
+    /// (which call it twice) would silently pass for the wrong reason.
+    struct Fx {
+        data: PathBuf,
+        meta: Arc<Meta>,
     }
 
-    fn ctx(data: &Path) -> IngestCtx {
-        IngestCtx {
-            data: data.to_path_buf(),
-            width: 1600,
-            clean: false,
-            text_layer: true,
+    impl Drop for Fx {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.data);
         }
     }
 
-    fn touch_pdf(data: &Path, doc: &str) {
-        std::fs::write(data.join("pdfs").join(format!("{doc}.pdf")), b"%PDF-").unwrap();
-    }
+    impl Fx {
+        fn new(name: &str) -> Fx {
+            let data = std::env::temp_dir().join(format!("worker-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&data);
+            std::fs::create_dir_all(data.join("pdfs")).unwrap();
+            Fx {
+                data,
+                meta: Arc::new(Meta::open_in_memory().unwrap()),
+            }
+        }
 
-    fn touch_src(data: &Path, name: &str) {
-        std::fs::write(data.join("pdfs").join(name), b"bytes").unwrap();
-    }
+        fn ctx(&self) -> IngestCtx {
+            IngestCtx {
+                data: self.data.clone(),
+                meta: self.meta.clone(),
+                width: 1600,
+                clean: false,
+                text_layer: true,
+            }
+        }
 
-    fn set(data: &Path, doc: &str, state: DocState) {
-        status::write(data, doc, &DocStatus::new(state)).unwrap();
+        fn touch_pdf(&self, doc: &str) {
+            std::fs::write(self.data.join("pdfs").join(format!("{doc}.pdf")), b"%PDF-").unwrap();
+        }
+
+        fn touch_src(&self, name: &str) {
+            std::fs::write(self.data.join("pdfs").join(name), b"bytes").unwrap();
+        }
+
+        fn set(&self, doc: &str, state: DocState) {
+            status::write(&self.meta, doc, &DocStatus::new(state)).unwrap();
+        }
+
+        fn state(&self, doc: &str) -> DocState {
+            status::read(&self.meta, doc)
+                .expect("no status for doc")
+                .state
+        }
+
+        fn pending(&self) -> Vec<String> {
+            pending(&self.data, &self.meta)
+        }
+
+        fn claim_path(&self, doc: &str) -> PathBuf {
+            claim_path(&self.data, doc)
+        }
+
+        /// Plant a claim owned by a process that has already exited. Makes
+        /// the claims dir itself, which `claim()` would otherwise be the
+        /// first thing to create.
+        fn plant_stale_claim(&self, doc: &str) {
+            std::fs::create_dir_all(claims_dir(&self.data)).unwrap();
+            std::fs::write(self.claim_path(doc), dead_pid().to_string()).unwrap();
+        }
+
+        fn staged_dir(&self, doc: &str) -> PathBuf {
+            staged_dir(&self.data, doc)
+        }
+
+        fn seed_staged(&self, doc: &str, text: bool, figures: bool) {
+            let empty_text: Vec<ChunkRec> = Vec::new();
+            let empty_figs: Vec<ImageRec> = Vec::new();
+            if text {
+                stage(&self.data, doc, "text.postcard", &empty_text).unwrap();
+            }
+            if figures {
+                stage(&self.data, doc, "figures.postcard", &empty_figs).unwrap();
+            }
+        }
     }
 
     /// A PID that certainly ran and certainly exited.
@@ -629,38 +707,26 @@ mod tests {
         }
     }
 
-    fn seed_staged(data: &Path, doc: &str, text: bool, figures: bool) {
-        let empty_text: Vec<ChunkRec> = Vec::new();
-        let empty_figs: Vec<ImageRec> = Vec::new();
-        if text {
-            stage(data, doc, "text.postcard", &empty_text).unwrap();
-        }
-        if figures {
-            stage(data, doc, "figures.postcard", &empty_figs).unwrap();
-        }
-    }
-
     fn nop(_: Progress) {}
 
     #[test]
     fn claim_is_exclusive_and_breaks_stale() {
-        let data = tmp("claim");
-        let c = claim(&data, "a").expect("first claim");
-        assert!(claimed(&data, "a"));
-        assert!(claim(&data, "a").is_none(), "live claim must hold");
+        let f = Fx::new("claim");
+        let c = claim(&f.data, "a").expect("first claim");
+        assert!(claimed(&f.data, "a"));
+        assert!(claim(&f.data, "a").is_none(), "live claim must hold");
         drop(c);
-        assert!(!claimed(&data, "a"));
+        assert!(!claimed(&f.data, "a"));
 
         // a dead PID's claim is stale: broken and re-taken
-        std::fs::write(claim_path(&data, "a"), dead_pid().to_string()).unwrap();
-        assert!(!claimed(&data, "a"));
-        assert!(claim(&data, "a").is_some(), "stale claim must break");
-        std::fs::remove_dir_all(&data).unwrap();
+        f.plant_stale_claim("a");
+        assert!(!claimed(&f.data, "a"));
+        assert!(claim(&f.data, "a").is_some(), "stale claim must break");
     }
 
     #[test]
     fn pending_truth_table() {
-        let data = tmp("pending");
+        let f = Fx::new("pending");
         for doc in [
             "absent",
             "queued",
@@ -672,46 +738,44 @@ mod tests {
             "failed",
             "deleted",
         ] {
-            touch_pdf(&data, doc);
+            f.touch_pdf(doc);
         }
-        set(&data, "queued", DocState::Queued);
-        set(&data, "staged", DocState::Staged);
-        set(&data, "textready", DocState::TextReady);
-        set(&data, "ready", DocState::Ready);
-        set(&data, "failed", DocState::Failed);
-        set(&data, "deleted", DocState::Deleted);
-        set(&data, "prep-stale", DocState::Preparing);
-        std::fs::write(claim_path(&data, "prep-stale"), dead_pid().to_string()).unwrap();
-        set(&data, "prep-live", DocState::Preparing);
-        let _live = claim(&data, "prep-live").unwrap();
+        f.set("queued", DocState::Queued);
+        f.set("staged", DocState::Staged);
+        f.set("textready", DocState::TextReady);
+        f.set("ready", DocState::Ready);
+        f.set("failed", DocState::Failed);
+        f.set("deleted", DocState::Deleted);
+        f.set("prep-stale", DocState::Preparing);
+        f.plant_stale_claim("prep-stale");
+        f.set("prep-live", DocState::Preparing);
+        let _live = claim(&f.data, "prep-live").unwrap();
 
         assert_eq!(
-            pending(&data),
+            f.pending(),
             vec!["absent", "prep-stale", "queued", "staged", "textready"]
         );
-        std::fs::remove_dir_all(&data).unwrap();
     }
 
     #[test]
     fn pending_accepts_images_and_dedups_collisions() {
-        let data = tmp("pending-img");
-        touch_src(&data, "photo.png");
-        touch_src(&data, "scan.JPG");
-        touch_src(&data, "note.txt"); // not ingestible
+        let f = Fx::new("pending-img");
+        f.touch_src("photo.png");
+        f.touch_src("scan.JPG");
+        f.touch_src("note.txt"); // not ingestible
         // a cross-format collision that landed on disk by hand: one entry
-        touch_src(&data, "both.pdf");
-        touch_src(&data, "both.png");
+        f.touch_src("both.pdf");
+        f.touch_src("both.png");
 
-        assert_eq!(pending(&data), vec!["both", "photo", "scan"]);
-        std::fs::remove_dir_all(&data).unwrap();
+        assert_eq!(f.pending(), vec!["both", "photo", "scan"]);
     }
 
     #[test]
     fn staged_records_commit_to_ready() {
-        let data = tmp("ready");
-        touch_pdf(&data, "a");
-        set(&data, "a", DocState::Staged);
-        seed_staged(&data, "a", true, true);
+        let f = Fx::new("ready");
+        f.touch_pdf("a");
+        f.set("a", DocState::Staged);
+        f.seed_staged("a", true, true);
 
         let mut mock = Mock {
             text: vec![Ok(())],
@@ -719,42 +783,40 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            process_doc(&ctx(&data), "a", &mut mock, &mut nop),
+            process_doc(&f.ctx(), "a", &mut mock, &mut nop),
             Outcome::Ready
         ));
         assert_eq!((mock.text_calls, mock.figures_calls), (1, 1));
-        assert_eq!(status::read(&data, "a").unwrap().state, DocState::Ready);
-        assert!(!staged_dir(&data, "a").exists(), "staged dir cleared");
-        std::fs::remove_dir_all(&data).unwrap();
+        assert_eq!(f.state("a"), DocState::Ready);
+        assert!(!f.staged_dir("a").exists(), "staged dir cleared");
     }
 
     #[test]
     fn locked_text_commit_stages_and_exits() {
-        let data = tmp("locktext");
-        touch_pdf(&data, "a");
-        set(&data, "a", DocState::Queued);
-        seed_staged(&data, "a", true, false);
+        let f = Fx::new("locktext");
+        f.touch_pdf("a");
+        f.set("a", DocState::Queued);
+        f.seed_staged("a", true, false);
 
         let mut mock = Mock {
             text: vec![Err(())],
             ..Default::default()
         };
         assert!(matches!(
-            process_doc(&ctx(&data), "a", &mut mock, &mut nop),
+            process_doc(&f.ctx(), "a", &mut mock, &mut nop),
             Outcome::Staged
         ));
-        assert_eq!(status::read(&data, "a").unwrap().state, DocState::Staged);
-        assert!(staged_dir(&data, "a").join("text.postcard").exists());
+        assert_eq!(f.state("a"), DocState::Staged);
+        assert!(f.staged_dir("a").join("text.postcard").exists());
         assert_eq!(mock.figures_calls, 0, "must stop before figures");
-        std::fs::remove_dir_all(&data).unwrap();
     }
 
     #[test]
     fn locked_figures_commit_stays_text_ready() {
-        let data = tmp("lockfigs");
-        touch_pdf(&data, "a");
-        set(&data, "a", DocState::Staged);
-        seed_staged(&data, "a", true, true);
+        let f = Fx::new("lockfigs");
+        f.touch_pdf("a");
+        f.set("a", DocState::Staged);
+        f.seed_staged("a", true, true);
 
         let mut mock = Mock {
             text: vec![Ok(())],
@@ -762,14 +824,13 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            process_doc(&ctx(&data), "a", &mut mock, &mut nop),
+            process_doc(&f.ctx(), "a", &mut mock, &mut nop),
             Outcome::Staged
         ));
         // text committed: resume must skip to the staged figures
-        let st = status::read(&data, "a").unwrap();
-        assert_eq!(st.state, DocState::TextReady);
-        assert!(staged_dir(&data, "a").join("figures.postcard").exists());
-        assert!(!staged_dir(&data, "a").join("text.postcard").exists());
+        assert_eq!(f.state("a"), DocState::TextReady);
+        assert!(f.staged_dir("a").join("figures.postcard").exists());
+        assert!(!f.staged_dir("a").join("text.postcard").exists());
 
         // resume: only the figures commit runs
         let mut mock = Mock {
@@ -777,25 +838,23 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            process_doc(&ctx(&data), "a", &mut mock, &mut nop),
+            process_doc(&f.ctx(), "a", &mut mock, &mut nop),
             Outcome::Ready
         ));
         assert_eq!((mock.text_calls, mock.figures_calls), (0, 1));
-        assert_eq!(status::read(&data, "a").unwrap().state, DocState::Ready);
-        std::fs::remove_dir_all(&data).unwrap();
+        assert_eq!(f.state("a"), DocState::Ready);
     }
 
     #[test]
     fn claimed_doc_is_skipped() {
-        let data = tmp("skip");
-        touch_pdf(&data, "a");
-        let _held = claim(&data, "a").unwrap();
+        let f = Fx::new("skip");
+        f.touch_pdf("a");
+        let _held = claim(&f.data, "a").unwrap();
         let mut mock = Mock::default();
         assert!(matches!(
-            process_doc(&ctx(&data), "a", &mut mock, &mut nop),
+            process_doc(&f.ctx(), "a", &mut mock, &mut nop),
             Outcome::Skipped
         ));
         assert_eq!((mock.text_calls, mock.figures_calls), (0, 0));
-        std::fs::remove_dir_all(&data).unwrap();
     }
 }

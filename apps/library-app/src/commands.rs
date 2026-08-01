@@ -10,8 +10,8 @@ use crate::engine::{AppState, Status, answer, engine};
 #[tauri::command]
 pub(crate) async fn search(state: State<'_, AppState>, query: Query) -> Result<Response, String> {
     let eng = engine(&state)?;
-    let data = state.settings.data.clone();
-    tauri::async_runtime::spawn_blocking(move || answer(&eng, &data, &query))
+    let ctx = state.ctx.clone();
+    tauri::async_runtime::spawn_blocking(move || answer(&eng, &ctx, &query))
         .await
         .map_err(|e| e.to_string())
 }
@@ -111,8 +111,8 @@ pub(crate) async fn perf_memory(
 pub(crate) async fn perf_ingest(
     state: State<'_, AppState>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let data = state.settings.data.clone();
-    tauri::async_runtime::spawn_blocking(move || library_core::perf::ingest_rows(&data))
+    let ctx = state.ctx.clone();
+    tauri::async_runtime::spawn_blocking(move || library_core::perf::ingest_rows(&ctx))
         .await
         .map_err(|e| e.to_string())
 }
@@ -127,7 +127,8 @@ pub(crate) async fn atlas(
     refresh: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let eng = engine(&state)?;
-    let data = state.settings.data.clone();
+    let ctx = state.ctx.clone();
+    let data = ctx.data.clone();
     let librarian = crate::chat::librarian_bin(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let fp = {
@@ -148,7 +149,7 @@ pub(crate) async fn atlas(
         if let Some(claim) = library_core::atlas::try_claim() {
             std::thread::spawn(move || {
                 let lib = eng.lib.read().expect("library lock poisoned");
-                if let Err(e) = library_core::atlas::build(claim, &lib, &data, Some(&librarian)) {
+                if let Err(e) = library_core::atlas::build(claim, &lib, &ctx, Some(&librarian)) {
                     eprintln!("atlas build failed: {e:#}");
                 }
             });

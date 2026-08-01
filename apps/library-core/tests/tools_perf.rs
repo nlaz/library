@@ -8,6 +8,7 @@
 //! compiled into the crate, so `search_tool`'s embed call touches no network
 //! and no real library.
 
+use library_core::meta::Ctx;
 use library_core::{ChunkKey, ChunkRec, EMB_DIM, Library, Word, open, perf, tools};
 
 fn chunk(doc: &str, idx: u32, text: &str) -> ChunkRec {
@@ -31,7 +32,7 @@ fn chunk(doc: &str, idx: u32, text: &str) -> ChunkRec {
     }
 }
 
-fn fixture(name: &str) -> (Library, std::path::PathBuf) {
+fn fixture(name: &str) -> (Library, Ctx) {
     let dir = std::env::temp_dir().join(format!("library-core-tools-perf-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("text")).expect("fixture: create temp text dir");
@@ -40,7 +41,6 @@ fn fixture(name: &str) -> (Library, std::path::PathBuf) {
         "# w\n<!-- page 1 -->\nthe escapement regulates the balance wheel and plenty more readable text besides\n",
     )
     .expect("fixture: write page text");
-    std::fs::write(dir.join("collections.json"), "{}").expect("fixture: write collections");
 
     let mut lib = open(dir.join("store"));
     lib.wtx(|tx| {
@@ -55,13 +55,14 @@ fn fixture(name: &str) -> (Library, std::path::PathBuf) {
             tx.upsert(&c.key, &c);
         }
     });
-    (lib, dir)
+    let ctx = Ctx::in_memory(&dir).expect("fixture: meta");
+    (lib, ctx)
 }
 
 #[test]
 fn agent_searches_land_in_the_perf_ring_with_a_link_back() {
-    let (lib, data) = fixture("ring");
-    let out = lib.rtx(|r| tools::search_tool(&r, &lib, &data, "escapement", "", 6));
+    let (lib, ctx) = fixture("ring");
+    let out = lib.rtx(|r| tools::search_tool(&r, &lib, &ctx, "escapement", "", 6));
 
     let ts = out["perf_ts"]
         .as_u64()
@@ -94,8 +95,8 @@ fn agent_searches_land_in_the_perf_ring_with_a_link_back() {
 /// exactly when it's most wanted.
 #[test]
 fn a_miss_records_its_hits_even_though_confidence_is_none() {
-    let (lib, data) = fixture("miss");
-    let out = lib.rtx(|r| tools::search_tool(&r, &lib, &data, "photosynthesis", "", 6));
+    let (lib, ctx) = fixture("miss");
+    let out = lib.rtx(|r| tools::search_tool(&r, &lib, &ctx, "photosynthesis", "", 6));
 
     assert_eq!(out["confidence"], "none");
     let ts = out["perf_ts"].as_u64().unwrap();

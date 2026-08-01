@@ -55,6 +55,25 @@ npm --prefix apps/web run build                     # web: tsc + vite build
 - For end-to-end verification (boot the server/app and drive the UI), use
   the `verify` skill in `.claude/skills/verify/`.
 
+## Where the data lives
+
+Two halves, and the split is load-bearing:
+
+- **The user's folders** — watched *roots*. The default is `~/The Library`
+  (created on first launch); users link their own folders in Settings (⌘S).
+  Files are never moved, renamed or reorganized: the filesystem is the
+  truth and the index is a reflection of it. A depth-1 folder is a shelf.
+- **The app-support dir** (`~/Library/Application Support/dev.thelibrary/`,
+  or the repo's `data/` in dev builds) — everything derived or private:
+  `meta.db`, the two fjall stores, page renders, OCR, markdown, models, and
+  `run/` (cross-process locks only).
+
+`meta.db` is SQLite in WAL mode and holds all library metadata: roots,
+files, docs (incl. ingest status), collections, cards, settings. It is the
+one place three processes can write concurrently. Legacy
+`data/annotations/*.json` are **read-only migration input** (see
+`annots.rs`), not a live table.
+
 ## Data safety
 
 - `data/` at the repo root is a **live personal library** (databases, PDFs,
@@ -64,6 +83,13 @@ npm --prefix apps/web run build                     # web: tsc + vite build
   fixture patterns below.
 - fjall stores are **single-process** — a second opener panics with
   `Locked`. Stop `library-server` before running the CLI search or the app.
+  SQLite (`meta.db`) is *not* subject to this: that is why metadata lives
+  there.
+- **A disappearance is not a deletion.** `roots::reconcile` refuses to
+  retract when a root is unreadable (unmounted volume), when >20% of a
+  root's documents vanish at once, or when a file is an iCloud stub
+  (`SF_DATALESS`). If you touch that code, keep the guards and their tests
+  — losing a library is the one unrecoverable bug this app has.
 
 ## Testing conventions
 
@@ -72,6 +98,10 @@ npm --prefix apps/web run build                     # web: tsc + vite build
   under `fold/src/tests/`; integration tests use `tests/` dirs.
 - Fixture patterns to reuse rather than reinvent:
   - `fold/src/tests/mod.rs::fresh_db` — temp-dir fjall store per test.
+  - `apps/library-core/tests/roots_sync.rs::Lib` — a real temp folder plus
+    a real (in-memory) `meta.db`, for anything touching the scanner.
+  - `library_core::meta::Ctx::in_memory(dir)` — a `Ctx` over a real cache
+    directory with an in-memory database. The default for new tests.
   - `apps/library-core/src/tools.rs::sample_fixture` — synthetic on-disk
     library (text pages + collections manifest).
   - `apps/library-core/tests/common/` — `synthetic_library`, a temp-dir

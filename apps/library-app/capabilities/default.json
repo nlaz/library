@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: core events + file-picker dialog",
+  "description": "Main window: core events + file-picker dialog. The updater plugin is registered but deliberately gets no permission here — update.rs drives it from Rust, so the webview never reaches updater:*.",
   "windows": ["main"],
   "permissions": ["core:default", "dialog:default"]
 }

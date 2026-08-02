@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeSection,
   baseName,
   formatBytes,
+  librarianRow,
   type RootInfo,
   rootRows,
+  SECTIONS,
   storageRows,
   tildify,
   unlinkWarning,
+  type UpdateState,
+  updateRow,
 } from "./settings-model";
 
 const HOME = "/Users/someone";
@@ -127,5 +132,148 @@ describe("baseName", () => {
   it("names the folder, trailing slash or not", () => {
     expect(baseName("/Volumes/Archive/Scans")).toBe("Scans");
     expect(baseName("/Volumes/Archive/Scans/")).toBe("Scans");
+  });
+});
+
+describe("librarianRow", () => {
+  const REASON = "The librarian needs macOS 26 or newer — the rest of the library works here.";
+
+  it("is off by default on a Mac that could run it", () => {
+    const r = librarianRow({ supported: true, reason: null, enabled: false });
+    expect(r).toMatchObject({ on: false, can: true, label: "off", warn: null });
+  });
+
+  it("is on once asked for", () => {
+    const r = librarianRow({ supported: true, reason: null, enabled: true });
+    expect(r).toMatchObject({ on: true, can: true, label: "on", warn: null });
+  });
+
+  it("cannot be pressed where the models are missing", () => {
+    const r = librarianRow({ supported: false, reason: REASON, enabled: false });
+    expect(r.can).toBe(false);
+    expect(r.warn).toBe(REASON);
+  });
+
+  it("reads off on an unsupported Mac even when the preference says on", () => {
+    // the panel is not going to open — a switch left on would be a lie,
+    // and the preference survives for a Mac that can honour it later
+    const r = librarianRow({ supported: false, reason: REASON, enabled: true });
+    expect(r.on).toBe(false);
+    expect(r.label).toBe("off");
+  });
+
+  it("always has something to say when it cannot run", () => {
+    // the probe can decline to give a reason; silence next to a dead
+    // control is the one outcome that explains nothing
+    const r = librarianRow({ supported: false, reason: null, enabled: false });
+    expect(r.warn).toBeTruthy();
+    expect(r.warn).toContain("macOS 26");
+  });
+});
+
+describe("activeSection", () => {
+  // four sections, each 600px tall, in a 500px-tall scroller
+  const offsets = [0, 600, 1200, 1800];
+  const scroll = { height: 500, total: 2400 };
+
+  it("lights the section whose heading has passed the reading line", () => {
+    expect(activeSection(0, offsets, scroll)).toBe(0);
+    expect(activeSection(540, offsets, scroll)).toBe(1);
+    expect(activeSection(1150, offsets, scroll)).toBe(2);
+  });
+
+  it("does not light a section whose heading is still below the line", () => {
+    // 519 + 80 = 599, one pixel short of the second section
+    expect(activeSection(519, offsets, scroll)).toBe(0);
+  });
+
+  it("lights the last section at the bottom of the scroll", () => {
+    // the exception that makes the rail's last entry reachable: a final
+    // section shorter than the viewport never gets its heading to the line
+    const short = [0, 600, 1200, 1900];
+    expect(activeSection(1400, short, { height: 500, total: 1900 })).toBe(3);
+  });
+
+  it("does not claim the bottom when there is nothing to scroll", () => {
+    expect(activeSection(0, offsets, { height: 900, total: 900 })).toBe(0);
+  });
+
+  it("survives a page that has not been measured yet", () => {
+    expect(activeSection(0, [])).toBe(0);
+    expect(activeSection(0, [0])).toBe(0);
+  });
+});
+
+describe("updateRow", () => {
+  it("offers a check when nothing has happened yet", () => {
+    expect(updateRow({ at: "idle" }).action).toBe("Check for updates");
+  });
+
+  it("offers nothing to press while something is in flight", () => {
+    // there is no second press that helps, and a greyed button invites
+    // waiting for it to come back
+    expect(updateRow({ at: "checking" }).action).toBeNull();
+    const dl: UpdateState = { at: "downloading", version: "0.2.0", downloaded: 0, total: 100 };
+    expect(updateRow(dl).action).toBeNull();
+  });
+
+  it("never reports a failed check as up to date", () => {
+    // the one wrong answer here that someone would act on
+    const r = updateRow({ at: "failed", why: "the network is down" });
+    expect(r.status).not.toMatch(/up to date/i);
+    expect(r.detail).toBe("the network is down");
+    expect(r.action).toBe("Try again");
+  });
+
+  it("names the version it found, and shows its notes", () => {
+    const r = updateRow({ at: "found", version: "0.2.0", notes: "faster search" });
+    expect(r.status).toContain("0.2.0");
+    expect(r.action).toBe("Update");
+    expect(r.detail).toBe("faster search");
+  });
+
+  it("measures the download when it can", () => {
+    const r = updateRow({
+      at: "downloading",
+      version: "0.2.0",
+      downloaded: 20_000_000,
+      total: 40_000_000,
+    });
+    expect(r.progress).toBeCloseTo(0.5);
+    expect(r.status).toContain("20 MB of 40 MB");
+  });
+
+  it("shows no bar when the size is unknown", () => {
+    // a bar that can't say how far along it is would only be an animation
+    const r = updateRow({
+      at: "downloading",
+      version: "0.2.0",
+      downloaded: 20_000_000,
+      total: null,
+    });
+    expect(r.progress).toBeNull();
+    expect(r.status).toBe("Downloading 0.2.0");
+  });
+
+  it("does not overrun a bar when the body is longer than advertised", () => {
+    const r = updateRow({ at: "downloading", version: "0.2.0", downloaded: 150, total: 100 });
+    expect(r.progress).toBe(1);
+  });
+
+  it("says the update is already installed before asking to restart", () => {
+    // the restart is a convenience, not the installation — someone who
+    // ignores it must not think they lost the download
+    const r = updateRow({ at: "staged", version: "0.2.0" });
+    expect(r.status).toContain("installed");
+    expect(r.action).toBe("Restart now");
+    expect(r.detail).toMatch(/next time the app opens/);
+  });
+});
+
+describe("SECTIONS", () => {
+  it("has a label for every id, and no duplicates", () => {
+    const ids = SECTIONS.map((s) => s.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(SECTIONS.every((s) => s.label.length > 0)).toBe(true);
   });
 });

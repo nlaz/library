@@ -14,7 +14,7 @@ const DEPTH = 12;
 /** Longest a book title may be on a back button before it's cut. */
 const MAX_LABEL = 28;
 
-export type SurfaceKind = "library" | "read" | "notes" | "sheet";
+export type SurfaceKind = "library" | "read" | "notes" | "sheet" | "settings";
 
 export type Surface = { kind: SurfaceKind; key: string; doc: string };
 
@@ -29,6 +29,7 @@ export function surfaceOf(hash: string): Surface {
   }
   if (/^#\/notes\/(new|edit)/.test(hash)) return { kind: "sheet", key: "sheet", doc: "" };
   if (/^#\/notes/.test(hash)) return { kind: "notes", key: "notes", doc: "" };
+  if (/^#\/settings/.test(hash)) return { kind: "settings", key: "settings", doc: "" };
   return { kind: "library", key: "library", doc: "" };
 }
 
@@ -59,6 +60,14 @@ export function forgetDoc(trail: string[], doc: string): string[] {
   return trail.filter((h) => surfaceOf(h).doc !== doc);
 }
 
+/** Every surface but a book, which is named by its title. */
+const LABEL: Record<Exclude<SurfaceKind, "read">, string> = {
+  library: "library",
+  notes: "notes",
+  sheet: "note",
+  settings: "settings",
+};
+
 /** What to call a hash on a back button. Book titles come from the caller
  * (this file stays free of the doc list) and are cut to fit. */
 export function navLabel(hash: string, title: (doc: string) => string): string {
@@ -67,5 +76,5 @@ export function navLabel(hash: string, title: (doc: string) => string): string {
     const t = title(s.doc);
     return t.length > MAX_LABEL ? `${t.slice(0, MAX_LABEL - 1)}…` : t;
   }
-  return s.kind === "notes" ? "notes" : s.kind === "sheet" ? "note" : "library";
+  return LABEL[s.kind];
 }

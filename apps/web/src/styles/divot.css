@@ -162,6 +162,27 @@
   color: var(--bg);
 }
 
+/* --- disabled -------------------------------------------------------------
+   Last, so it wins over every strength above it without a specificity
+   fight. The groove goes flat and the ink fades, but the box keeps its
+   size and its label: a control you can see and cannot use is how Settings
+   explains a capability this Mac doesn't have, so it has to stay readable.
+
+   --divot-n: 0 mixes the walls to exactly the ground rather than removing
+   them (the .quiet trick), which is why nothing reflows. The hover bump
+   goes with it — a groove that deepens under a pointer that can't do
+   anything is a promise the button won't keep. */
+
+.divot:disabled {
+  --divot-n: 0;
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+.divot:disabled:hover {
+  --divot-bump: 0;
+}
+
 /* --- accessibility --------------------------------------------------------
    A flush button carries no value contrast against its ground — the cut is
    doing all the work of saying "target". Where the platform says the user

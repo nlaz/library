@@ -262,8 +262,37 @@ pub enum Outcome {
     Staged,
     /// Another live process has the doc claimed.
     Skipped,
+    /// The document was tombstoned while this pass was running — the folder
+    /// was unlinked, or the doc deleted. Whatever had been committed is
+    /// retracted again.
+    Cancelled,
     /// Prepare or commit failed; status holds the error.
     Failed,
+}
+
+/// Whether the doc has been tombstoned since this pass claimed it.
+///
+/// OCR of a long book runs for minutes, and the user can unlink its folder
+/// at any point during them. The tombstone lands, the prepare finishes, and
+/// the commit writes `ready` straight back over it — the book returns to a
+/// shelf the user just removed, still searchable. Checked immediately
+/// before each commit, and once more after the last one.
+fn cancelled(meta: &Meta, doc: &str) -> bool {
+    status::read(meta, doc).map(|s| s.state) == Some(DocState::Deleted)
+}
+
+/// Abandon a doc whose tombstone landed mid-ingest, undoing anything this
+/// pass already put in the stores.
+///
+/// The retractions are unconditional because the caller can't know how far
+/// it got, and retracting a doc that was never committed is a no-op. The
+/// tombstone itself is left exactly as the remover wrote it: this function
+/// never decides a document's fate, it only stops competing for it.
+fn cancel(data: &Path, doc: &str, committer: &mut dyn Committer) -> Outcome {
+    let _ = committer.text(doc, &[]);
+    let _ = committer.figures(doc, &[]);
+    clear_staged(data, doc);
+    Outcome::Cancelled
 }
 
 /// Mirror `Progress` into the doc's status row, throttled so OCR of a
@@ -294,7 +323,10 @@ impl StatusMirror<'_> {
         }
         self.stage = stage;
         self.last = std::time::Instant::now();
-        let _ = status::write(
+        // `write_live`, like everything else on the ingest path: this fires
+        // every second for the length of an OCR pass, and it is the write
+        // most likely to land on top of a removal the user just made
+        let _ = status::write_live(
             self.meta,
             self.doc,
             &DocStatus {
@@ -438,9 +470,9 @@ pub fn process_doc(
             match staged(data, doc, "text.postcard") {
                 Some(recs) => (recs, None),
                 None => {
-                    let _ = status::write(meta, doc, &DocStatus::new(DocState::Preparing));
+                    let _ = status::write_live(meta, doc, &DocStatus::new(DocState::Preparing));
                     let Some(src) = crate::source_path(meta, doc) else {
-                        let _ = status::write(
+                        let _ = status::write_live(
                             meta,
                             doc,
                             &DocStatus::failed(format!(
@@ -457,19 +489,29 @@ pub fn process_doc(
                     match res {
                         Ok((recs, pages)) => (recs, Some(pages)),
                         Err(e) => {
-                            let _ = status::write(meta, doc, &DocStatus::failed(format!("{e:#}")));
+                            let _ =
+                                status::write_live(meta, doc, &DocStatus::failed(format!("{e:#}")));
                             return Outcome::Failed;
                         }
                     }
                 }
             };
 
-        let _ = status::write(meta, doc, &indexing());
+        if cancelled(meta, doc) {
+            return cancel(data, doc, committer);
+        }
+        let _ = status::write_live(meta, doc, &indexing());
         let t = std::time::Instant::now();
         match committer.text(doc, &recs) {
             Ok((removed, added)) => {
                 clock.add("commit_text", t.elapsed().as_millis() as u64);
                 clock.m.chunks = Some((added as u32, removed as u32));
+                // a removal that landed while this commit held the store's
+                // write lock is only visible now, and figures is the
+                // expensive half — stop before paying for it
+                if cancelled(meta, doc) {
+                    return cancel(data, doc, committer);
+                }
                 let _ = std::fs::remove_file(staged_dir(data, doc).join("text.postcard"));
                 let md = match &pages {
                     Some(pages) => crate::textout::write_doc_pages(data, doc, pages),
@@ -483,7 +525,7 @@ pub fn process_doc(
                 let t = std::time::Instant::now();
                 clock.m.legibility = library_core::perf::legibility_summary(data, doc);
                 clock.add("legibility", t.elapsed().as_millis() as u64);
-                let _ = status::write(
+                let _ = status::write_live(
                     meta,
                     doc,
                     &DocStatus {
@@ -499,11 +541,11 @@ pub fn process_doc(
                     // the next sweep redoes prepare from the caches
                     return Outcome::Failed;
                 }
-                let _ = status::write(meta, doc, &DocStatus::new(DocState::Staged));
+                let _ = status::write_live(meta, doc, &DocStatus::new(DocState::Staged));
                 return Outcome::Staged;
             }
             Err(CommitErr::Other(e)) => {
-                let _ = status::write(meta, doc, &DocStatus::failed(format!("{e:#}")));
+                let _ = status::write_live(meta, doc, &DocStatus::failed(format!("{e:#}")));
                 return Outcome::Failed;
             }
         }
@@ -521,21 +563,30 @@ pub fn process_doc(
             match res {
                 Ok(figs) => figs,
                 Err(e) => {
-                    let _ = status::write(meta, doc, &DocStatus::failed(format!("{e:#}")));
+                    let _ = status::write_live(meta, doc, &DocStatus::failed(format!("{e:#}")));
                     return Outcome::Failed;
                 }
             }
         }
     };
 
-    let _ = status::write(meta, doc, &indexing());
+    if cancelled(meta, doc) {
+        return cancel(data, doc, committer);
+    }
+    let _ = status::write_live(meta, doc, &indexing());
     let t = std::time::Instant::now();
     match committer.figures(doc, &figs) {
         Ok((removed, added)) => {
             clock.add("commit_figures", t.elapsed().as_millis() as u64);
             clock.m.figures = Some((added as u32, removed as u32));
             clear_staged(data, doc);
-            let _ = status::write(
+            // The last look, and the one that closes the race for good: a
+            // tombstone written while the commits above held the store's
+            // write lock is only visible now.
+            if cancelled(meta, doc) {
+                return cancel(data, doc, committer);
+            }
+            let _ = status::write_live(
                 meta,
                 doc,
                 &DocStatus {
@@ -551,7 +602,7 @@ pub fn process_doc(
             }
             // stay `text_ready`, not `staged`: text is committed, and the
             // resume path must skip straight to the staged figures
-            let _ = status::write(
+            let _ = status::write_live(
                 meta,
                 doc,
                 &DocStatus {
@@ -562,7 +613,7 @@ pub fn process_doc(
             Outcome::Staged
         }
         Err(CommitErr::Other(e)) => {
-            let _ = status::write(meta, doc, &DocStatus::failed(format!("{e:#}")));
+            let _ = status::write_live(meta, doc, &DocStatus::failed(format!("{e:#}")));
             Outcome::Failed
         }
     }
@@ -673,11 +724,18 @@ mod tests {
         figures: Vec<Result<(), ()>>, // Err(()) => Locked
         text_calls: usize,
         figures_calls: usize,
+        /// Tombstone this doc as a side effect of the text commit — the
+        /// only way to land a removal inside the window a real unlink
+        /// races into, since `process_doc` is synchronous.
+        remove_during_text: Option<(Arc<Meta>, String)>,
     }
 
     impl Committer for Mock {
         fn text(&mut self, _doc: &str, _recs: &[ChunkRec]) -> Result<(usize, usize), CommitErr> {
             self.text_calls += 1;
+            if let Some((meta, doc)) = &self.remove_during_text {
+                status::write(meta, doc, &DocStatus::new(DocState::Deleted)).unwrap();
+            }
             match self.text.remove(0) {
                 Ok(()) => Ok((0, 0)),
                 Err(()) => Err(CommitErr::Locked),
@@ -812,6 +870,66 @@ mod tests {
         ));
         assert_eq!((mock.text_calls, mock.figures_calls), (0, 1));
         assert_eq!(f.state("a"), DocState::Ready);
+    }
+
+    #[test]
+    fn a_tombstone_before_the_commits_abandons_the_ingest() {
+        // the ordinary case: the folder was unlinked while this doc sat in
+        // the sweep's queue behind another one. Prepare is already done —
+        // the point is that nothing reaches the stores.
+        let f = Fx::new("cancel-early");
+        f.touch_pdf("a");
+        f.set("a", DocState::Staged);
+        f.seed_staged("a", true, true);
+        f.set("a", DocState::Deleted);
+
+        let mut mock = Mock::default();
+        assert!(matches!(
+            process_doc(&f.ctx(), "a", &mut mock, &mut nop),
+            Outcome::Ready
+        ));
+        assert_eq!(
+            (mock.text_calls, mock.figures_calls),
+            (0, 0),
+            "a tombstoned doc must not be committed at all"
+        );
+        assert_eq!(f.state("a"), DocState::Deleted);
+    }
+
+    #[test]
+    fn a_tombstone_landing_mid_ingest_retracts_what_was_committed() {
+        // the race unlinking actually runs: the text commit is in flight
+        // when the removal lands. Before this, the figures commit and the
+        // `ready` write went through on top of the tombstone and the book
+        // came back — on no shelf, but still answering searches.
+        let f = Fx::new("cancel-race");
+        f.touch_pdf("a");
+        f.set("a", DocState::Staged);
+        f.seed_staged("a", true, true);
+
+        let mut mock = Mock {
+            // the real commit, then the retraction that undoes it
+            text: vec![Ok(()), Ok(())],
+            // only the retraction — the real figures commit never happens
+            figures: vec![Ok(())],
+            remove_during_text: Some((f.meta.clone(), "a".into())),
+            ..Default::default()
+        };
+        assert!(matches!(
+            process_doc(&f.ctx(), "a", &mut mock, &mut nop),
+            Outcome::Cancelled
+        ));
+        assert_eq!(
+            (mock.text_calls, mock.figures_calls),
+            (2, 1),
+            "both stores must be handed an empty record set"
+        );
+        assert_eq!(
+            f.state("a"),
+            DocState::Deleted,
+            "the tombstone is the remover's to write, and it must survive"
+        );
+        assert!(!f.staged_dir("a").exists(), "staged dir cleared");
     }
 
     #[test]

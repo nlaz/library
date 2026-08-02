@@ -331,3 +331,62 @@ fn a_documents_path_resolves_back_to_the_file() {
     assert!(path.ends_with("library/Cookbooks/artusi.pdf"));
     assert!(path.exists(), "reveal-in-Finder needs a real path");
 }
+
+#[test]
+fn a_linked_folder_shelves_its_loose_books_under_its_own_name() {
+    // The report this comes from: nineteen cookbooks sitting at the top of
+    // a linked ~/Archive/cookbooks, all shown under "Unsorted". The user
+    // had already filed them — by choosing that folder — and the shelf view
+    // threw the answer away.
+    let lib = Lib::new("linked-shelf");
+    lib.write("loose-in-the-inbox.pdf", b"%PDF-");
+    lib.sync();
+
+    let elsewhere = lib.dir.join("Archive").join("cookbooks");
+    std::fs::create_dir_all(&elsewhere).expect("their own folder");
+    std::fs::write(elsewhere.join("artusi.pdf"), b"%PDF-1").expect("write");
+    std::fs::write(elsewhere.join("escoffier.pdf"), b"%PDF-2").expect("write");
+    std::fs::create_dir_all(elsewhere.join("Italian")).expect("a shelf of their own");
+    std::fs::write(elsewhere.join("Italian").join("marcella.pdf"), b"%PDF-3").expect("write");
+
+    let linked = lib.ctx.add_root(&elsewhere, 10).expect("link it");
+    assert!(!linked.is_default, "the fixture root is the default");
+    roots::sync_root(&lib.ctx.meta, &linked, 11);
+
+    let shelves = lib.ctx.shelves();
+    assert_eq!(
+        shelves["cookbooks"].len(),
+        2,
+        "loose books take the folder's name: {shelves:?}"
+    );
+    assert_eq!(
+        shelves["Italian"].len(),
+        1,
+        "a folder inside it still wins — their filing is finer than ours"
+    );
+    assert!(
+        !shelves.values().flatten().any(|d| {
+            lib.ctx
+                .doc_path(d)
+                .is_some_and(|p| p.ends_with("loose-in-the-inbox.pdf"))
+        }),
+        "the default folder's top level is the inbox, and stays unsorted"
+    );
+
+    // and the repair path: books filed under the older rule carry a null
+    // shelf, and no scan will ever call them "added" again
+    lib.ctx
+        .meta
+        .write(|c| {
+            c.execute("UPDATE docs SET shelf = NULL", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(lib.ctx.shelves().is_empty());
+    roots::sync_root(&lib.ctx.meta, &linked, 12);
+    assert_eq!(
+        lib.ctx.shelves()["cookbooks"].len(),
+        2,
+        "a plain sync re-files what the old rule left behind"
+    );
+}

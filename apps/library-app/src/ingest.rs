@@ -120,8 +120,14 @@ fn sync_roots(app: &AppHandle, ctx: &library_core::meta::Ctx) -> bool {
             }
         }
         // a file that went away stops being searchable, but its renders and
-        // its notes stay — restoring the file must not cost an OCR pass
+        // its notes stay — restoring the file must not cost an OCR pass.
+        // Only once *every* copy is gone, though: deleting a spare copy of
+        // a paper used to retract the original still sitting in another
+        // watched folder, because both files name the same document.
         for doc in &applied.missing {
+            if ctx.has_present_file(doc) {
+                continue;
+            }
             let _ = status::write(&ctx.meta, doc, &DocStatus::new(DocState::Deleted));
         }
         queued_any |= !applied.queued.is_empty();
@@ -223,6 +229,10 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
                         },
                     );
                 }
+                // the folder was unlinked (or the doc deleted) mid-ingest:
+                // the worker has already retracted what it committed, so
+                // all that's left is to take the progress bar down
+                Outcome::Cancelled => emit_stage(&app, &doc, "done"),
                 // Staged can't happen here (EngineCommitter never returns
                 // Locked); Skipped means someone else has the claim
                 Outcome::Staged | Outcome::Skipped => {}

@@ -60,6 +60,9 @@ export type DocStatus = {
 export type DocInfo = {
   id: string;
   title: string | null;
+  /** The file's name, without its extension — the display fallback for a
+   * book nobody has titled. Null in the browser build, which has no files. */
+  name?: string | null;
   pages: number;
   collections: string[];
   processing: boolean;

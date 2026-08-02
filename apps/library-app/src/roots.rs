@@ -128,24 +128,64 @@ pub(crate) async fn link_root(
     })
 }
 
-/// Unlink a folder. The files stay exactly where they are; their documents
-/// go missing, which is the same path a deletion takes — so the notes and
-/// the page renders survive, and re-linking the folder brings everything
-/// back without re-reading a page.
+/// Unlink a folder: its books leave the library, its files stay untouched
+/// on disk.
+///
+/// "Leave the library" has to mean all of it. Writing the tombstones alone
+/// only emptied the shelf cards — the chunks stayed in the index, so search
+/// kept answering with a folder the user had just removed, and an ingest
+/// already running finished and wrote `ready` back over the tombstone. So
+/// this retracts from both stores too, and does it in that order: the
+/// tombstones go down *first*, because they are what an in-flight
+/// `process_doc` checks before its commits. Retracting first would leave a
+/// window where the worker commits after us and wins.
+///
+/// The derived caches go too, which is what the confirmation promises
+/// ("the app forgets its page images and search entries") and the only
+/// honest thing to do: the `files` rows cascade away with the root, so a
+/// re-link mints fresh document ids and could never have reused them. Hand
+/// corrections under `edits/` survive, and notes and cards, as always,
+/// outlive the document entirely.
 #[tauri::command]
-pub(crate) fn unlink_root(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let ctx = &state.ctx;
+pub(crate) async fn unlink_root(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let ctx = state.ctx.clone();
     if ctx.roots().len() <= 1 {
         return Err("this is your only library folder — link another one first".into());
     }
-    for f in ctx.files_in_root(&id) {
-        let _ = library_ingest::status::write(
-            &ctx.meta,
-            &f.doc,
-            &library_ingest::status::DocStatus::new(library_ingest::status::DocState::Deleted),
-        );
-    }
-    ctx.remove_root(&id).map_err(|e| e.to_string())
+    let eng = crate::engine::engine(&state)?;
+    let data = state.settings.data.clone();
+    // only what this root alone was holding: a book the user also keeps in
+    // another watched folder stays in the library, indexed off that copy
+    let docs = ctx.docs_only_in_root(&id);
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        for doc in &docs {
+            let _ = library_ingest::status::write(
+                &ctx.meta,
+                doc,
+                &library_ingest::status::DocStatus::new(library_ingest::status::DocState::Deleted),
+            );
+        }
+        {
+            let mut lib = eng.lib.write().expect("library lock poisoned");
+            for doc in &docs {
+                library_ingest::commit_text(&mut lib, doc, &[]);
+            }
+        }
+        {
+            let mut images = eng.images.write().expect("images lock poisoned");
+            for doc in &docs {
+                library_ingest::commit_figures(&mut images, doc, &[]);
+            }
+        }
+        for doc in &docs {
+            crate::docs::forget_caches(&data, doc);
+            library_ingest::worker::clear_staged(&data, doc);
+        }
+        ctx.remove_root(&id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

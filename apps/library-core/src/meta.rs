@@ -45,6 +45,18 @@ fn sql_err(e: rusqlite::Error) -> io::Error {
     io::Error::other(format!("meta.db: {e}"))
 }
 
+/// The part of a relative path a person would call the file's name.
+///
+/// Deliberately the platform's own rule (`Path::file_stem`), extension
+/// splitting and all — a book called `Vol.2` losing its `.2` is a smaller
+/// wrong than every `.pdf` in the library showing up on screen.
+fn file_stem(relpath: &str) -> String {
+    Path::new(relpath)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| relpath.to_string())
+}
+
 fn json_str(s: String) -> serde_json::Value {
     serde_json::Value::String(s)
 }
@@ -337,6 +349,47 @@ impl Meta {
         })
     }
 
+    /// Whether any watched folder still holds a readable file for this
+    /// document.
+    ///
+    /// A document can be reached by more than one file — the same bytes in
+    /// two folders are one book, by design. So "a file went missing" is not
+    /// "the document went missing", and treating it that way retracted
+    /// books the user still had: delete a spare copy of a paper and the
+    /// original, sitting untouched in another folder, left the library.
+    /// `dataless` counts as present — an evicted iCloud stub is a file that
+    /// is there, just not downloaded.
+    pub fn has_present_file(&self, doc: &str) -> bool {
+        self.read(|c| {
+            c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM files WHERE doc_id = ?1 AND state != 'missing')",
+                [doc],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    /// Documents that exist *only* under this root — the ones unlinking it
+    /// actually removes from the library.
+    ///
+    /// The same bytes can sit in two watched folders; the scanner spots the
+    /// duplicate by content hash and points both files at one document. So
+    /// "every doc under this root" is the wrong set to tombstone: unlinking
+    /// a folder holding a second copy of a book would take the original
+    /// down with it, and the file it still has on disk would look indexed
+    /// while answering nothing.
+    pub fn docs_only_in_root(&self, root_id: &str) -> Vec<String> {
+        self.read(|c| {
+            let mut q = c.prepare(
+                "SELECT DISTINCT doc_id FROM files WHERE root_id = ?1
+                   AND doc_id NOT IN (SELECT doc_id FROM files WHERE root_id != ?1)",
+            )?;
+            let rows = q.query_map([root_id], |r| r.get::<_, String>(0))?;
+            rows.collect()
+        })
+    }
+
     /// Record a file and the document it belongs to. Upserts on
     /// `(root, relpath)`, so a rescan of an unchanged file is idempotent.
     #[allow(clippy::too_many_arguments)]
@@ -460,6 +513,34 @@ impl Meta {
 
     // --- titles -------------------------------------------------------------
 
+    /// `doc id -> what a person would call its file`: the last path
+    /// component, without the extension.
+    ///
+    /// The display fallback, and the reason it has to exist: document ids
+    /// are minted now, opaque by design so that renaming a file in Finder
+    /// cannot orphan a book. They used to be slugs made from the filename,
+    /// which meant "prettify the id" was a decent name for an untitled
+    /// book. It isn't any more — it reads `D01713FA82AD0` — and the file
+    /// name is the thing the user actually recognises.
+    ///
+    /// Missing files still count. A document whose file went away keeps its
+    /// name until something replaces it; falling back to the id there would
+    /// be the same unreadable row, arriving at the worst moment.
+    pub fn file_names(&self) -> BTreeMap<String, String> {
+        self.read(|c| {
+            // a book in two folders under two names: take one and take it
+            // consistently, rather than letting row order decide
+            let mut q = c.prepare("SELECT doc_id, relpath FROM files ORDER BY relpath")?;
+            let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            let mut out: BTreeMap<String, String> = BTreeMap::new();
+            for row in rows {
+                let (doc, relpath) = row?;
+                out.entry(doc).or_insert_with(|| file_stem(&relpath));
+            }
+            Ok(out)
+        })
+    }
+
     /// `doc id -> display title`, for docs that have one.
     pub fn titles(&self) -> BTreeMap<String, String> {
         self.read(|c| {
@@ -495,8 +576,14 @@ impl Meta {
     pub fn shelves(&self) -> Collections {
         self.read(|c| {
             let mut q = c.prepare(
+                // a tombstoned doc keeps its shelf so re-linking the folder
+                // restores it, but it must not be counted on one: the shelf
+                // tabs are built from this, and a tab that opens onto an
+                // empty shelf is how an unlinked folder used to linger
                 "SELECT shelf, id FROM docs
-                 WHERE shelf IS NOT NULL AND shelf != '' ORDER BY shelf, id",
+                 WHERE shelf IS NOT NULL AND shelf != ''
+                   AND coalesce(state, '') != 'deleted'
+                 ORDER BY shelf, id",
             )?;
             let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
             let mut out = Collections::new();
@@ -759,6 +846,124 @@ mod tests {
         let shelves = m.shelves();
         assert!(!shelves.contains_key("software"));
         assert_eq!(shelves["cookbooks"].len(), 3);
+    }
+
+    #[test]
+    fn a_document_is_named_after_its_file() {
+        let m = Meta::open_in_memory().unwrap();
+        let r = m.add_root(Path::new("/tmp/does-not-exist-n"), 1).unwrap();
+        let stat = crate::roots::Stat {
+            inode: 1,
+            size: 2,
+            mtime: 3,
+            dataless: false,
+        };
+        m.put_file(&r.id, "Artusi 1891.pdf", "d1", &stat, None, 1)
+            .unwrap();
+        // the extension goes, the dots inside the name stay — z-library
+        // filenames are full of them
+        m.put_file(
+            &r.id,
+            "cookbooks/Il Cucchiaio (z-library.sk, 1lib.sk).pdf",
+            "d2",
+            &stat,
+            None,
+            1,
+        )
+        .unwrap();
+        // a book in two folders under two names: one answer, deterministically
+        m.put_file(&r.id, "zzz-late.pdf", "d3", &stat, None, 1)
+            .unwrap();
+        m.put_file(&r.id, "aaa-early.pdf", "d3", &stat, None, 1)
+            .unwrap();
+
+        let names = m.file_names();
+        assert_eq!(names["d1"], "Artusi 1891");
+        assert_eq!(names["d2"], "Il Cucchiaio (z-library.sk, 1lib.sk)");
+        assert_eq!(names["d3"], "aaa-early");
+        assert!(!names.contains_key("d-never-seen"));
+
+        // a file that went away keeps naming its document — an unreadable
+        // id is the last thing you want when a book has just gone missing
+        m.set_file_state(&r.id, "Artusi 1891.pdf", "missing")
+            .unwrap();
+        assert_eq!(m.file_names()["d1"], "Artusi 1891");
+    }
+
+    #[test]
+    fn unlinking_spares_a_book_that_lives_in_another_folder_too() {
+        let m = Meta::open_in_memory().unwrap();
+        let a = m.add_root(Path::new("/tmp/does-not-exist-a"), 1).unwrap();
+        let b = m.add_root(Path::new("/tmp/does-not-exist-b"), 1).unwrap();
+        let stat = crate::roots::Stat {
+            inode: 1,
+            size: 2,
+            mtime: 3,
+            dataless: false,
+        };
+        // one book only in A, one only in B, and one the user keeps in both
+        m.put_file(&a.id, "solo-a.pdf", "dsoloa", &stat, None, 1)
+            .unwrap();
+        m.put_file(&b.id, "solo-b.pdf", "dsolob", &stat, None, 1)
+            .unwrap();
+        m.put_file(&a.id, "shared.pdf", "dshared", &stat, None, 1)
+            .unwrap();
+        m.put_file(&b.id, "copy-of-shared.pdf", "dshared", &stat, None, 1)
+            .unwrap();
+
+        assert_eq!(m.docs_only_in_root(&a.id), vec!["dsoloa"]);
+        assert_eq!(m.docs_only_in_root(&b.id), vec!["dsolob"]);
+
+        // the same rule the sweep needs: losing one copy of the shared book
+        // is not losing the book
+        m.set_file_state(&a.id, "shared.pdf", "missing").unwrap();
+        assert!(m.has_present_file("dshared"), "B still has its copy");
+        m.set_file_state(&b.id, "copy-of-shared.pdf", "missing")
+            .unwrap();
+        assert!(!m.has_present_file("dshared"), "now every copy is gone");
+        assert!(!m.has_present_file("dnever-existed"));
+
+        // once A is gone, B is the only place the shared book lives — and
+        // unlinking B then does take it
+        m.remove_root(&a.id).unwrap();
+        let mut left = m.docs_only_in_root(&b.id);
+        left.sort();
+        assert_eq!(left, vec!["dshared", "dsolob"]);
+    }
+
+    #[test]
+    fn a_tombstoned_doc_leaves_its_shelf_but_keeps_its_place() {
+        // Unlinking a folder tombstones its documents. The shelf tabs are
+        // built from `shelves()`, so a tombstone that stayed on its shelf
+        // left a tab behind with a count and nothing under it — the folder
+        // looked removed everywhere except the one place you'd look first.
+        let m = Meta::open_in_memory().unwrap();
+        m.set_doc_placement("artusi", "pdf", Some("cookbooks"))
+            .unwrap();
+        m.set_doc_placement("escoffier", "pdf", Some("cookbooks"))
+            .unwrap();
+        m.write(|c| {
+            c.execute(
+                "UPDATE docs SET state = 'deleted' WHERE id = 'escoffier'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(m.shelves()["cookbooks"], vec!["artusi"]);
+
+        // the last one goes and the shelf goes with it
+        m.write(|c| {
+            c.execute("UPDATE docs SET state = 'deleted' WHERE id = 'artusi'", [])?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(m.shelves().is_empty());
+
+        // but the placement is still recorded, so re-linking the folder
+        // restores the shelf instead of re-deriving it from scratch
+        assert_eq!(m.shelf_of_doc("artusi").as_deref(), Some("cookbooks"));
     }
 
     #[test]

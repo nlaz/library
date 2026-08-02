@@ -23,12 +23,25 @@ export function prettify(id: string): string {
     .join(" ");
 }
 
+/** What to call a book: the title the user gave it, else the name of its
+ * file, else the id.
+ *
+ * The id is the last resort and used to be the first: ids were slugs made
+ * from the filename, so prettifying one read like a title. They are minted
+ * now — opaque, so a Finder rename can't orphan a book — which turned every
+ * untitled book on the shelf into `D01713FA82AD0`. The filename was in the
+ * database the whole time; it just wasn't asked for.
+ *
+ * The name is shown verbatim. `prettify` is a rule for *slugs* — it reads
+ * hyphens as word separators — and a real filename's hyphens belong to
+ * whoever typed them: it would turn `z-library.sk` into `z Library.sk` and
+ * `Julia Child - Mastering…` into a gap. Only the id, which really is a
+ * slug when it is an old one, gets prettified. */
 export function displayTitle(d: DocInfo): string {
-  return d.title ?? prettify(d.id);
+  return d.title ?? d.name ?? prettify(d.id);
 }
 
-/** The doc's display name (its title, or a prettified id), for any doc id
- * shown in the UI — search results never show the raw file name. */
+/** The doc's display name, for any doc id shown in the UI. */
 export function docTitle(id: string): string {
   const d = docList.find((x) => x.id === id);
   return d ? displayTitle(d) : prettify(id);

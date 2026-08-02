@@ -15,8 +15,13 @@ use crate::engine::{AppState, engine};
 #[derive(Serialize)]
 pub struct DocInfo {
     pub id: String,
-    /// User-set display title; the UI falls back to prettifying the id.
+    /// User-set display title, and nothing else — an untitled book must
+    /// stay untitled so "Rename" knows it is naming, not re-naming.
     pub title: Option<String>,
+    /// The name of the file this document came from, without its
+    /// extension. What the UI shows when there is no title: the id is
+    /// minted and unreadable, and this is what the user recognises.
+    pub name: Option<String>,
     pub pages: u32,
     pub collections: Vec<String>,
     /// Not yet searchable: queued, preparing, or staged.
@@ -44,6 +49,7 @@ pub(crate) fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
     let ctx = &state.ctx;
     let cols = ctx.shelves();
     let titles = ctx.titles();
+    let names = ctx.file_names();
     let statuses = status::scan(ctx);
 
     let mut out: Vec<DocInfo> = Vec::new();
@@ -63,6 +69,7 @@ pub(crate) fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
             out.push(DocInfo {
                 pages,
                 title: titles.get(&id).cloned(),
+                name: names.get(&id).cloned(),
                 collections: cols
                     .iter()
                     .filter(|(_, docs)| docs.contains(&id))
@@ -83,6 +90,7 @@ pub(crate) fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
         out.push(DocInfo {
             id: id.clone(),
             title: titles.get(id).cloned(),
+            name: names.get(id).cloned(),
             pages: 0,
             collections: cols
                 .iter()
@@ -111,10 +119,27 @@ pub(crate) fn set_title(
         .map_err(|e| e.to_string())
 }
 
-/// Remove a doc: retract it from both indexes, delete its page renders and
-/// OCR cache, and prune it from collections/titles. The copied source in
-/// data/pdfs is kept; a `deleted` tombstone status stops the background
-/// worker from re-ingesting it (re-adding the same file revives it).
+/// Throw away everything derived from a document's file: page renders, OCR,
+/// the cleaned text and the markdown edition.
+///
+/// `edits/` is deliberately not in the list. Everything else here is a
+/// machine's output and comes back for the price of an ingest; edits are a
+/// person's hand corrections to bad OCR, and there is no recomputing those.
+///
+/// Best-effort by design — this runs from two places that have already
+/// decided the document is going, and a cache file that resists deletion is
+/// not a reason to leave the library half-changed.
+pub(crate) fn forget_caches(data: &std::path::Path, doc: &str) {
+    for dir in ["pages", "ocr", "clean"] {
+        let _ = std::fs::remove_dir_all(data.join(dir).join(doc));
+    }
+    let _ = std::fs::remove_file(data.join("text").join(format!("{doc}.md")));
+}
+
+/// Remove a doc: retract it from both indexes, delete everything derived
+/// from it, and prune its title. The file itself is left wherever the user
+/// keeps it; a `deleted` tombstone stops the worker from re-ingesting it
+/// (putting the same file back revives it).
 #[tauri::command]
 pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Result<(), String> {
     if library_core::records::is_reserved(&doc) {
@@ -140,13 +165,7 @@ pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Resul
             let mut images = eng.images.write().expect("images lock poisoned");
             library_ingest::commit_figures(&mut images, &doc, &[]);
         }
-        for dir in ["pages", "ocr"] {
-            if let Err(e) = std::fs::remove_dir_all(data.join(dir).join(&doc))
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(format!("removing {dir}/{doc}: {e}"));
-            }
-        }
+        forget_caches(&data, &doc);
         worker::clear_staged(&data, &doc);
         status::write(&ctx, &doc, &DocStatus::new(DocState::Deleted)).map_err(|e| e.to_string())?;
         ctx.set_title(&doc, None).map_err(|e| e.to_string())?;
@@ -233,6 +252,40 @@ mod tests {
                 "is_processing for {state:?}"
             );
         }
+    }
+
+    #[test]
+    fn forget_caches_clears_the_derived_work_and_spares_the_hand_edits() {
+        let data = std::env::temp_dir().join(format!("library-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        for dir in ["pages", "ocr", "clean", "edits"] {
+            std::fs::create_dir_all(data.join(dir).join("dabc")).expect("cache dir");
+            std::fs::write(data.join(dir).join("dabc").join("1"), b"x").expect("write");
+        }
+        std::fs::create_dir_all(data.join("text")).expect("text dir");
+        std::fs::write(data.join("text").join("dabc.md"), b"# a").expect("write");
+        // a second doc's caches, to catch a path join that drops the id
+        std::fs::create_dir_all(data.join("pages").join("dxyz")).expect("other doc");
+
+        forget_caches(&data, "dabc");
+
+        for dir in ["pages", "ocr", "clean"] {
+            assert!(
+                !data.join(dir).join("dabc").exists(),
+                "{dir} is machine output and must go"
+            );
+        }
+        assert!(!data.join("text").join("dabc.md").exists());
+        assert!(
+            data.join("edits").join("dabc").exists(),
+            "hand corrections to bad OCR cannot be recomputed"
+        );
+        assert!(data.join("pages").join("dxyz").exists(), "only this doc");
+
+        // a doc with nothing cached is not an error
+        forget_caches(&data, "dnothing");
+
+        std::fs::remove_dir_all(&data).expect("cleanup");
     }
 
     #[test]

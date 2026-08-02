@@ -192,6 +192,49 @@ pub fn write(meta: &Meta, doc: &str, st: &DocStatus) -> Result<()> {
     Ok(())
 }
 
+/// Write a status unless the doc has been tombstoned, and say which
+/// happened.
+///
+/// Every write an ingest pass makes goes through here. A removal — deleting
+/// a document, unlinking the folder it lives in — is the user's decision and
+/// it holds until they put the file back. But ingest runs for minutes and
+/// writes progress the whole way through it, so an unguarded write meant the
+/// next `preparing` heartbeat erased a tombstone written a moment earlier:
+/// the pass ran to completion, wrote `ready`, and the book came back.
+///
+/// Reviving a tombstoned doc is still possible — the scanner does it when
+/// the file reappears — but it goes through the plain [`write`], where it
+/// reads as the deliberate act it is.
+pub fn write_live(meta: &Meta, doc: &str, st: &DocStatus) -> Result<bool> {
+    let metrics = match &st.metrics {
+        Some(m) => Some(serde_json::to_string(m)?),
+        None => None,
+    };
+    let n = meta.write(|c| {
+        c.execute(
+            "INSERT INTO docs (id, state, stage, done, total, error, metrics, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+               state = excluded.state, stage = excluded.stage,
+               done = excluded.done, total = excluded.total,
+               error = excluded.error, metrics = excluded.metrics,
+               updated_at = excluded.updated_at
+             WHERE coalesce(docs.state, '') != 'deleted'",
+            rusqlite::params![
+                doc,
+                st.state.as_str(),
+                st.stage,
+                st.done as i64,
+                st.total as i64,
+                st.error,
+                metrics,
+                st.updated as i64,
+            ],
+        )
+    })?;
+    Ok(n > 0)
+}
+
 /// Forget a doc's ingest state without touching its title — the row may
 /// still be carrying one.
 pub fn remove(meta: &Meta, doc: &str) {
@@ -231,6 +274,34 @@ mod tests {
 
     fn meta() -> Meta {
         Meta::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn write_live_refuses_to_resurrect_a_tombstone() {
+        let m = meta();
+
+        // a doc nobody has removed: the guard is invisible
+        assert!(write_live(&m, "a", &DocStatus::new(DocState::Queued)).unwrap());
+        assert!(
+            write_live(&m, "a", &DocStatus::new(DocState::Preparing)).unwrap(),
+            "a live doc takes every progress write"
+        );
+        assert_eq!(read(&m, "a").unwrap().state, DocState::Preparing);
+
+        // the user unlinks the folder mid-ingest; every write the pass has
+        // left in it must now bounce, including the one that says `ready`
+        write(&m, "a", &DocStatus::new(DocState::Deleted)).unwrap();
+        assert!(!write_live(&m, "a", &DocStatus::new(DocState::Preparing)).unwrap());
+        assert!(!write_live(&m, "a", &DocStatus::failed("boom".into())).unwrap());
+        assert!(!write_live(&m, "a", &DocStatus::new(DocState::Ready)).unwrap());
+        let st = read(&m, "a").unwrap();
+        assert_eq!(st.state, DocState::Deleted);
+        assert_eq!(st.error, None, "a bounced write leaves nothing behind");
+
+        // reviving is still possible — it just has to be deliberate, which
+        // is what the scanner does when the file comes back
+        write(&m, "a", &DocStatus::new(DocState::Queued)).unwrap();
+        assert_eq!(read(&m, "a").unwrap().state, DocState::Queued);
     }
 
     #[test]

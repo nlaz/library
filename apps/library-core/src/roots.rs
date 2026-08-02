@@ -262,6 +262,54 @@ pub fn shelf_of(relpath: &str) -> Option<&str> {
     (!rest.is_empty() && !head.is_empty()).then_some(head)
 }
 
+/// The shelf a file belongs on, which depends on the root as well as the
+/// path.
+///
+/// Inside a folder, [`shelf_of`] decides. Loose at a root's top level, the
+/// root itself names the shelf — someone who links `~/Archive/cookbooks`
+/// has already done the filing, and answering that with a heap called
+/// "Unsorted" throws away the one thing they told us. The default folder is
+/// the exception: it is the inbox, its top level is where drops land, and
+/// "unsorted" is the honest word for them.
+pub fn shelf_for(root: &crate::meta::RootRec, relpath: &str) -> Option<String> {
+    if let Some(shelf) = shelf_of(relpath) {
+        return Some(shelf.to_string());
+    }
+    if root.is_default {
+        return None;
+    }
+    root.path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+}
+
+/// Re-derive the shelf of every document this root alone holds.
+///
+/// Placement is otherwise written only when a file is added or moved, which
+/// is enough while the *path* is the only input. It isn't: the rule reads
+/// the root too, so making a folder the default (or linking one whose books
+/// were filed under an older rule) has to re-file what is already there.
+/// Runs at the end of every sync — it costs one query and writes only for
+/// documents actually on the wrong shelf.
+///
+/// Documents reachable from more than one root are left alone, for the same
+/// reason a duplicate never re-files a book: whichever copy the scan reached
+/// last would win.
+fn reshelve(meta: &crate::meta::Meta, root: &crate::meta::RootRec) {
+    let solo: std::collections::HashSet<String> =
+        meta.docs_only_in_root(&root.id).into_iter().collect();
+    for f in meta.files_in_root(&root.id) {
+        if f.missing || !solo.contains(&f.doc) {
+            continue;
+        }
+        let want = shelf_for(root, &f.relpath);
+        if meta.shelf_of_doc(&f.doc).as_deref() != want.as_deref() {
+            let kind = SourceKind::of(Path::new(&f.relpath)).unwrap_or(SourceKind::Pdf);
+            let _ = meta.set_doc_placement(&f.doc, kind.as_str(), want.as_deref());
+        }
+    }
+}
+
 /// Read a root, returning every ingestible file under it.
 ///
 /// `None` means the root could not be read — the caller must treat that as
@@ -428,7 +476,11 @@ pub fn sync_root(meta: &crate::meta::Meta, root: &crate::meta::RootRec, now: u64
                         out.queued.push(doc.clone());
                         let _ =
                             meta.put_file(&root.id, &relpath, &doc, &stat, hash.as_deref(), now);
-                        let _ = meta.set_doc_placement(&doc, kind.as_str(), shelf_of(&relpath));
+                        let _ = meta.set_doc_placement(
+                            &doc,
+                            kind.as_str(),
+                            shelf_for(root, &relpath).as_deref(),
+                        );
                     }
                 }
             }
@@ -442,7 +494,8 @@ pub fn sync_root(meta: &crate::meta::Meta, root: &crate::meta::RootRec, now: u64
                 // the shelf follows the folder, so a move between folders
                 // re-files the document without re-indexing a byte
                 let kind = SourceKind::of(Path::new(&to)).unwrap_or(SourceKind::Pdf);
-                let _ = meta.set_doc_placement(&doc, kind.as_str(), shelf_of(&to));
+                let _ =
+                    meta.set_doc_placement(&doc, kind.as_str(), shelf_for(root, &to).as_deref());
                 out.moved += 1;
             }
             Change::Edited { doc, relpath, stat } => {
@@ -471,6 +524,7 @@ pub fn sync_root(meta: &crate::meta::Meta, root: &crate::meta::RootRec, now: u64
             }
         }
     }
+    reshelve(meta, root);
     out
 }
 
@@ -747,8 +801,45 @@ mod tests {
             shelf_of("Cookbooks/Italian/marcella.pdf"),
             Some("Cookbooks")
         );
-        // a loose file has no shelf
+        // a loose file has no shelf from its path alone
         assert_eq!(shelf_of("loose.pdf"), None);
+    }
+
+    #[test]
+    fn a_linked_folder_lends_its_name_to_the_books_loose_inside_it() {
+        let linked = crate::meta::RootRec {
+            id: "r1".into(),
+            path: PathBuf::from("/Users/someone/Archive/cookbooks"),
+            is_default: false,
+            state: "watching".into(),
+            added_at: 0,
+            last_scan_at: 0,
+        };
+        // the case this exists for: nineteen books sitting at the top of a
+        // folder the user linked *because* it is called cookbooks
+        assert_eq!(
+            shelf_for(&linked, "Artusi 1891.pdf").as_deref(),
+            Some("cookbooks")
+        );
+        // a folder inside it still wins — the user's own filing is finer
+        assert_eq!(
+            shelf_for(&linked, "Italian/marcella.pdf").as_deref(),
+            Some("Italian")
+        );
+
+        // the default folder is the inbox: what lands at its top level is
+        // genuinely unfiled, and a shelf called "The Library" says nothing
+        let default = crate::meta::RootRec {
+            id: "r2".into(),
+            path: PathBuf::from("/Users/someone/The Library"),
+            is_default: true,
+            ..linked.clone()
+        };
+        assert_eq!(shelf_for(&default, "just-dropped.pdf"), None);
+        assert_eq!(
+            shelf_for(&default, "Papers/cerf74.pdf").as_deref(),
+            Some("Papers")
+        );
     }
 
     #[test]

@@ -593,6 +593,7 @@ fn worker(data: &Path) -> Result<()> {
                 return Ok(());
             }
             Outcome::Skipped => println!("skipped (another process has it): {doc}"),
+            Outcome::Cancelled => println!("cancelled (removed while ingesting): {doc}"),
             // keep going: one bad doc must not wedge the queue
             Outcome::Failed => eprintln!("failed: {doc} (its error is in the docs table)"),
         }

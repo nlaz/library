@@ -50,6 +50,26 @@ describe("displayTitle", () => {
   it("falls back to the prettified id when the title is null", () => {
     expect(displayTitle(doc({ id: "moby-dick" }))).toBe("Moby Dick");
   });
+
+  it("names an untitled book after its file, not its minted id", () => {
+    // the shelf before this read "D01713Fa82Ad0" for every book the user
+    // had not renamed by hand
+    expect(displayTitle(doc({ id: "d01713fa82ad0", name: "Artusi 1891" }))).toBe("Artusi 1891");
+    // shown verbatim: prettify is a slug rule, and these hyphens and dots
+    // belong to whoever named the file
+    expect(
+      displayTitle(doc({ id: "d0be9d5137367", name: "Julia Child - Mastering the Art" })),
+    ).toBe("Julia Child - Mastering the Art");
+    expect(
+      displayTitle(doc({ id: "d1e6b398c12bc", name: "A taste of India (z-library.sk, 1lib.sk)" })),
+    ).toBe("A taste of India (z-library.sk, 1lib.sk)");
+    // a title the user set still wins over the file it came from
+    expect(
+      displayTitle(doc({ id: "d0be9d5137367", name: "escoffier_ocr_v2", title: "Le Guide Culinaire" })),
+    ).toBe("Le Guide Culinaire");
+    // the browser build sends no name at all
+    expect(displayTitle(doc({ id: "moby-dick", name: null }))).toBe("Moby Dick");
+  });
 });
 
 describe("docTitle", () => {

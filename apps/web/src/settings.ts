@@ -10,6 +10,7 @@
 // organization has no way to tell us about it.
 // ---------------------------------------------------------------------------
 
+import { loadCollections, renderHome } from "./home";
 import { desktop } from "./state";
 import {
   type RootInfo,
@@ -110,9 +111,17 @@ function rootEl(row: RootRow, onChange: () => void): HTMLElement {
   return el;
 }
 
+/// Linking or unlinking a folder changes which books exist, and the shelves
+/// behind this sheet are still showing the old set — closing Settings to
+/// find a folder you removed still sitting there reads as a failed removal.
+async function changed() {
+  await render();
+  await renderHome(await loadCollections());
+}
+
 async function render() {
   if (!desktop) return;
-  const reload = () => void render();
+  const reload = () => void changed();
 
   let roots: RootInfo[] = [];
   try {

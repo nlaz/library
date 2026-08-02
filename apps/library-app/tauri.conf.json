@@ -40,5 +40,13 @@
     "macOS": {
       "minimumSystemVersion": "14.0"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENCOTU3RkU3MkZEOURGQzYKUldURzM5a3Y1MytWeTBLZ2FIOWxoRUNmVzBoMzQxS3IvS2RQL2ZWcmFaWmF6dkR5VTFzNS9CM3QK",
+      "endpoints": [
+        "https://github.com/nlaz/library/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

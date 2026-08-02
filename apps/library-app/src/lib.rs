@@ -19,9 +19,11 @@ mod docs;
 mod engine;
 mod ingest;
 mod marginalia;
+mod prefs;
 mod roots;
 mod serve;
 mod settings;
+mod update;
 mod watch;
 
 use std::sync::{RwLock, mpsc};
@@ -41,6 +43,10 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        // registered for its Rust API only — update.rs drives the check and
+        // the install, and the webview is deliberately not given the
+        // plugin's commands (see capabilities/default.json)
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .register_asynchronous_uri_scheme_protocol("pages", |ctx, request, responder| {
             let data = ctx.app_handle().state::<AppState>().settings.data.clone();
             // a search response can carry ~20-26 hits, each firing a page-image
@@ -113,6 +119,12 @@ pub fn run() {
             roots::storage_use,
             settings::get_settings,
             settings::set_settings,
+            prefs::get_pref,
+            prefs::set_pref,
+            update::updates_supported,
+            update::check_update,
+            update::install_update,
+            update::restart_app,
             chat::chat_turn,
             chat::chat_cancel,
             chat::chat_status,

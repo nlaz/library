@@ -171,6 +171,20 @@ changes go in their own commit so review diffs stay readable.
   launchd would otherwise keep waking it every 15 minutes forever. Don't
   delete that cleanup until well past the point where 0.1.x installs are
   plausible.
+- **The updater's signing key is unrecoverable.** `plugins.updater.pubkey`
+  in `tauri.conf.json` is compiled into every copy that ships; an update
+  is only installed if the `.app.tar.gz` carries a minisign signature made
+  by the matching private key (`~/.tauri/thelibrary.key`, password in the
+  keychain). Lose it and no installed copy can ever be updated again —
+  every user would have to download a new build by hand. Rotating it only
+  helps copies installed *after* the rotation. Note this is Tauri's
+  signature, entirely separate from Apple's codesigning identity;
+  `release.sh` applies both, for different checks.
+- Verify the update tarball before publishing — `scripts/verify-update.sh`.
+  The updater unpacks it over a running bundle and Gatekeeper judges the
+  result on next launch, so a signature or notarization ticket lost in
+  `tar` produces an app macOS refuses to open and no way back but a manual
+  download.
 - `tauri.conf.json`'s `minimumSystemVersion` is not just `Info.plist`:
   `cargo tauri build` also exports it as `MACOSX_DEPLOYMENT_TARGET`, so it
   sets the `library-app` binary's `LC_BUILD_VERSION minos` too (check with

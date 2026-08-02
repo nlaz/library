@@ -1,55 +1,87 @@
 /* ---------------------------------------------------------------------------
-   Settings (⌘S): the shortcut sheet's twin, deliberately. These are the two
-   surfaces you open *about* the app rather than to work in it, and reading
-   as one kind of thing is worth more than either one being distinctive.
+   Settings (⌘S): a page under the app's one header, not a sheet over it.
 
-   Sits at the same level as the keys sheet (14): both are modal, and they
-   are never open at once — Escape closes this one first, so it must also
-   paint above. */
+   It is built like the note ledger and borrows that surface's crumbs
+   (.nb-crumb, §17) on purpose — they are the same gesture, and a second
+   crumb style would only be a slightly different one. The rail follows
+   .docitem's rule too: what you are reading is marked with weight and ink,
+   never a fill or a rule. */
 
 #settings {
-  position: fixed;
-  inset: 0;
-  z-index: 14;
-  display: grid;
-  place-items: center;
-  padding: var(--sp-4);
-  background: color-mix(in srgb, var(--ink) 42%, transparent);
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  --divot-ground: var(--bg);
+  background: var(--divot-ground);
 }
 
 #settings[hidden] {
   display: none;
 }
 
-#settings-card {
-  --divot-ground: var(--surface);
-  background: var(--divot-ground);
-  border: 1px solid;
-  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
-  max-width: 640px;
-  width: 100%;
-  max-height: 100%;
-  display: flex;
-  flex-direction: column;
+#settings-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 clamp(16px, 5vw, 64px) 80px;
 }
 
-#settings-head {
+.st-crumbs {
+  margin: 22px 0 0;
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--line-strong);
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
+  align-items: baseline;
+}
+
+/* the empty third track mirrors the rail so track 2 — and the sections
+   inside it — land on true page center, not right of it */
+.st-content {
+  margin: 18px 0 0;
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr) 224px;
+  gap: 0 44px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .st-content {
+    grid-template-columns: 224px minmax(0, 1fr);
+  }
+}
+
+/* sticky rather than fixed: it accompanies the page instead of framing it,
+   and `align-items: start` above is what lets it stick at all */
+.st-rail {
+  position: sticky;
+  top: 18px;
+  padding-top: 26px; /* optically aligns with the first section heading */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.st-railitem {
+  font-size: var(--fs-ui);
+  color: var(--ink-faint);
+  text-align: left;
+  padding: 6px 0;
+}
+
+.st-railitem:hover {
   color: var(--ink-dim);
 }
 
-#settings-body {
-  overflow-y: auto;
-  padding: var(--sp-3);
+.st-railitem.sel {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.st-panes {
+  padding-top: 26px;
+  min-width: 0;
   display: grid;
-  gap: var(--sp-4);
+  gap: var(--sp-5);
 }
 
 #settings-body h3 {
@@ -117,11 +149,76 @@
   padding: 0.25rem var(--sp-2);
 }
 
+/* a setting and its control on one line: the name reads as the row, the
+   button sits at the far edge where every other action on this page is */
+.srow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.srow b {
+  font-weight: 500;
+}
+
+/* wide enough that "on" and "off" don't change the row's geometry when
+   they swap — a control that resizes as you press it reads as a glitch */
+.stoggle {
+  min-width: 4.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  padding: 0.15rem var(--sp-2);
+}
+
 .snote {
   margin: var(--sp-2) 0 0;
   font-size: var(--fs-meta);
   color: var(--ink-dim);
   max-width: 46ch;
+}
+
+/* an explanation, not an error: something this Mac can't do, said once and
+   marked by a rule rather than a colour, which greyscale would lose */
+.swarn {
+  border-left: 2px solid var(--line-strong);
+  padding-left: var(--sp-2);
+}
+
+/* --- about --------------------------------------------------------------- */
+
+.sver {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
+}
+
+.sprogress {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* the divot's groove, holding something. The walls are the same two edges
+   cut the same way round, so the fill reads as sitting in the page rather
+   than on it. */
+.sbar {
+  width: 14rem;
+  max-width: 100%;
+  height: 6px;
+  background: var(--well);
+  border: 1px solid;
+  border-color: var(--edge-lo) var(--edge-hi) var(--edge-hi) var(--edge-lo);
+}
+
+.sbar i {
+  display: block;
+  height: 100%;
+  background: var(--ink-dim);
+  transition: width 120ms linear;
 }
 
 .sstorage {

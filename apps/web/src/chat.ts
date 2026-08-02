@@ -120,22 +120,53 @@ document.addEventListener("keydown", (e) => {
   close();
 });
 
-let chatDisabledReason: string | null = null;
+// There are two ways the librarian can be absent, and telling them apart
+// is the whole of what Settings shows: this Mac cannot run it (nothing to
+// decide) or you have not asked for it (one thing to decide). `supported`
+// is settled once at startup by the Apple Foundation Models probe;
+// `wanted` is a preference and changes while the app runs.
+let supported = true;
+let unsupportedReason: string | null = null;
+let wanted = false;
 
-/** Take the librarian off the chrome entirely: this Mac has no on-device
- * model, so a chat button is an invitation to a dead end. The reason is
- * kept for the shortcut sheet, which explains the absence rather than
- * leaving a hole where a feature used to be. */
+/** This Mac has no on-device model, so the librarian is not on offer here
+ * at all — a chat button would be an invitation to a dead end.
+ *
+ * The button and panel are hidden rather than removed. Settings has to be
+ * able to describe a feature it cannot turn on, and a node that has been
+ * deleted can neither be described nor restored if the probe was wrong.
+ * The reason is kept for Settings and the shortcut sheet, which explain
+ * the absence rather than leaving a hole where a feature used to be. */
 export function disableChat(reason: string | null) {
-  close();
-  $toggle.remove();
-  $panel.remove();
-  chatDisabledReason = reason;
+  supported = false;
+  unsupportedReason = reason;
+  apply();
+}
+
+/** Whether the librarian is offered — the Settings toggle, mirrored from
+ * meta.db at startup. A Mac that can't run it overrides this. */
+export function setChatEnabled(on: boolean) {
+  wanted = on;
+  apply();
+}
+
+export function chatEnabled(): boolean {
+  return wanted;
+}
+
+export function chatSupported(): boolean {
+  return supported;
 }
 
 /** Null while the librarian is available. */
 export function chatUnavailableReason(): string | null {
-  return chatDisabledReason;
+  return supported ? null : unsupportedReason;
+}
+
+function apply() {
+  const on = supported && wanted;
+  $toggle.hidden = !on;
+  if (!on) close();
 }
 
 function persist() {

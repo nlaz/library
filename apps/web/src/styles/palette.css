@@ -1,0 +1,202 @@
+/* ---------------------------------------------------------------------------
+   the card catalog (⌘K): a scrim and one card, in the same family as the
+   shortcut sheet — the two are read *about* the surface you were on and then
+   dismissed, which is why both dim what is behind them when no other layer
+   here does.
+
+   It differs from #keys in one way, and deliberately: the card is pinned near
+   the top of the viewport rather than centred. The list grows and shrinks
+   with every keystroke, and a centred card would walk the input up and down
+   the screen under the user's hands.
+
+   z-index 16 — above the perf view (15), which owns the top of the key stack
+   everywhere else. The catalog opens from over perf, so it paints over it. */
+
+#palette {
+  position: fixed;
+  inset: 0;
+  z-index: 16;
+  display: grid;
+  grid-template-rows: minmax(var(--sp-5), 11vh) auto 1fr;
+  justify-items: center;
+  padding: var(--sp-4);
+  background: color-mix(in srgb, var(--ink) 42%, transparent);
+}
+
+#palette[hidden] {
+  display: none;
+}
+
+#pal-card {
+  grid-row: 2;
+  --divot-ground: var(--surface);
+  background: var(--divot-ground);
+  border: 1px solid;
+  border-color: var(--edge-hi) var(--edge-lo) var(--edge-lo) var(--edge-hi);
+  width: 100%;
+  max-width: 560px;
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+}
+
+#pal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
+}
+
+/* --- the field ----------------------------------------------------------- */
+
+#pal-field {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+
+#pal-caret {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--hl-line);
+}
+
+#pal-q {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--fs-title);
+}
+
+#pal-q:focus {
+  outline: none; /* the card is the focus ring; a second one inside it is noise */
+}
+
+#pal-q::placeholder {
+  color: var(--ink-faint);
+}
+
+/* --- the list ------------------------------------------------------------ */
+
+#pal-list {
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--sp-1) 0;
+  list-style: none;
+  overscroll-behavior: contain;
+}
+
+.pal-group {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--track-label);
+  color: var(--ink-faint);
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+}
+
+.pal-group:not(:first-child) {
+  border-top: 1px solid var(--line);
+  margin-top: var(--sp-1);
+}
+
+.pal-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-body);
+  color: var(--ink);
+  cursor: default;
+}
+
+/* the selected row, whether it got there by arrow key or by pointer: one
+   state, so the keyboard and the mouse can never both look current */
+.pal-row.on {
+  background: var(--hl-wash);
+  box-shadow: inset 2px 0 0 var(--hl-line);
+}
+
+.pal-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* why this row is in the list. Weight rather than colour: the accent is the
+   highlighter and it is already spent on the selection above. */
+.pal-label mark {
+  background: none;
+  color: inherit;
+  font-weight: 700;
+}
+
+.pal-meta {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
+}
+
+.pal-row kbd {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--well);
+  padding: 0 3px;
+  color: var(--ink-dim);
+}
+
+/* a row that goes somewhere rather than doing something. Fainter than a real
+   chord: ⇥ is an affordance of this box, not a shortcut worth learning. */
+.pal-row kbd.pal-drill {
+  background: none;
+  border-color: transparent;
+  color: var(--ink-faint);
+}
+
+/* the breadcrumb grows as you drill; it must not push the ✕ off the card */
+#pal-crumb {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- the footer ----------------------------------------------------------
+   Worth the space here in a way it would not be in most apps: the chrome is
+   bare on purpose, so this is one of the few places the vocabulary gets
+   taught while it is being used. */
+
+#pal-foot {
+  display: flex;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+}
+
+#pal-foot kbd {
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--well);
+  padding: 0 3px;
+  margin-right: 2px;
+  color: var(--ink-dim);
+}

@@ -38,6 +38,15 @@ export function originLabel(fallback = "library"): string {
   return o ? navLabel(o, docTitle) : fallback;
 }
 
+/** The surfaces behind this one, nearest first, without consuming any of
+ * them — what the card catalog offers before anything has been typed.
+ *
+ * A copy, deliberately: the trail is this module's, and a caller that could
+ * hold a reference to it could reorder someone's way back. */
+export function recentTrail(): string[] {
+  return [...trail].reverse();
+}
+
 /** Take the origin off the trail; the caller navigates (with returnTo).
  * Consuming and navigating are separate because leaving a surface is not
  * always going back to it — the sheet's "keep" files the note in the

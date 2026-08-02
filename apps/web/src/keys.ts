@@ -57,6 +57,7 @@ const GROUPS: Group[] = [
   {
     title: "Views",
     rows: [
+      ["⌘K", "The card catalog — any book, shelf, note, or command by name"],
       ["⌘S", "Settings — your folders, the librarian, and updates"],
       ["⌘.", "Performance — 1 / 2 / 3 / 4 pick a section"],
       ["⌘/", "Corpus atlas"],
@@ -65,6 +66,18 @@ const GROUPS: Group[] = [
     ],
   },
 ];
+
+/** Every key this sheet documents, as written on it.
+ *
+ * The list above stays hand-written on purpose. Only a handful of these rows
+ * are card-catalog commands; the rest are keys no registry could know about —
+ * the reader's scroll keys, `[[`, the Escape ladders — and the prose here is
+ * richer than a command label wants to be. So the sheet is not generated from
+ * the registry; it is *checked* against it (keys-dom.test.ts), which buys the
+ * same guarantee against drift without pretending one file is the other. */
+export function documentedKeys(): string[] {
+  return GROUPS.flatMap((g) => g.rows.map(([keys]) => keys));
+}
 
 const $sheet = document.getElementById("keys")!;
 const $body = document.getElementById("keys-body")!;

@@ -11,12 +11,13 @@ function walk(...hashes: string[]): string[] {
 }
 
 describe("surfaceOf", () => {
-  it("reads the four surfaces", () => {
+  it("reads the five surfaces", () => {
     expect(surfaceOf("#/").kind).toBe("library");
     expect(surfaceOf("#/read/kant?p=12").kind).toBe("read");
     expect(surfaceOf("#/notes?card=7").kind).toBe("notes");
     expect(surfaceOf("#/notes/new").kind).toBe("sheet");
     expect(surfaceOf("#/notes/edit?card=7").kind).toBe("sheet");
+    expect(surfaceOf("#/settings").kind).toBe("settings");
   });
 
   it("keys a book by its doc, decoded", () => {
@@ -48,6 +49,12 @@ describe("pushNav", () => {
     expect(walk("#/", "#/read/kant", "#/notes", "#/read/kant")).toEqual(["#/"]);
   });
 
+  it("remembers the book you opened settings from", () => {
+    // ⌘S is reachable from anywhere, and ← out of it must not always be
+    // the shelves — that was the whole reason this module exists
+    expect(walk("#/", "#/read/kant", "#/settings")).toEqual(["#/", "#/read/kant"]);
+  });
+
   it("bounds the trail", () => {
     const hops = ["#/"];
     for (let i = 0; i < 40; i++) hops.push(`#/read/book-${i}`);
@@ -72,6 +79,7 @@ describe("navLabel", () => {
   it("names each surface the way a button would", () => {
     expect(navLabel("#/", title)).toBe("library");
     expect(navLabel("#/notes?card=7", title)).toBe("notes");
+    expect(navLabel("#/settings", title)).toBe("settings");
     expect(navLabel("#/read/kant?p=3", title)).toBe("Critique of Pure Reason");
   });
 

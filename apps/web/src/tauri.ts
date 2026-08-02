@@ -2,6 +2,7 @@
 // Only imported when running inside Tauri — keep every @tauri-apps import in
 // this module so the plain web build never touches them.
 
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir as homeDirPath } from "@tauri-apps/api/path";
@@ -152,6 +153,78 @@ export type AppSettings = { data: string; width: number };
 
 export function getSettings(): Promise<AppSettings> {
   return invoke<AppSettings>("get_settings");
+}
+
+// --- preferences -------------------------------------------------------------
+// meta.db's key-value settings table, not settings.json. The distinction is
+// load-bearing: settings.json is bootstrap (where the data lives) and is
+// parsed before the app can open anything; these are choices a running app
+// changes about itself.
+//
+// The table stores strings. Booleans live here, in the one place that both
+// writes and reads them, rather than as a convention Rust also has to know.
+
+function getPref(key: string): Promise<string | null> {
+  return invoke<string | null>("get_pref", { key });
+}
+
+function setPref(key: string, value: string): Promise<void> {
+  return invoke("set_pref", { key, value });
+}
+
+/** A stored flag. Anything but "1" is false — including the nothing a
+ * fresh library has, and including a value we didn't write. Something
+ * unreadable must read as off rather than as an error. */
+export function getFlag(key: string): Promise<boolean> {
+  return getPref(key).then((v) => v === "1");
+}
+
+export function setFlag(key: string, on: boolean): Promise<void> {
+  return setPref(key, on ? "1" : "0");
+}
+
+/** Whether the librarian is offered. Unset reads as off — the chat panel
+ * is something you ask for, not something you dismiss. */
+export const CHAT_ENABLED = "chat.enabled";
+
+// --- updates -----------------------------------------------------------------
+// Checks are manual: nothing below runs unless someone presses the button in
+// Settings. The work happens in Rust (update.rs), which is why none of the
+// updater plugin's own commands are reachable from here.
+
+export type Release = { version: string; notes: string | null };
+
+/** False in a dev build, which runs from target/debug and has no bundle to
+ * replace. */
+export function updatesSupported(): Promise<boolean> {
+  return invoke<boolean>("updates_supported");
+}
+
+/** Null when this is already the newest build. Rejects if the question
+ * couldn't be asked — "up to date" must never stand in for "no answer". */
+export function checkUpdate(): Promise<Release | null> {
+  return invoke<Release | null>("check_update");
+}
+
+/** Download, verify and swap the bundle in place. Does not restart. */
+export function installUpdate(): Promise<void> {
+  return invoke("install_update");
+}
+
+export type UpdateProgress = { downloaded: number; total: number | null };
+
+export function onUpdateProgress(cb: (p: UpdateProgress) => void): void {
+  listen<UpdateProgress>("update:progress", (e) => cb(e.payload));
+}
+
+/** Quit and come back as the version just installed. */
+export function restartApp(): void {
+  invoke("restart_app").catch(() => {});
+}
+
+/** The running bundle's version, from tauri.conf.json by way of Info.plist. */
+export function appVersion(): Promise<string> {
+  return getVersion();
 }
 
 /** Set (empty string clears) a doc's display title. */

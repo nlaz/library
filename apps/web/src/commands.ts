@@ -21,7 +21,7 @@ import { keysOpen, toggleKeys } from "./keys";
 import { notesOpen } from "./notebox";
 import { perfOpen, togglePerf } from "./perf";
 import { readerOpen } from "./reader";
-import { openSettings, settingsOpen } from "./settings";
+import { settingsOpen } from "./settings";
 import { startCreate } from "./sheet";
 import { desktop } from "./state";
 import { openSearchPop } from "./viewer";
@@ -91,7 +91,7 @@ export function allCommands(): Cmd[] {
       id: "library",
       label: "Back to the library",
       group: "commands",
-      when: () => readerOpen() || notesOpen(),
+      when: () => readerOpen() || notesOpen() || settingsOpen(),
       run: () => go("#/"),
     },
     {
@@ -101,7 +101,7 @@ export function allCommands(): Cmd[] {
       chord: "⌘S",
       host: () => !!desktop,
       when: () => !settingsOpen(),
-      run: () => void openSettings(),
+      run: () => go("#/settings"),
     },
     {
       id: "atlas",

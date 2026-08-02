@@ -5,14 +5,15 @@
 // search.
 
 import { atlasOpen, dismissAtlasSelection, toggleAtlas } from "./atlas";
-import { disableChat, initChat } from "./chat";
+import { disableChat, initChat, setChatEnabled } from "./chat";
 import { $cols, $q, $searchNav, setPressed } from "./dom";
 import { closeDrawer, initDrawer } from "./drawer";
 import { docTitle, getDocList, prettify, setDocList } from "./format";
 import { getCol, loadCollections, renderHome, setCol } from "./home";
 import { wireDesktop } from "./ingest-ui";
 import { closeKeys, keysOpen, toggleKeys } from "./keys";
-import { closeSettings, settingsOpen, toggleSettings } from "./settings";
+import { returnTo } from "./nav";
+import { closeSettings, openSettings, toggleSettings } from "./settings";
 import { initLaunch } from "./launch";
 import { closeNotes, notesOpen, openNotes, rerenderNotes } from "./notebox";
 import { initPalette, paletteOpen } from "./palette";
@@ -26,32 +27,45 @@ import { isTauri, makeTransport } from "./transport";
 
 // ---------------------------------------------------------------------------
 // routing: #/ = home (shelves) or search results; #/read/<doc>?p=N = reader;
-// #/notes = the ledger; #/notes/new|edit = the sheet
+// #/notes = the ledger; #/notes/new|edit = the sheet; #/settings = settings
 // ---------------------------------------------------------------------------
 
 async function route() {
   const m = location.hash.match(/^#\/read\/([^?]+)(?:\?p=(\d+))?$/);
   const nm = location.hash.match(/^#\/notes(?:\?card=([^&]+))?$/);
   const sm = location.hash.match(/^#\/notes\/(new|edit)(?:\?card=([^&]+))?$/);
+  const gm = /^#\/settings/.test(location.hash);
   closeDrawer(); // drawer is per-doc; any navigation invalidates it
   if (m) {
     closeNotes();
     closeSheet();
+    closeSettings();
     const doc = decodeURIComponent(m[1]);
     // no explicit ?p= -> the reader resumes the remembered position
     openReader(doc, await pagesOf(doc), m[2] ? Number(m[2]) : undefined, docTitle(doc));
   } else if (sm) {
     closeReader();
     closeNotes();
+    closeSettings();
     await openSheet(sm[1] as "new" | "edit", sm[2] ? decodeURIComponent(sm[2]) : null);
   } else if (nm) {
     closeReader();
     closeSheet();
+    closeSettings();
     await openNotes(nm[1] ? decodeURIComponent(nm[1]) : null);
+  } else if (gm) {
+    // a deep link to a page the browser build doesn't have: go home rather
+    // than sit on a hash that renders nothing
+    if (!desktop) return returnTo("#/");
+    closeReader();
+    closeNotes();
+    closeSheet();
+    await openSettings();
   } else {
     closeReader();
     closeNotes();
     closeSheet();
+    closeSettings();
   }
   // crossing the library/reader boundary re-scopes the query: in-flight
   // answers for the old scope are dropped by seq, this refreshes the new one
@@ -109,10 +123,6 @@ window.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       toggleKeys();
-    } else if (e.key === "Escape" && settingsOpen()) {
-      e.preventDefault();
-      e.stopPropagation();
-      closeSettings();
     } else if (e.key === "Escape" && keysOpen()) {
       // the sheet is modal: it closes before any layer it was opened over
       e.preventDefault();
@@ -215,21 +225,28 @@ async function main() {
     desktop: desktop ? { turn: desktop.chatTurn, cancel: desktop.chatCancel } : null,
   });
 
-  // The librarian needs Apple Foundation Models. Where they're absent —
-  // Apple Intelligence off, or a Mac that can't run it — the chat button
-  // comes off the header rather than standing there as a dead end. Awaited
-  // before the chrome settles: a button that appears and then vanishes is
-  // worse than one that was never there.
+  // The librarian needs Apple Foundation Models *and* to have been asked
+  // for. Where the models are absent — Apple Intelligence off, or a Mac
+  // that can't run it — the chat button stays off the header rather than
+  // standing there as a dead end; where they're present but the preference
+  // is unset, it is simply off, which is the default. Awaited before the
+  // chrome settles: a button that appears and then vanishes is worse than
+  // one that was never there.
   //
   // The probe spawns a process, so it is raced against a deadline and any
   // failure resolves to "available". Startup must never hang on a question
   // about a side panel, and a dead end is a better outcome than no library.
   if (desktop) {
-    const chat = await Promise.race([
-      desktop.chatStatus().catch(() => AVAILABLE),
-      new Promise<typeof AVAILABLE>((r) => setTimeout(() => r(AVAILABLE), 3000)),
+    const d = desktop;
+    const [chat, pref] = await Promise.all([
+      Promise.race([
+        d.chatStatus().catch(() => AVAILABLE),
+        new Promise<typeof AVAILABLE>((r) => setTimeout(() => r(AVAILABLE), 3000)),
+      ]),
+      d.getFlag(d.CHAT_ENABLED).catch(() => false),
     ]);
     if (!chat.available) disableChat(chat.reason);
+    setChatEnabled(pref);
   }
 
   initDrawer({

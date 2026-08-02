@@ -231,6 +231,37 @@
         <div id="settings-body"></div>
       </div>
     </div>
+    <!-- the card catalog (⌘K). Last of the layers and the topmost: it has to
+         open from over any of them, so it has to paint over them too. -->
+    <div id="palette" hidden>
+      <div id="pal-card" role="dialog" aria-modal="true" aria-label="Card catalog">
+        <div id="pal-head">
+          <span id="pal-crumb">card catalog</span>
+          <button id="pal-close" class="divot" title="Close (Esc)">✕</button>
+        </div>
+        <div id="pal-field">
+          <span id="pal-caret" aria-hidden="true">▸</span>
+          <input
+            id="pal-q"
+            type="text"
+            placeholder="a book, a shelf, a note, or a command…"
+            autocomplete="off"
+            spellcheck="false"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="pal-list"
+            aria-autocomplete="list"
+          />
+        </div>
+        <ul id="pal-list" role="listbox" aria-label="Catalog"></ul>
+        <div id="pal-foot">
+          <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+          <span><kbd>⏎</kbd> open</span>
+          <span><kbd>⇥</kbd> drill in</span>
+          <span><kbd>esc</kbd> back</span>
+        </div>
+      </div>
+    </div>
     <div id="toast" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

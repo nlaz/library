@@ -15,6 +15,7 @@ import { closeKeys, keysOpen, toggleKeys } from "./keys";
 import { closeSettings, settingsOpen, toggleSettings } from "./settings";
 import { initLaunch } from "./launch";
 import { closeNotes, notesOpen, openNotes, rerenderNotes } from "./notebox";
+import { initPalette, paletteOpen } from "./palette";
 import { closeSheet, openSheet, sheetOpen, startCreate } from "./sheet";
 import { dismissPerfPopover, perfOpen, setPerfTab, togglePerf } from "./perf";
 import { closeReader, openReader, readerDoc, readerOpen } from "./reader";
@@ -78,6 +79,10 @@ async function pagesOf(id: string): Promise<number> {
 // window + capture phase: the perf view sits above every other layer, so its
 // keys must run before all the document-level handlers elsewhere (and before
 // inputs' stopPropagation). Cmd+. toggles; Escape closes exactly this layer.
+//
+// One layer outranks even this one: the card catalog registers its own
+// window-capture listener from palette.ts, which the import above puts in
+// place before this one. See the note there.
 window.addEventListener(
   "keydown",
   (e) => {
@@ -141,13 +146,42 @@ window.addEventListener(
 // never over the perf/atlas layers, and never while writing somewhere
 document.addEventListener("keydown", (e) => {
   if (e.key !== "c" || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (sheetOpen() || perfOpen() || atlasOpen()) return;
+  if (sheetOpen() || perfOpen() || atlasOpen() || paletteOpen()) return;
   const t = e.target as HTMLElement | null;
   if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t?.isContentEditable)
     return;
   e.preventDefault();
   startCreate();
 });
+
+/** Apply a collection filter and put every surface that scopes by it back in
+ * agreement: the header tabs, and then whichever of the ledger, the results
+ * grid or the shelves is the one on screen.
+ *
+ * Module scope rather than inside main(), because the header tabs are no
+ * longer the only way to do this — the card catalog's shelf rows are the same
+ * act by another route, and two implementations of it would drift. */
+function chooseCol(col: string) {
+  setCol(col);
+  for (const b of $cols.children) {
+    setPressed(b, (b as HTMLElement).dataset.col === col && col !== "");
+  }
+  if (notesOpen()) rerenderNotes(); // the tabs scope the ledger too
+  else if ($q.value.trim()) sendQuery();
+  else renderHome();
+}
+
+/** Repaint after a book is renamed, reshelved or removed. Shared by the
+ * reader's drawer and the card catalog, which offer the same edits. */
+async function docChanged(id: string) {
+  await renderHome(await loadCollections());
+  // a rename must show in the reader chrome immediately
+  if (readerDoc() === id) {
+    document.getElementById("reader-title")!.textContent = docTitle(id);
+  }
+}
+
+initPalette({ chooseCol, onDocChanged: docChanged });
 
 /** The assumption when the librarian probe fails or is slow: show the chat. */
 const AVAILABLE: { available: boolean; reason: string | null } = {
@@ -221,13 +255,7 @@ async function main() {
     edit: desktop ? { setTitle: desktop.setTitle, moveToShelf: desktop.moveToShelf } : null,
     // the web build has no filesystem to reveal the original in
     reveal: desktop ? desktop.revealDoc : null,
-    onChanged: async (id) => {
-      await renderHome(await loadCollections());
-      // a rename must show in the reader chrome immediately
-      if (readerDoc() === id) {
-        document.getElementById("reader-title")!.textContent = docTitle(id);
-      }
-    },
+    onChanged: docChanged,
     onError: (msg) => notify(msg, { sticky: true }),
   });
 
@@ -240,11 +268,7 @@ async function main() {
     const btn = (e.target as HTMLElement).closest("button");
     if (!btn) return;
     // no "Everything" tab: clicking the active collection again clears it
-    setCol(getCol() === btn.dataset.col ? "" : btn.dataset.col!);
-    for (const b of $cols.children) setPressed(b, b === btn && getCol() !== "");
-    if (notesOpen()) rerenderNotes(); // the tabs scope the ledger too
-    else if ($q.value.trim()) sendQuery();
-    else renderHome();
+    chooseCol(getCol() === btn.dataset.col ? "" : btn.dataset.col!);
   });
 }
 

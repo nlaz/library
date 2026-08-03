@@ -32,11 +32,12 @@ export function prettify(id: string): string {
  * untitled book on the shelf into `D01713FA82AD0`. The filename was in the
  * database the whole time; it just wasn't asked for.
  *
- * The name is shown verbatim. `prettify` is a rule for *slugs* — it reads
- * hyphens as word separators — and a real filename's hyphens belong to
- * whoever typed them: it would turn `z-library.sk` into `z Library.sk` and
- * `Julia Child - Mastering…` into a gap. Only the id, which really is a
- * slug when it is an old one, gets prettified. */
+ * The name is shown verbatim, because it arrives already cleaned:
+ * `library-core::naming` drops the download tags and expands the slugs, and
+ * it is the side that knows a filename from a slug. `prettify` here is only
+ * the *slug* rule — it reads every hyphen as a word separator, which is
+ * right for an old id and wrong for a filename (`Julia Child - Mastering…`
+ * would go to a gap), so it is applied to the id and nothing else. */
 export function displayTitle(d: DocInfo): string {
   return d.title ?? d.name ?? prettify(d.id);
 }

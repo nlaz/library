@@ -7,6 +7,7 @@ pub mod atlas;
 pub mod images;
 pub mod legibility;
 pub mod meta;
+pub mod naming;
 pub mod notes;
 pub mod perf;
 pub mod rank;

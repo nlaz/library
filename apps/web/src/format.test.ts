@@ -55,14 +55,16 @@ describe("displayTitle", () => {
     // the shelf before this read "D01713Fa82Ad0" for every book the user
     // had not renamed by hand
     expect(displayTitle(doc({ id: "d01713fa82ad0", name: "Artusi 1891" }))).toBe("Artusi 1891");
-    // shown verbatim: prettify is a slug rule, and these hyphens and dots
-    // belong to whoever named the file
+    // shown verbatim: prettify is a slug rule, and these hyphens belong to
+    // whoever named the file
     expect(
       displayTitle(doc({ id: "d0be9d5137367", name: "Julia Child - Mastering the Art" })),
     ).toBe("Julia Child - Mastering the Art");
-    expect(
-      displayTitle(doc({ id: "d1e6b398c12bc", name: "A taste of India (z-library.sk, 1lib.sk)" })),
-    ).toBe("A taste of India (z-library.sk, 1lib.sk)");
+    // the download tag came off in library-core::naming, before the name
+    // ever reached the browser — this side does not second-guess it
+    expect(displayTitle(doc({ id: "d1e6b398c12bc", name: "A taste of India" }))).toBe(
+      "A taste of India",
+    );
     // a title the user set still wins over the file it came from
     expect(
       displayTitle(doc({ id: "d0be9d5137367", name: "escoffier_ocr_v2", title: "Le Guide Culinaire" })),

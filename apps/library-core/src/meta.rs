@@ -45,18 +45,6 @@ fn sql_err(e: rusqlite::Error) -> io::Error {
     io::Error::other(format!("meta.db: {e}"))
 }
 
-/// The part of a relative path a person would call the file's name.
-///
-/// Deliberately the platform's own rule (`Path::file_stem`), extension
-/// splitting and all — a book called `Vol.2` losing its `.2` is a smaller
-/// wrong than every `.pdf` in the library showing up on screen.
-fn file_stem(relpath: &str) -> String {
-    Path::new(relpath)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| relpath.to_string())
-}
-
 fn json_str(s: String) -> serde_json::Value {
     serde_json::Value::String(s)
 }
@@ -514,7 +502,7 @@ impl Meta {
     // --- titles -------------------------------------------------------------
 
     /// `doc id -> what a person would call its file`: the last path
-    /// component, without the extension.
+    /// component, cleaned by [`crate::naming`].
     ///
     /// The display fallback, and the reason it has to exist: document ids
     /// are minted now, opaque by design so that renaming a file in Finder
@@ -522,6 +510,9 @@ impl Meta {
     /// which meant "prettify the id" was a decent name for an untitled
     /// book. It isn't any more — it reads `D01713FA82AD0` — and the file
     /// name is the thing the user actually recognises.
+    ///
+    /// Derived on read rather than stored, so a better naming rule improves
+    /// every library that already exists without a migration.
     ///
     /// Missing files still count. A document whose file went away keeps its
     /// name until something replaces it; falling back to the id there would
@@ -535,7 +526,8 @@ impl Meta {
             let mut out: BTreeMap<String, String> = BTreeMap::new();
             for row in rows {
                 let (doc, relpath) = row?;
-                out.entry(doc).or_insert_with(|| file_stem(&relpath));
+                out.entry(doc)
+                    .or_insert_with(|| crate::naming::from_path(&relpath));
             }
             Ok(out)
         })
@@ -860,8 +852,8 @@ mod tests {
         };
         m.put_file(&r.id, "Artusi 1891.pdf", "d1", &stat, None, 1)
             .unwrap();
-        // the extension goes, the dots inside the name stay — z-library
-        // filenames are full of them
+        // the extension goes and so does the download tag — the naming
+        // rules themselves are tested in `crate::naming`
         m.put_file(
             &r.id,
             "cookbooks/Il Cucchiaio (z-library.sk, 1lib.sk).pdf",
@@ -872,15 +864,15 @@ mod tests {
         )
         .unwrap();
         // a book in two folders under two names: one answer, deterministically
-        m.put_file(&r.id, "zzz-late.pdf", "d3", &stat, None, 1)
+        m.put_file(&r.id, "zzz-late-edition.pdf", "d3", &stat, None, 1)
             .unwrap();
-        m.put_file(&r.id, "aaa-early.pdf", "d3", &stat, None, 1)
+        m.put_file(&r.id, "aaa-early-edition.pdf", "d3", &stat, None, 1)
             .unwrap();
 
         let names = m.file_names();
         assert_eq!(names["d1"], "Artusi 1891");
-        assert_eq!(names["d2"], "Il Cucchiaio (z-library.sk, 1lib.sk)");
-        assert_eq!(names["d3"], "aaa-early");
+        assert_eq!(names["d2"], "Il Cucchiaio");
+        assert_eq!(names["d3"], "Aaa Early Edition");
         assert!(!names.contains_key("d-never-seen"));
 
         // a file that went away keeps naming its document — an unreadable

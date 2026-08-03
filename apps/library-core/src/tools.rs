@@ -102,27 +102,17 @@ fn read_titles(ctx: &Ctx) -> std::collections::BTreeMap<String, String> {
     ctx.titles()
 }
 
-/// Human-readable title derived from a doc id, for docs missing from
-/// a stored title. Download filenames often carry the title before a
-/// parenthetical tag (`Title (Author) (source).pdf`); kebab-case ids
-/// prettify word-by-word. Opaque scanned-archive ids (e.g. `somebook00abcd`)
-/// derive badly — those need a real title set on the doc.
+/// Human-readable title derived from a doc id, for docs with no stored
+/// title and no file to name them after.
+///
+/// The same rules the shelf uses on a filename ([`crate::naming`]) — ids
+/// minted before 0.2 *were* filenames, slugged, so a download tag or a
+/// kebab-case slug means here what it means there. Opaque ids (minted ones,
+/// and scanned-archive ids like `somebook00abcd`) come back untouched:
+/// there is nothing in them to recover, and they need a real title set on
+/// the doc.
 pub fn derive_title(doc: &str) -> String {
-    let base = doc.split(" (").next().unwrap_or(doc).trim();
-    if base.contains(' ') {
-        return base.to_owned();
-    }
-    base.split('-')
-        .filter(|w| !w.is_empty())
-        .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                Some(f) if w.len() > 2 => f.to_uppercase().chain(c).collect::<String>(),
-                _ => w.to_owned(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    crate::naming::from_slug(doc)
 }
 
 /// The model-facing title: the stored one first, derived otherwise — never
@@ -877,11 +867,15 @@ mod tests {
             derive_title("the-art-of-plain-cookery"),
             "The Art of Plain Cookery"
         );
+        // the source tag goes, the author stays: a parenthetical is dropped
+        // for being junk, not for being parenthetical
         assert_eq!(
             derive_title("Field Guide to Mushrooms (A. Botanist) (source.example)"),
-            "Field Guide to Mushrooms"
+            "Field Guide to Mushrooms (A. Botanist)"
         );
-        assert_eq!(derive_title("a-history-of-tea"), "a History of Tea");
+        // nothing to recover from a minted id
+        assert_eq!(derive_title("d01713fa82ad0"), "d01713fa82ad0");
+        assert_eq!(derive_title("a-history-of-tea"), "A History of Tea");
     }
 
     fn hit(doc: &str, words: &[&str]) -> Hit {

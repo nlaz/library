@@ -13,6 +13,15 @@
   <body>
     <header>
       <nav id="cols" role="group" title="Collections"></nav>
+      <!-- The catalog is the one header affordance with no glyph, because the
+           chord *is* the affordance — so the header says it in words instead.
+           Deliberately the quietest thing up here: it is a reminder that ⌘K
+           exists, not a control competing with the three beside it. It also
+           carries the margin-left:auto that right-aligns the whole cluster,
+           so it must stay first among them and must never be hidden. -->
+      <button id="pal-open" class="divot quiet" title="Card catalog (⌘K)" aria-label="Card catalog">
+        ⌘K
+      </button>
       <button id="notes-toggle" class="divot" title="Notes" aria-label="Notes" aria-pressed="false">
         <!-- tabbed index card in the same 2×2 Bayer 50% tile as its
              neighbours: tab, frame, one rule — all currentColor. The tab is
@@ -255,16 +264,15 @@
          open from over any of them, so it has to paint over them too. -->
     <div id="palette" hidden>
       <div id="pal-card" role="dialog" aria-modal="true" aria-label="Card catalog">
-        <div id="pal-head">
-          <span id="pal-crumb">card catalog</span>
-          <button id="pal-close" class="divot" title="Close (Esc)">✕</button>
-        </div>
+        <!-- Only shown once you have drilled into a stage. At the root it said
+             "card catalog" over a box you had just opened yourself, which is
+             the definition of chrome nobody reads. -->
+        <div id="pal-crumb" hidden></div>
         <div id="pal-field">
-          <span id="pal-caret" aria-hidden="true">▸</span>
           <input
             id="pal-q"
             type="text"
-            placeholder="a book, a shelf, a note, or a command…"
+            placeholder="Find a book or note…"
             autocomplete="off"
             spellcheck="false"
             role="combobox"
@@ -277,7 +285,6 @@
         <div id="pal-foot">
           <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
           <span><kbd>⏎</kbd> open</span>
-          <span><kbd>⇥</kbd> drill in</span>
           <span><kbd>esc</kbd> back</span>
         </div>
       </div>

@@ -47,7 +47,7 @@ const GROUPS: Group[] = [
   {
     title: "Notes",
     rows: [
-      ["c", "Start a note, from any surface — Esc returns you to it"],
+      ["⌘N", "Start a note, from any surface — Esc returns you to it"],
       ["j / k", "Walk down / up the ledger"],
       ["Enter", "Write in the open entry (double-clicking it does too)"],
       ["[[", "Link another note while writing"],
@@ -58,9 +58,9 @@ const GROUPS: Group[] = [
     title: "Views",
     rows: [
       ["⌘K", "The card catalog — any book, shelf, note, or command by name"],
+      ["⌘L", "Notes — the ledger, and pressing it again steps back out"],
       ["⌘S", "Settings — your folders, the librarian, and updates"],
       ["⌘.", "Performance — 1 / 2 / 3 / 4 pick a section"],
-      ["⌘/", "Corpus atlas"],
       ["?", "This list"],
       ["Esc", "Close whichever of them is open"],
     ],

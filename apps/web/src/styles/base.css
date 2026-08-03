@@ -71,15 +71,28 @@ main {
    a groove around a face is a button, a well you can see into is a field.
    Never let a button and an input share a treatment. */
 
-/* both header toggles are icon-only dithered glyphs; notes pushes the pair
-   to the right edge of the header */
+/* both header toggles are icon-only dithered glyphs; the ⌘K hint sits first
+   in the cluster and pushes the whole of it to the right edge */
 #notes-toggle,
 #chat-toggle {
   padding: 4px 6px;
 }
 
-#notes-toggle {
+/* Set in mono at the metadata size, in the faintest ink that still reads:
+   it is a legend for a key, not a button competing with the glyphs beside
+   it, and the only thing it must survive is being ignored. It also carries
+   the auto margin that right-aligns the cluster, so it must stay first in
+   it — see the note in index.html. */
+#pal-open {
   margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-faint);
+  padding: 4px 6px;
+}
+
+#pal-open:hover {
+  color: var(--ink-dim);
 }
 
 #notes-toggle svg,

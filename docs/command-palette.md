@@ -64,40 +64,49 @@ metadata. It should read as another drawer in the same cabinet as `#keys` and
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  card catalog                                         ✕  │
-├──────────────────────────────────────────────────────────┤
 │                                                          │
-│   ▸ _                                                    │
+│   Find a book or note…                                   │
 │                                                          │
 ├──────────────────────────────────────────────────────────┤
-│  RECENT                                                  │
-│    Kittler · Gramophone, Film, Typewriter      read p.88 │
-│    Sontag · On Photography                     read p.12 │
-│                                                          │
-│  COMMANDS                                                │
-│    Add books…                                         ⌘O │
+│  ▪ Search the library                                 ⌘F │
+│    Notes                                              ⌘L │
 │    Settings                                           ⌘S │
-│    Start a note                                        c │
 ├──────────────────────────────────────────────────────────┤
-│  ↑↓ move    ⏎ open    ⇥ drill in           esc close     │
+│  ↑↓ move    ⏎ open                          esc back     │
 └──────────────────────────────────────────────────────────┘
 ```
 
-The footer earns its space here in a way it would not in most apps. Every row
-that has a direct chord shows it, so the palette teaches the bare chrome while
-it is being used, and a user graduates off it. That is the same job the
-first-run panel does for `?`, done continuously.
+No title, no close button, no prompt glyph, no group headings. Each was
+removed for the same reason: it labelled something the user had just done
+themselves. You know it is the catalog because you pressed ⌘K; the ✕ is a
+second way to do what Escape and the scrim already do; and a heading over each
+kind of row was labelling lists of one and two.
+
+What survives at rest is three verbs and a field. **The bar for a row is not
+"is this a real command" but "would someone look for it here"** — which the
+verbs already reachable by a chord the user knows (⌘N, ⌘., `?`) fail. They
+keep their keys and their line in the shortcut sheet; they lose the row. See
+`listed` in `commands.ts`.
+
+The footer still earns its space. Every row that has a direct chord shows it,
+so the palette teaches the bare chrome while it is being used, and a user
+graduates off it — the same job the first-run panel does for `?`, done
+continuously.
 
 ## What it holds
 
-Four kinds of row, ranked into one list, grouped under mono labels:
+Four kinds of row, ranked into one flat list:
 
 ```
-   BOOKS      every doc, by title → open in the reader
-   SHELVES    every collection    → filter the library to it
-   NOTES      every card          → open in the ledger
-   COMMANDS   every verb          → run it
+   books      every doc, by title → open in the reader
+   shelves    every collection    → filter the library to it
+   notes      every card          → open in the ledger
+   commands   the three verbs     → run it
 ```
+
+The kinds still order the list — `rank()` sorts each group by its best match —
+they just no longer announce themselves. The rows say what they are without
+help: a chord is a command, a page count is a book, a date is a note.
 
 Plain typing searches all four. A leading sigil narrows to one drawer — the
 expert path, never the only path:
@@ -124,19 +133,17 @@ already owns the shared `docList` that every other module reads through.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│   ▸ gramo_                                               │
+│   gramo_                                                 │
 ├──────────────────────────────────────────────────────────┤
-│  BOOKS                                                   │
-│  ▸ Gramophone, Film, Typewriter         Media Theory 315p│
+│  ▪ Gramophone, Film, Typewriter         Media Theory 315p│
 │    Grammars of Creation                    Criticism 288p│
-│                                                          │
-│  NOTES                                                   │
 │    the gramophone as a writing machine        3 days ago │
-│                                                          │
-│  ─────────────────────────────────────────────────────── │
-│    Search the library for "gramo"                     ⇧⏎ │
+│    Search the library for "gramo"                     ⏎  │
 └──────────────────────────────────────────────────────────┘
 ```
+
+Two books, a note and a handoff, and no heading needed to tell them apart:
+the shelf-and-page-count says book, the date says note.
 
 That last row is the load-bearing one. The palette never shows an empty state
 with nothing to do in it; when it has no answer of its own it hands the query
@@ -144,7 +151,7 @@ to the thing that does.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│   ▸ what does deleuze say about the fold_                │
+│   what does deleuze say about the fold_                  │
 ├──────────────────────────────────────────────────────────┤
 │  no book, note, or command by that name                  │
 │                                                          │
@@ -156,33 +163,24 @@ to the thing that does.
 The librarian row is conditional on `chat_status`, exactly like the header
 button: absent rather than dead on a Mac without Apple Foundation Models.
 
-## It knows where you are
+## It knew where you were — cut, for now
 
-This is what separates a palette from a menu. The same keystroke in the reader
-offers the verbs that apply to the book in front of you — all of which already
-exist as commands (`set_title`, `move_to_shelf`, `reveal_doc`, `delete_doc`).
+The catalog used to lead with a `this book · …` section in the reader, and a
+`recent` section from the nav trail on an empty box. Both are removed.
 
-```
-  reading  #/read/kittler-gramophone?p=88
-┌──────────────────────────────────────────────────────────┐
-│   ▸ _                                                    │
-├──────────────────────────────────────────────────────────┤
-│  THIS BOOK — Gramophone, Film, Typewriter                │
-│    Markup mode                                        ⌘U │
-│    Show marks                                          m │
-│    Jump to page…                                       : │
-│    Rename…                                            ⇥  │
-│    File into a collection…                            ⇥  │
-│    Show in Finder                                        │
-│                                                          │
-│  LIBRARY                                                 │
-│    Back to the shelves                               esc │
-│    Start a note here                                   c │
-└──────────────────────────────────────────────────────────┘
-```
+The argument for them was that context is what separates a palette from a
+menu. The argument against, which won: a box whose contents change shape
+depending on the surface it was opened over is a box you have to *read* every
+time, and reading is the thing ⌘K exists to skip. Ten context rows plus five
+recents plus the verbs meant an empty catalog opened onto eighteen lines of
+list — a menu with a text field on top.
 
-Context changes only what is *offered first*. Everything global stays
-reachable by typing — the palette narrows the default, never the vocabulary.
+A book's verbs did not go anywhere. They are one `⇥` away from that book's own
+row, which is where they were always better placed: you name the book, then
+say what to do to it.
+
+One capability left with the section and has no other home: **jump to a page**
+(`pageStage`). If it comes back, `bookVerbs` is where it should go.
 
 ## Drilling in, rather than spawning dialogs
 
@@ -219,19 +217,19 @@ retried without hunting for it.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│   ▸ _                                                    │
+│   Find a book or note…                                   │
 ├──────────────────────────────────────────────────────────┤
-│  ⣿⣿⣿⣿⣿⣿⣶⣤⣀  3 books indexing · 1 needs attention        │
-│                                                          │
+│  ▪ Anon scan 2024-11-03               failed   Retry  ⏎  │
 │    Berger · Ways of Seeing            ocr    page 41/176 │
-│    Anon scan 2024-11-03               failed   Retry  ⏎  │
-├──────────────────────────────────────────────────────────┤
-│  RECENT                                                  │
+│    Search the library                                 ⌘F │
+│    Notes                                              ⌘L │
+│    Settings                                           ⌘S │
 └──────────────────────────────────────────────────────────┘
 ```
 
-This section is present only when there is something to report. An empty
-palette on a settled library shows recents and nothing else.
+These rows are present only when there is something to report, and the failure
+leads because it is the one that needs a person. An empty box on a settled
+library is the three verbs and nothing else.
 
 ## The layer stack — the actual hard part
 
@@ -265,10 +263,10 @@ Three rules, and they are the ones to hold on to under review pressure:
    function the button or chord calls. If a row and a chord can disagree,
    the row is wrong.
 
-Two guards fall out for free. `?` and `c` already refuse to fire when the
-event target is an `HTMLInputElement`, and the perf `1234` branch already
-skips `INPUT` — so a real `<input>` in the palette is safe from all three
-without touching them. That is a reason to use a real input rather than a
+Two guards fall out for free. `?` already refuses to fire when the event
+target is an `HTMLInputElement`, and the perf `1234` branch already skips
+`INPUT` — so a real `<input>` in the palette is safe from both without
+touching them. That is a reason to use a real input rather than a
 contenteditable.
 
 ## Consequences for `keys.ts`

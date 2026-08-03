@@ -26,17 +26,7 @@ const cmdK = () => c.press("k", { metaKey: true });
 const rows = () => [...document.querySelectorAll("#pal-list .pal-row")];
 const labels = () => rows().map((r) => r.querySelector(".pal-label")!.textContent);
 const selected = () => document.querySelector("#pal-list .pal-row.on");
-
-/** The labels sitting under one group heading. */
-function groupLabels(title: string): (string | null)[] {
-  const out: (string | null)[] = [];
-  let inside = false;
-  for (const li of document.querySelectorAll("#pal-list li")) {
-    if (li.classList.contains("pal-group")) inside = li.textContent === title;
-    else if (inside) out.push(li.querySelector(".pal-label")!.textContent);
-  }
-  return out;
-}
+const crumb = () => document.getElementById("pal-crumb")!;
 
 function type(v: string) {
   const q = document.getElementById("pal-q") as HTMLInputElement;
@@ -163,19 +153,20 @@ it("Escape over the search popover closes the catalog, not the query", async () 
   c.q().value = "";
 });
 
-it("typing narrows the list, and the arrows walk what is left", () => {
+it("typing narrows the list, and the arrows walk what is left", async () => {
   cmdK();
+  await tick();
   const all = labels().length;
 
-  type("keyboard");
+  type("search the library");
   expect(labels().length).toBeLessThan(all);
-  expect(labels()[0]).toContain("Keyboard shortcuts");
+  expect(labels()[0]).toContain("Search the library");
 
   // the first row is selected the moment the list changes — Enter always has
   // a target, so the query can be answered without ever pressing an arrow
   expect(selected()).toBe(rows()[0]);
 
-  type("note"); // "Start a note" and "Notes"
+  type("o"); // loose enough to reach past the commands into the books
   const n = rows().length;
   expect(n).toBeGreaterThan(1);
   c.press("ArrowDown");
@@ -183,6 +174,32 @@ it("typing narrows the list, and the arrows walk what is left", () => {
   c.press("ArrowUp");
   c.press("ArrowUp"); // off the top, round to the bottom
   expect(selected()).toBe(rows()[n - 1]);
+});
+
+it("offers three verbs and no more — the catalog is not a menu", () => {
+  // the desktop-only Settings is absent from this build, so two here; what
+  // matters is that the box opens onto a list you do not have to read
+  cmdK();
+  expect(labels()).toEqual(["Search the library", "Notes"]);
+
+  // and the verbs that lost their row kept their chord and their handler:
+  // they are simply not things you come to this box looking for
+  type("performance");
+  expect(labels()).not.toContain("Performance");
+  type("keyboard");
+  expect(labels()).not.toContain("Keyboard shortcuts");
+  type("start a note");
+  expect(labels()).not.toContain("Start a note");
+});
+
+it("renders one flat list — no group headings", async () => {
+  cmdK();
+  await tick();
+  type("kittler");
+
+  expect(document.querySelectorAll("#pal-list .pal-group")).toHaveLength(0);
+  // every child of the list is a row; nothing is there to be read past
+  expect(document.querySelectorAll("#pal-list li").length).toBe(rows().length);
 });
 
 it("a command the web build cannot honour is absent, not broken", () => {
@@ -213,7 +230,7 @@ it("finds a book by a word from the middle of its title", async () => {
   // no `docs` command in the web build, so the shelves are the census and
   // the prettified id is the name
   type("gramo");
-  expect(groupLabels("books")[0]).toBe("Kittler Gramophone");
+  expect(labels()).toContain("Kittler Gramophone");
 
   type("kittler");
   expect(labels()[0]).toBe("Kittler Gramophone");
@@ -254,26 +271,32 @@ it("a query with no answer is handed to the search that can answer it", () => {
 });
 
 it("Enter runs the selected row, and the catalog gets out of the way first", async () => {
-  const keys = await import("./keys");
+  const notebox = await import("./notebox");
+  notebox.closeNotes();
+
   cmdK();
-  type("keyboard");
-  expect(labels()[0]).toContain("Keyboard shortcuts");
+  type("search the library");
+  expect(labels()[0]).toContain("Search the library");
 
   c.press("Enter");
   expect(palette.paletteOpen()).toBe(false);
-  expect(keys.keysOpen()).toBe(true);
+  expect(c.el("search-pop").hidden).toBe(false);
+  c.q().value = "";
 
-  // ...and the command drops off the list while its view is open, rather
+  // ...and the command drops off the list while its own view is open, rather
   // than sitting there ready to close something behind the scrim
+  await notebox.openNotes(null);
   cmdK();
-  type("keyboard");
-  expect(labels().join(" ")).not.toContain("Keyboard shortcuts");
+  expect(labels()).not.toContain("Notes");
 
   palette.closePalette();
-  keys.closeKeys();
+  notebox.closeNotes();
 });
 
-it("in the reader it leads with that book's verbs", async () => {
+it("the catalog stays global — the reader does not add a section to it", async () => {
+  // "this book · …" is cut for now. A book's verbs are still one ⇥ away from
+  // its own row; what is gone is the box changing shape under the user
+  // depending on which surface it was opened over.
   const reader = await import("./reader");
   (await import("./notebox")).closeNotes();
   location.hash = "#/read/kittler-gramophone";
@@ -282,14 +305,8 @@ it("in the reader it leads with that book's verbs", async () => {
   (document.activeElement as HTMLElement | null)?.blur();
 
   cmdK();
-  const first = [...document.querySelectorAll("#pal-list .pal-group")][0];
-  expect(first.textContent).toContain("this book · Kittler Gramophone");
-  expect(groupLabels("this book · Kittler Gramophone")).toContain("Markup mode");
-
-  // ...without narrowing the vocabulary: everything global is still one
-  // query away, which is the difference between context and a context menu
-  type("keyboard");
-  expect(labels().join(" ")).toContain("Keyboard shortcuts");
+  expect(labels()).toEqual(["Search the library", "Notes"]);
+  expect(labels()).not.toContain("Markup mode");
 
   palette.closePalette();
   reader.closeReader();
@@ -297,27 +314,9 @@ it("in the reader it leads with that book's verbs", async () => {
   await tick();
 });
 
-it("markup mode from the catalog is the same act as the pen", async () => {
-  const reader = await import("./reader");
-  (await import("./notebox")).closeNotes();
-  location.hash = "#/read/kittler-gramophone";
-  await tick();
-  reader.openReader("kittler-gramophone", 3, 1, "Kittler Gramophone");
-  (document.activeElement as HTMLElement | null)?.blur();
-  expect(c.el("reader-pen").classList.contains("active")).toBe(false);
-
-  cmdK();
-  type("markup");
-  c.press("Enter");
-  expect(c.el("reader-pen").classList.contains("active")).toBe(true);
-
-  c.el("reader-pen").click(); // back off the mode
-  reader.closeReader();
-  location.hash = "#/";
-  await tick();
-});
-
-it("an empty box offers where you have just been", async () => {
+it("an empty box does not offer where you have just been", async () => {
+  // the trail is cut too: with the verbs capped at three, an empty box that
+  // also replayed five recents would be back to being a menu
   const reader = await import("./reader");
   (await import("./notebox")).closeNotes();
   location.hash = "#/";
@@ -331,15 +330,9 @@ it("an empty box offers where you have just been", async () => {
   (document.activeElement as HTMLElement | null)?.blur();
 
   cmdK();
-  expect(groupLabels("recent")).toContain("Sontag");
+  expect(labels()).not.toContain("Sontag");
 
-  // and it goes back there without the catalog counting as a stop on the way
-  const row = rows().find((r) => r.querySelector(".pal-label")!.textContent === "Sontag")!;
-  expect(row.querySelector(".pal-meta")!.textContent).toBe("p.12");
-  row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-  await tick();
-  expect(location.hash).toBe("#/read/sontag?p=12");
-
+  palette.closePalette();
   location.hash = "#/";
   await tick();
 });
@@ -350,8 +343,12 @@ it("⇥ drills into a book's verbs, and Escape backs out one level at a time", a
   type("kittler");
   expect(labels()[0]).toBe("Kittler Gramophone");
 
+  // the trail appears only now that there is one — at the root the card has
+  // no header at all
+  expect(crumb().hidden).toBe(true);
   expect(c.press("Tab")).toBe(false);
-  expect(c.el("pal-crumb").textContent).toContain("Kittler Gramophone");
+  expect(crumb().hidden).toBe(false);
+  expect(crumb().textContent).toContain("Kittler Gramophone");
   expect(labels()).toContain("Open in the reader");
   expect((c.el("pal-q") as HTMLInputElement).value).toBe(""); // a fresh field per stage
 
@@ -359,7 +356,7 @@ it("⇥ drills into a book's verbs, and Escape backs out one level at a time", a
   // layer in this app — it does not close the whole box
   c.press("Escape");
   expect(palette.paletteOpen()).toBe(true);
-  expect(c.el("pal-crumb").textContent).toBe("card catalog");
+  expect(crumb().hidden).toBe(true);
 
   c.press("Escape");
   expect(palette.paletteOpen()).toBe(false);
@@ -370,43 +367,16 @@ it("⌫ on an empty field backs out too, but never eats a character", async () =
   await tick();
   type("kittler");
   c.press("Tab");
-  expect(c.el("pal-crumb").textContent).toContain("Kittler Gramophone");
+  expect(crumb().textContent).toContain("Kittler Gramophone");
 
   type("open"); // there is something to delete: ⌫ belongs to the text
   expect(c.press("Backspace")).toBe(true);
-  expect(c.el("pal-crumb").textContent).toContain("Kittler Gramophone");
+  expect(crumb().textContent).toContain("Kittler Gramophone");
 
   type("");
   expect(c.press("Backspace")).toBe(false);
-  expect(c.el("pal-crumb").textContent).toBe("card catalog");
+  expect(crumb().hidden).toBe(true);
   palette.closePalette();
-});
-
-it("a stage that takes content shows what it will do with it", async () => {
-  const reader = await import("./reader");
-  (await import("./notebox")).closeNotes();
-  location.hash = "#/read/sontag";
-  await tick();
-  reader.openReader("sontag", 40, 1, "Sontag");
-  (document.activeElement as HTMLElement | null)?.blur();
-
-  cmdK();
-  type("jump to a page");
-  c.press("Tab");
-  expect(c.el("pal-crumb").textContent).toContain("page");
-
-  // nothing to offer until there is a number, and then exactly one thing
-  expect(rows()).toHaveLength(0);
-  type("12");
-  expect(labels()).toEqual(["Go to page 12"]);
-
-  c.press("Enter");
-  await tick();
-  expect(location.hash).toBe("#/read/sontag?p=12");
-
-  reader.closeReader();
-  location.hash = "#/";
-  await tick();
 });
 
 it("an empty box reports what the library is still chewing on", async () => {
@@ -432,29 +402,25 @@ it("an empty box reports what the library is still chewing on", async () => {
 
   cmdK();
   // the failure leads: it is the one that needs a person
-  expect(groupLabels("needs attention")).toEqual(["Anon scan"]);
-  expect(groupLabels("indexing")).toEqual(["Ways of Seeing"]);
+  expect(labels()[0]).toBe("Anon scan");
+  expect(labels()[1]).toBe("Ways of Seeing");
   expect(rows()[1].querySelector(".pal-meta")!.textContent).toBe("reading pages 41/176");
 
   // and once there is a name to match, the book's own row carries the state
-  // instead — the section is not a second copy of the library
+  // instead — this is not a second copy of the library
   type("ways of seeing");
-  expect(groupLabels("indexing")).toEqual([]);
-  expect(groupLabels("books")).toEqual(["Ways of Seeing"]);
+  expect(labels()).toEqual(["Ways of Seeing"]);
 
   palette.closePalette();
   format.setDocList([]);
 });
 
-it("the document-level c and ? keys stand down while the catalog is open", async () => {
+it("the document-level ? key stands down while the catalog is open", async () => {
   const keys = await import("./keys");
   cmdK();
 
-  // both guard on the event target being an input, and the catalog's field is
+  // it guards on the event target being an input, and the catalog's field is
   // a real one — this is why it is an <input> and not a contenteditable
   c.press("?");
   expect(keys.keysOpen()).toBe(false);
-
-  c.press("c");
-  expect(location.hash).not.toBe("#/notes/new");
 });

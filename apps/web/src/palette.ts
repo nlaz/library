@@ -24,9 +24,7 @@ import { $q as $searchBox } from "./dom";
 import { displayTitle, docTitle, getDocList, STAGE_LABEL, stageCount, statusEvent } from "./format";
 import { ingesting } from "./home";
 import { listCards } from "./marginalia-api";
-import { toggleMarks } from "./markup";
-import { forgetDoc, recentTrail } from "./nav";
-import { navLabel } from "./nav-model";
+import { forgetDoc } from "./nav";
 import { fmtStamp, impliedTitle } from "./notebox-model";
 import {
   crumbs,
@@ -39,7 +37,6 @@ import {
   type Stage,
   step,
 } from "./palette-model";
-import { readerDoc, readerOpen } from "./reader";
 import { sendQuery } from "./search";
 import { desktop, transport } from "./state";
 import { notify } from "./toast";
@@ -52,7 +49,7 @@ const $palQ = document.getElementById("pal-q") as HTMLInputElement;
 const $list = document.getElementById("pal-list")!;
 const $crumb = document.getElementById("pal-crumb")!;
 
-const PLACEHOLDER = "a book, a shelf, a note, or a command…";
+const PLACEHOLDER = "Find a book or note…";
 
 /** The desktop module, once it is known to be there. */
 type Host = NonNullable<typeof desktop>;
@@ -211,14 +208,6 @@ function cmdItems(): Item[] {
     chord: c.chord,
     run: c.run,
   }));
-}
-
-/** Press a control the user could have pressed. Markup mode and the info
- * drawer are owned by their buttons and have no exported opener, and reaching
- * past them to the private state would be exactly the duplication this
- * registry exists to avoid — the button *is* the verb. */
-function press(id: string) {
-  document.getElementById(id)?.click();
 }
 
 const openDoc = (doc: string) => go(`#/read/${encodeURIComponent(doc)}`);
@@ -415,108 +404,19 @@ function removeStage(d: Host, doc: string): Stage {
   };
 }
 
-function pageStage(doc: string): Stage {
-  return {
-    crumb: "page",
-    placeholder: "a page number…",
-    raw: true,
-    items: (q) => {
-      const n = Number.parseInt(q.trim(), 10);
-      if (!Number.isFinite(n) || n < 1) return [];
-      return [
-        {
-          id: "page:go",
-          label: `Go to page ${n}`,
-          group: "page",
-          chord: "⏎",
-          run: () => go(`#/read/${encodeURIComponent(doc)}?p=${n}`),
-        },
-      ];
-    },
-  };
-}
-
-/** The verbs that apply to whatever is in front of the user. Context changes
- * what is offered *first*; it never narrows the vocabulary, because everything
- * global is still one query away. */
-function contextItems(): Item[] {
-  if (!readerOpen()) return [];
-  const doc = readerDoc();
-  if (!doc) return [];
-
-  const group = `this book · ${docTitle(doc)}`;
-  const here: Item[] = [
-    { id: "here:markup", label: "Markup mode", group, chord: "⌘U", run: () => press("reader-pen") },
-    { id: "here:marks", label: "Show or hide marks", group, chord: "m", run: toggleMarks },
-    {
-      id: "here:info",
-      label: "Title, shelf, and marks",
-      group,
-      chord: "ⓘ",
-      run: () => press("reader-meta"),
-    },
-    { id: "here:page", label: "Jump to a page…", group, drill: () => pageStage(doc) },
-  ];
-  if (desktop) {
-    const d = desktop;
-    here.push(
-      { id: "here:rename", label: "Rename…", group, drill: () => renameStage(d, doc) },
-      { id: "here:file", label: "File into a collection…", group, drill: () => shelfStage(d, doc) },
-      {
-        id: "here:reveal",
-        label: "Show in Finder",
-        group,
-        run: () => void d.revealDoc(doc).catch(report),
-      },
-      {
-        id: "here:delete",
-        label: "Remove from the library…",
-        group,
-        drill: () => removeStage(d, doc),
-      },
-    );
-  }
-  return here;
-}
-
-/** Where the user has just been. Only offered to an empty box: once there is
- * a name to match, the books themselves are the better answer and these would
- * be the same rows twice. */
-function recentItems(): Item[] {
-  const here = location.hash || "#/";
-  const seen = new Set([here]);
-  const out: Item[] = [];
-  for (const hash of recentTrail()) {
-    if (seen.has(hash)) continue;
-    seen.add(hash);
-    const page = hash.match(/\?p=(\d+)/);
-    out.push({
-      id: `recent:${hash}`,
-      label: navLabel(hash, docTitle),
-      group: "recent",
-      meta: page ? `p.${page[1]}` : "",
-      run: () => go(hash),
-    });
-    if (out.length === 5) break;
-  }
-  return out;
-}
-
 /** Everything the catalog can offer right now.
  *
- * An empty query offers where you are and where you have been, and then the
- * verbs. It does not offer books: a library of a few hundred has no meaningful
- * "first six", and opening onto an arbitrary slice of one is a census nobody
- * asked for — they arrive the moment there is a name to match them against.
+ * An empty query offers what needs a person and then the three verbs. It does
+ * not offer books: a library of a few hundred has no meaningful "first six",
+ * and opening onto an arbitrary slice of one is a census nobody asked for —
+ * they arrive the moment there is a name to match them against.
  *
  * Order matters only as a tiebreak, since rank() sorts groups by their best
- * row. Context leads, then commands, so that a verb and a book of the same
- * name go to the verb. */
+ * row. Commands lead, so that a verb and a book of the same name go to the
+ * verb. */
 function items(): Item[] {
-  if (!$palQ.value.trim()) {
-    return [...attentionItems(), ...contextItems(), ...recentItems(), ...cmdItems()];
-  }
-  return [...contextItems(), ...cmdItems(), ...bookItems(), ...shelfItems(), ...noteItems()];
+  if (!$palQ.value.trim()) return [...attentionItems(), ...cmdItems()];
+  return [...cmdItems(), ...bookItems(), ...shelfItems(), ...noteItems()];
 }
 
 // --- the way out ------------------------------------------------------------
@@ -561,7 +461,10 @@ function render() {
   const stage = stack.at(-1);
   const typed = $palQ.value.trim();
 
-  $crumb.textContent = crumbs(stack);
+  // The trail earns its line only once there is one: at the root it named the
+  // box you had just opened, which taught nobody anything.
+  $crumb.hidden = !stack.length;
+  $crumb.textContent = stack.length ? crumbs(stack) : "";
   $palQ.placeholder = stage?.placeholder ?? PLACEHOLDER;
 
   // A raw stage's rows are built *from* the query, so matching them against
@@ -574,29 +477,16 @@ function render() {
     sections = [{ title: "elsewhere", rows: handoffs(typed) }];
   }
 
+  // One flat list. The groups still order the rows — rank() sorts them by
+  // their best match — but they no longer announce themselves: with the verbs
+  // capped at three, a heading over each kind labelled lists of one and two,
+  // and the rows already say what they are (a chord is a command, a page
+  // count is a book, a date is a note).
   rows = flatten(sections);
   sel = 0;
 
-  const out: HTMLElement[] = [];
-  let i = 0;
-  for (const s of sections) {
-    out.push(groupEl(s.title));
-    for (const r of s.rows) out.push(rowEl(r, i++));
-  }
-  $list.replaceChildren(...out);
+  $list.replaceChildren(...rows.map((r, i) => rowEl(r, i)));
   paint();
-}
-
-/** Group headings are written in the case they are shown in. Lowercasing them
- * here instead would have caught the one heading that carries data — a book's
- * own title, which then reads as "kittler gramophone film typewriter" two
- * lines under the properly-cased title in the reader chrome. */
-function groupEl(title: string): HTMLElement {
-  const li = document.createElement("li");
-  li.className = "pal-group";
-  li.setAttribute("role", "presentation");
-  li.textContent = title;
-  return li;
 }
 
 /** The label with the matched runs marked, so it is visible *why* a row is
@@ -763,15 +653,16 @@ window.addEventListener(
   true,
 );
 
-document.getElementById("pal-close")!.addEventListener("click", closePalette);
+// The header's ⌘K button: the same act as the chord, for a hand already on
+// the mouse. It is also the only place the catalog is advertised at all.
+document.getElementById("pal-open")!.addEventListener("click", togglePalette);
 $palette.addEventListener("mousedown", (e) => {
   if (e.target === $palette) closePalette(); // the scrim, not the card
 });
 // A click that starts on the card must not reach the scrim handler above.
-// It must also not cost the box its focus: the document-level `?` and `c`
-// keys step aside for an input, and only for an input, so a click on the
-// header that dropped focus to the body would leave those keys live under
-// an open catalog.
+// It must also not cost the box its focus: the document-level `?` key steps
+// aside for an input, and only for an input, so a click on the header that
+// dropped focus to the body would leave it live under an open catalog.
 $card.addEventListener("mousedown", (e) => {
   e.stopPropagation();
   if (e.target !== $palQ && !(e.target as HTMLElement).closest("button")) {

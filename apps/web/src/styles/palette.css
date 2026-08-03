@@ -20,7 +20,10 @@
   grid-template-rows: minmax(var(--sp-5), 11vh) auto 1fr;
   justify-items: center;
   padding: var(--sp-4);
-  background: color-mix(in srgb, var(--ink) 42%, transparent);
+  /* black, not --ink: a scrim dims in both themes, and dark-theme ink is
+     light — mixing it made the room *brighter* behind the card. Same rule
+     as the dither tiles (§2 tokens): black works over both grounds. */
+  background: rgb(0 0 0 / 45%);
 }
 
 #palette[hidden] {
@@ -40,18 +43,6 @@
   flex-direction: column;
 }
 
-#pal-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--line-strong);
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  color: var(--ink-dim);
-}
-
 /* --- the field ----------------------------------------------------------- */
 
 #pal-field {
@@ -60,12 +51,6 @@
   gap: var(--sp-2);
   padding: var(--sp-3);
   border-bottom: 1px solid var(--line);
-}
-
-#pal-caret {
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  color: var(--hl-line);
 }
 
 #pal-q {
@@ -97,34 +82,43 @@
   overscroll-behavior: contain;
 }
 
-.pal-group {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  letter-spacing: var(--track-label);
-  color: var(--ink-faint);
-  padding: var(--sp-2) var(--sp-3) var(--sp-1);
-}
-
-.pal-group:not(:first-child) {
-  border-top: 1px solid var(--line);
-  margin-top: var(--sp-1);
-}
-
+/* rows sit back (--ink-dim still clears 4.5:1 at body size); the selected
+   one comes forward to full ink, so the list reads as one bright line over
+   a quiet column rather than a wall of equally-loud labels. The 14px gutter
+   is where the selection dot lives. */
 .pal-row {
+  position: relative;
   display: flex;
   align-items: baseline;
   gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) calc(var(--sp-3) + 14px);
   font-size: var(--fs-body);
-  color: var(--ink);
+  color: var(--ink-dim);
   cursor: default;
 }
 
 /* the selected row, whether it got there by arrow key or by pointer: one
-   state, so the keyboard and the mouse can never both look current */
+   state, so the keyboard and the mouse can never both look current.
+   No fill at all — a brass catalog dot in the gutter (the same mark the
+   rail ticks and atlas points carry) and the ink coming forward do all
+   the saying; the old wash read as a mud stripe on the dark ground. */
 .pal-row.on {
-  background: var(--hl-wash);
-  box-shadow: inset 2px 0 0 var(--hl-line);
+  color: var(--ink);
+}
+
+.pal-row.on::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  transform: translateY(-50%);
+  background: var(--hl-line);
+}
+
+.pal-row.on kbd {
+  color: var(--ink);
 }
 
 .pal-label {
@@ -169,11 +163,22 @@
   color: var(--ink-faint);
 }
 
-/* the breadcrumb grows as you drill; it must not push the ✕ off the card */
+/* The breadcrumb, which exists only inside a drill-down — at the root the
+   card has no header at all. It grows as you drill, so it truncates rather
+   than widening the card. */
 #pal-crumb {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--ink-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+#pal-crumb[hidden] {
+  display: none;
 }
 
 /* --- the footer ----------------------------------------------------------

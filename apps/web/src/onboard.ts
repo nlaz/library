@@ -75,7 +75,7 @@ export function onboardPanel(docs: DocInfo[]): HTMLElement | null {
   keys.className = "okeys";
   for (const [k, what] of [
     ["⌘F", "search"],
-    ["c", "note"],
+    ["⌘N", "note"],
     ["?", "all shortcuts"],
   ]) {
     const item = document.createElement("span");

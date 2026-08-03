@@ -6,6 +6,7 @@
 
 import { atlasOpen, dismissAtlasSelection, toggleAtlas } from "./atlas";
 import { disableChat, initChat, setChatEnabled } from "./chat";
+import { go } from "./commands";
 import { $cols, $q, $searchNav, setPressed } from "./dom";
 import { closeDrawer, initDrawer } from "./drawer";
 import { docTitle, getDocList, prettify, setDocList } from "./format";
@@ -16,7 +17,7 @@ import { returnTo } from "./nav";
 import { closeSettings, openSettings, toggleSettings } from "./settings";
 import { initLaunch } from "./launch";
 import { closeNotes, notesOpen, openNotes, rerenderNotes } from "./notebox";
-import { initPalette, paletteOpen } from "./palette";
+import { initPalette } from "./palette";
 import { closeSheet, openSheet, sheetOpen, startCreate } from "./sheet";
 import { dismissPerfPopover, perfOpen, setPerfTab, togglePerf } from "./perf";
 import { closeReader, openReader, readerDoc, readerOpen } from "./reader";
@@ -114,6 +115,18 @@ window.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       toggleSettings();
+    } else if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === "n") {
+      // never out from under a note already being written — startCreate on
+      // the open sheet would re-seed it and eat the draft
+      if (sheetOpen()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      startCreate();
+    } else if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === "l") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (notesOpen()) go("#/");
+      else go("#/notes");
     } else if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) {
       // `?` is Shift+/ on most layouts, so it can't ride the ⌘/ branch
       // above; and like `c`, it must never fire out from under a cursor
@@ -151,18 +164,6 @@ window.addEventListener(
   },
   true,
 );
-
-// c starts a note from any surface (routing closes whatever's open) — but
-// never over the perf/atlas layers, and never while writing somewhere
-document.addEventListener("keydown", (e) => {
-  if (e.key !== "c" || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (sheetOpen() || perfOpen() || atlasOpen() || paletteOpen()) return;
-  const t = e.target as HTMLElement | null;
-  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t?.isContentEditable)
-    return;
-  e.preventDefault();
-  startCreate();
-});
 
 /** Apply a collection filter and put every surface that scopes by it back in
  * agreement: the header tabs, and then whichever of the ledger, the results

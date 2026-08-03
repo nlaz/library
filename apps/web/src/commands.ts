@@ -15,12 +15,9 @@
 // `desktop`, which is set asynchronously during startup, and on which
 // surface is open right now.
 
-import { atlasOpen, toggleAtlas } from "./atlas";
-import { pickAndQueue } from "./ingest-ui";
 import { keysOpen, toggleKeys } from "./keys";
 import { notesOpen } from "./notebox";
 import { perfOpen, togglePerf } from "./perf";
-import { readerOpen } from "./reader";
 import { settingsOpen } from "./settings";
 import { startCreate } from "./sheet";
 import { desktop } from "./state";
@@ -42,6 +39,17 @@ export type Cmd = {
   host?: () => boolean;
   /** False when the command does not apply at this moment. Absent = always. */
   when?: () => boolean;
+  /** False on a verb that still exists everywhere else — it keeps its chord,
+   * its handler and its row in the shortcut sheet — but does not earn a line
+   * in the catalog.
+   *
+   * The catalog's list is deliberately short: a box you open to *find* things
+   * should not open onto a menu you have to read. So the bar for a row is not
+   * "is this a real command" but "would someone look for this here", and the
+   * verbs that fail it are the ones already reachable by a key they know.
+   * Kept in the registry rather than deleted so keys-dom.test.ts still holds
+   * their chords against the sheet. Absent = listed. */
+  listed?: boolean;
   run: () => void | Promise<void>;
 };
 
@@ -69,30 +77,17 @@ export function allCommands(): Cmd[] {
       id: "note-new",
       label: "Start a note",
       group: "commands",
-      chord: "c",
+      chord: "⌘N",
+      listed: false,
       run: () => startCreate(),
     },
     {
       id: "notes",
       label: "Notes",
       group: "commands",
+      chord: "⌘L",
       when: () => !notesOpen(),
       run: () => go("#/notes"),
-    },
-    {
-      id: "add",
-      label: "Add books…",
-      group: "commands",
-      chord: "⌘O",
-      host: () => !!desktop,
-      run: () => void pickAndQueue(),
-    },
-    {
-      id: "library",
-      label: "Back to the library",
-      group: "commands",
-      when: () => readerOpen() || notesOpen() || settingsOpen(),
-      run: () => go("#/"),
     },
     {
       id: "settings",
@@ -103,19 +98,15 @@ export function allCommands(): Cmd[] {
       when: () => !settingsOpen(),
       run: () => go("#/settings"),
     },
-    {
-      id: "atlas",
-      label: "Corpus atlas",
-      group: "commands",
-      chord: "⌘/",
-      when: () => !atlasOpen(),
-      run: toggleAtlas,
-    },
+    // The corpus atlas is hidden for now — ⌘/ still opens it (main.ts), but
+    // the catalog and the shortcut sheet stop advertising it until it earns
+    // its place back.
     {
       id: "perf",
       label: "Performance",
       group: "commands",
       chord: "⌘.",
+      listed: false,
       when: () => !perfOpen(),
       run: togglePerf,
     },
@@ -124,6 +115,7 @@ export function allCommands(): Cmd[] {
       label: "Keyboard shortcuts",
       group: "commands",
       chord: "?",
+      listed: false,
       when: () => !keysOpen(),
       run: toggleKeys,
     },
@@ -131,8 +123,9 @@ export function allCommands(): Cmd[] {
   return all.filter((c) => !c.host || c.host());
 }
 
-/** Every command that applies right now, in the order an empty catalog
- * should show them. */
+/** The verbs the catalog offers, in the order an empty box shows them.
+ *
+ * Three, on the desktop build, and that is the point — see `listed`. */
 export function commands(): Cmd[] {
-  return allCommands().filter((c) => !c.when || c.when());
+  return allCommands().filter((c) => c.listed !== false && (!c.when || c.when()));
 }

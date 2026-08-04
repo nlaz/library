@@ -3528,6 +3528,7 @@ dependencies = [
  "libc",
  "library-core",
  "library-ingest",
+ "mach2",
  "memory-stats",
  "notify",
  "percent-encoding",

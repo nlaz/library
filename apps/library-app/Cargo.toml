@@ -32,5 +32,10 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
 
+# TASK_VM_INFO.phys_footprint for the perf panel; libc's mach surface is
+# deprecated in favour of this. See src/mem.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+mach2 = "0.4"
+
 [lints]
 workspace = true

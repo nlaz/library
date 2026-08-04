@@ -4,6 +4,7 @@ import {
   baseName,
   formatBytes,
   librarianRow,
+  PINNED_NOTE,
   type RootInfo,
   rootRows,
   SECTIONS,
@@ -106,15 +107,55 @@ describe("formatBytes", () => {
 });
 
 describe("storageRows", () => {
+  const base = {
+    path: "/x",
+    derived_bytes: 15_000_000_000,
+    index_bytes: 800_000_000,
+    model_bytes: 400_000_000,
+  };
+
   it("leads with the renders, which dominate", () => {
-    const rows = storageRows({
-      path: "/x",
-      derived_bytes: 15_000_000_000,
-      index_bytes: 800_000_000,
-      model_bytes: 400_000_000,
-    });
+    const rows = storageRows(base);
     expect(rows[0]).toEqual(["Page images and text", "15 GB"]);
     expect(rows).toHaveLength(3);
+  });
+
+  it("shows the renders against their budget once there is one", () => {
+    const rows = storageRows({
+      ...base,
+      page_bytes: 3_200_000_000,
+      page_budget_bytes: 4_000_000_000,
+      pinned_bytes: 0,
+    });
+    expect(rows[0]).toEqual(["Page images", "3.2 GB of 4.0 GB"]);
+    // the rest of `derived` is the non-evictable text side
+    expect(rows[1]).toEqual(["Text and notes", "12 GB"]);
+  });
+
+  it("says so when the budget is off rather than implying one", () => {
+    const rows = storageRows({ ...base, page_bytes: 3_200_000_000, page_budget_bytes: 0 });
+    expect(rows[0]).toEqual(["Page images", "3.2 GB (no limit)"]);
+  });
+
+  // The one line on this pane that is not re-creatable. It gets its own row
+  // rather than hiding inside a total that offers to free it, because the
+  // pane's closing promise is false of exactly these bytes.
+  it("breaks out renders that are the only copy, and only when there are some", () => {
+    const rows = storageRows({
+      ...base,
+      page_bytes: 3_200_000_000,
+      page_budget_bytes: 4_000_000_000,
+      pinned_bytes: 282_000_000,
+    });
+    expect(rows[1]).toEqual(["Kept for missing files", "282 MB"]);
+
+    const none = storageRows({ ...base, page_bytes: 3_200_000_000, pinned_bytes: 0 });
+    expect(none.map(([l]) => l)).not.toContain("Kept for missing files");
+  });
+
+  it("warns that pinned renders are the only copy", () => {
+    expect(PINNED_NOTE).toMatch(/only copy/);
+    expect(PINNED_NOTE).toMatch(/never removes those on its own/);
   });
 });
 

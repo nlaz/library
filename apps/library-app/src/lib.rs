@@ -128,6 +128,7 @@ pub fn run() {
             roots::move_to_shelf,
             roots::shelves,
             roots::storage_use,
+            roots::sweep_cache,
             settings::get_settings,
             settings::set_settings,
             prefs::get_pref,

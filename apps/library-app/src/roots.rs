@@ -274,17 +274,49 @@ pub(crate) fn dir_bytes(dir: &Path) -> u64 {
 #[tauri::command]
 pub(crate) async fn storage_use(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let data = state.settings.data.clone();
+    let ctx = state.ctx.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let derived: u64 = ["pages", "ocr", "text", "clean", "edits"]
             .iter()
             .map(|d| dir_bytes(&data.join(d)))
             .sum();
+        // Page renders split out of `derived_bytes` (which stays their sum,
+        // so nothing downstream breaks): they are the only part with a
+        // budget, and the only part the pane's promise — "everything here
+        // can be rebuilt from your files" — is not true of. `pinned_bytes`
+        // is exactly the untrue part, and it gets its own row and its own
+        // sentence rather than hiding inside a number that offers to free
+        // space it cannot free.
+        let survey = crate::cache::survey(&ctx, None);
+        let page_bytes: u64 = survey.iter().map(|e| e.bytes).sum();
+        let pinned_bytes: u64 = survey
+            .iter()
+            .filter(|e| e.class == crate::cache::Class::Pinned)
+            .map(|e| e.bytes)
+            .sum();
         serde_json::json!({
             "path": data.to_string_lossy(),
             "derived_bytes": derived,
+            "page_bytes": page_bytes,
+            "page_budget_bytes": crate::cache::budget(&ctx),
+            "pinned_bytes": pinned_bytes,
             "index_bytes": dir_bytes(&data.join("library.db")) + dir_bytes(&data.join("images.db")),
             "model_bytes": dir_bytes(&data.join("models")),
         })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Run the eviction sweep now, and report what it freed. The "Free up
+/// space now" button — the same sweep the worker runs, on demand.
+#[tauri::command]
+pub(crate) async fn sweep_cache(state: State<'_, AppState>) -> Result<u64, String> {
+    let ctx = state.ctx.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // an explicit ask is also an acknowledgement, so this never runs dry
+        let _ = ctx.set_setting(crate::cache::ANNOUNCED_KEY, "1");
+        crate::cache::sweep(&ctx, None, false).freed
     })
     .await
     .map_err(|e| e.to_string())

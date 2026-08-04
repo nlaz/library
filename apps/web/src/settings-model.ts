@@ -123,17 +123,58 @@ export type Storage = {
   derived_bytes: number;
   index_bytes: number;
   model_bytes: number;
+  /** Page renders — the part with a budget. */
+  page_bytes?: number;
+  /** 0 means no limit. */
+  page_budget_bytes?: number;
+  /** Renders of documents whose file is gone: not a cache, the only copy. */
+  pinned_bytes?: number;
 };
 
 /** The storage lines, in the order they're shown. Page renders dominate by
- * an order of magnitude, so they go first and are named for what they are. */
+ * an order of magnitude, so they go first and are named for what they are.
+ *
+ * The pinned row appears only when it is non-zero, and it exists because
+ * the pane's closing sentence — everything here can be rebuilt from your
+ * files — is true of every other line and false of that one. Folding those
+ * bytes into a total that offers to free them would be a lie about the one
+ * thing on this screen that cannot be undone. */
 export function storageRows(s: Storage): [label: string, value: string][] {
-  return [
-    ["Page images and text", formatBytes(s.derived_bytes)],
-    ["Search indexes", formatBytes(s.index_bytes)],
-    ["Models", formatBytes(s.model_bytes)],
-  ];
+  const rows: [string, string][] = [];
+  if (s.page_bytes !== undefined) {
+    const budget = s.page_budget_bytes ?? 0;
+    rows.push([
+      "Page images",
+      budget > 0
+        ? `${formatBytes(s.page_bytes)} of ${formatBytes(budget)}`
+        : `${formatBytes(s.page_bytes)} (no limit)`,
+    ]);
+    if (s.pinned_bytes) {
+      rows.push(["Kept for missing files", formatBytes(s.pinned_bytes)]);
+    }
+    // whatever `derived` holds beyond the renders: OCR, markdown, edits
+    rows.push(["Text and notes", formatBytes(s.derived_bytes - s.page_bytes)]);
+  } else {
+    rows.push(["Page images and text", formatBytes(s.derived_bytes)]);
+  }
+  rows.push(["Search indexes", formatBytes(s.index_bytes)]);
+  rows.push(["Models", formatBytes(s.model_bytes)]);
+  return rows;
 }
+
+/** Budget choices, in bytes. 0 is "no limit". */
+export const BUDGET_CHOICES: [label: string, bytes: number][] = [
+  ["1 GB", 1e9],
+  ["3 GB", 3e9],
+  ["4 GB", 4e9],
+  ["10 GB", 10e9],
+  ["No limit", 0],
+];
+
+/** The sentence under the pinned row. Its whole job is to say that these
+ * bytes are not spare — and that the app will not touch them on its own. */
+export const PINNED_NOTE =
+  "These documents' files are no longer where the library last saw them, so their page images are the only copy. The Library never removes those on its own.";
 
 /** The sentence under the unlink button. Unlinking is the scariest thing on
  * this page and the copy has one job: say that the files are safe. */

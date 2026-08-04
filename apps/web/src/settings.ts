@@ -22,7 +22,10 @@ import { loadCollections, renderHome } from "./home";
 import { goBack, originLabel } from "./nav";
 import {
   activeSection,
+  BUDGET_CHOICES,
+  formatBytes,
   librarianRow,
+  PINNED_NOTE,
   type RootInfo,
   type RootRow,
   rootRows,
@@ -222,9 +225,49 @@ async function storagePane(): Promise<HTMLElement> {
       dd.textContent = value;
       table.append(dt, dd);
     }
+    el.append(table);
+    if (s.pinned_bytes) el.append(note(PINNED_NOTE));
+
+    // The budget, and a way to act on it now. Page images are the only line
+    // here the app deletes on its own, so the control for that belongs
+    // beside the number rather than buried somewhere else.
+    if (s.page_bytes !== undefined) {
+      const row = document.createElement("div");
+      row.className = "srow";
+      const label = document.createElement("b");
+      label.textContent = "Keep up to";
+      const pick = document.createElement("select");
+      const current = s.page_budget_bytes ?? 0;
+      for (const [text, bytes] of BUDGET_CHOICES) {
+        const opt = document.createElement("option");
+        opt.value = String(bytes);
+        opt.textContent = text;
+        // the stored value is clamped server-side, so match on the nearest
+        // choice rather than requiring an exact hit
+        if (bytes === current) opt.selected = true;
+        pick.append(opt);
+      }
+      pick.addEventListener("change", () => {
+        void desktop!.setPref("cache.pages.budget_bytes", pick.value);
+      });
+      const free = document.createElement("button");
+      free.className = "ghost";
+      free.textContent = "Free up space now";
+      free.addEventListener("click", async () => {
+        free.disabled = true;
+        free.textContent = "Freeing…";
+        const freed = await desktop!.sweepCache().catch(() => 0);
+        free.textContent = freed > 0 ? `Freed ${formatBytes(freed)}` : "Nothing to free";
+      });
+      row.append(label, pick, free);
+      el.append(row);
+    }
+
     el.append(
-      table,
-      note(`Kept in ${s.path}. Everything here can be rebuilt from your files.`),
+      note(
+        `Kept in ${s.path}. Page images are re-created from your files as you read, ` +
+          `so removing them costs a moment, never a document.`,
+      ),
     );
   } catch {
     el.append(note("Couldn't measure storage."));

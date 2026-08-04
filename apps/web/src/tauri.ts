@@ -134,8 +134,16 @@ export function storageUse(): Promise<{
   derived_bytes: number;
   index_bytes: number;
   model_bytes: number;
+  page_bytes: number;
+  page_budget_bytes: number;
+  pinned_bytes: number;
 }> {
   return invoke("storage_use");
+}
+
+/** Run the page-cache eviction sweep now; resolves with bytes freed. */
+export function sweepCache(): Promise<number> {
+  return invoke<number>("sweep_cache");
 }
 
 /** The user's home dir, so paths can be shown as `~/...`. */
@@ -168,7 +176,7 @@ function getPref(key: string): Promise<string | null> {
   return invoke<string | null>("get_pref", { key });
 }
 
-function setPref(key: string, value: string): Promise<void> {
+export function setPref(key: string, value: string): Promise<void> {
   return invoke("set_pref", { key, value });
 }
 

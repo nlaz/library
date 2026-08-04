@@ -264,12 +264,52 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
                 });
             }
         }
+        // Keep data/pages inside its budget. Rides this tick rather than a
+        // timer of its own: a sweep on an idle machine is I/O for nothing,
+        // and the moments worth reacting to — a document finished, files
+        // appeared or vanished — are exactly the ones that wake this loop.
+        sweep_page_cache(&app, &state.ctx);
+
         // drain buffered wake-ups so a burst of drops is one sweep
         match rx.recv_timeout(Duration::from_secs(30)) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => while rx.try_recv().is_ok() {},
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
     }
+}
+
+/// Bound `data/pages`, telling the user the first time rather than
+/// silently reclaiming several gigabytes behind their back.
+///
+/// An existing library can be well over the default budget — the author's
+/// is 6.6 GiB against 4 — and a first launch that quietly deleted 3 GiB of
+/// it would be alarming even though every byte is re-creatable. So the
+/// first sweep that *would* free anything only reports what it would do;
+/// eviction starts on the next one, by which time the user has been told
+/// where the setting is.
+fn sweep_page_cache(app: &AppHandle, ctx: &library_core::meta::Ctx) {
+    let announced = ctx.setting(crate::cache::ANNOUNCED_KEY).is_some();
+    // The reader's open document is not tracked here; last_read_at is
+    // touched on every page served, so a book being read is the most
+    // recently read one and sorts last anyway.
+    let plan = crate::cache::sweep(ctx, None, !announced);
+    if plan.freed == 0 {
+        return;
+    }
+    if !announced {
+        let _ = ctx.set_setting(crate::cache::ANNOUNCED_KEY, "1");
+        let _ = app.emit("cache:announce", plan.freed);
+        eprintln!(
+            "page cache: {} MiB over budget, reclaiming from the next sweep",
+            plan.freed / (1024 * 1024)
+        );
+        return;
+    }
+    eprintln!(
+        "page cache: freed {} MiB from {} document(s)",
+        plan.freed / (1024 * 1024),
+        plan.docs.len()
+    );
 }
 
 /// What an add did, per file. One bad file no longer aborts the batch: a

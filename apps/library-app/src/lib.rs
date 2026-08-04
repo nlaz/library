@@ -13,6 +13,7 @@
 //! app was closed. Indexing only happens while the app runs; there is no
 //! background agent.
 
+mod cache;
 mod chat;
 mod commands;
 mod docs;

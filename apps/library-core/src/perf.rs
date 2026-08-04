@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -28,6 +29,105 @@ use crate::{Hit, ImageHit, Images, Library, Word};
 pub const SEARCH_LOG_CAP: usize = 200;
 /// Provenance rows kept per record — one served page's worth.
 pub const HITS_PER_RECORD: usize = 20;
+
+// ---------------------------------------------------------------------------
+// Search trace
+// ---------------------------------------------------------------------------
+
+/// The text track's lane. The two tracks of a search run on separate threads
+/// ([`crate::answer`] spawns the image one under `thread::scope`), so a single
+/// depth ordering can't nest them — the lane keeps them apart.
+pub const TRACK_TEXT: u8 = 0;
+/// The image track's lane.
+pub const TRACK_IMAGE: u8 = 1;
+
+/// One measured span of a search.
+///
+/// `at_us` is the offset from the *search's* start rather than the track's, so
+/// spans recorded on the two concurrent tracks compose into one timeline and
+/// their overlap is real. `depth` nests a span under the nearest preceding
+/// shallower span on the same track; the root is implicit (the record's
+/// `total_us`), which is what makes unmeasured time — thread spawn and join,
+/// anything between stages — legible as a gap instead of silently inflating
+/// whichever span happens to enclose it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Span {
+    pub name: String,
+    pub at_us: u64,
+    pub us: u64,
+    pub depth: u8,
+    pub track: u8,
+}
+
+/// Collects [`Span`]s against a shared origin.
+///
+/// Both tracks build one of these from the same [`Instant`], which is the
+/// whole reason their offsets can be compared. `base` lets a callee collect
+/// spans without knowing how deeply the caller has already nested it — the
+/// ranker marks its phases at 0 and 1 whether it is running under `answer`'s
+/// text track or the agent tool's.
+///
+/// `Default` exists only because [`crate::RankerStats`] carries a trace
+/// through an out-param; a default trace measures from its own creation,
+/// which is right for a caller that owns the whole timeline.
+#[derive(Debug, Clone)]
+pub struct Trace {
+    origin: Instant,
+    track: u8,
+    base: u8,
+    spans: Vec<Span>,
+}
+
+impl Default for Trace {
+    fn default() -> Self {
+        Trace::new(Instant::now(), TRACK_TEXT)
+    }
+}
+
+impl Trace {
+    pub fn new(origin: Instant, track: u8) -> Self {
+        Trace::at_depth(origin, track, 0)
+    }
+
+    /// A trace whose spans nest `base` levels below the timeline's root.
+    pub fn at_depth(origin: Instant, track: u8, base: u8) -> Self {
+        Trace {
+            origin,
+            track,
+            base,
+            spans: Vec::new(),
+        }
+    }
+
+    /// The instant every `at_us` on this trace is measured from — pass it to
+    /// [`Trace::new`] to open a second lane on the same timeline.
+    pub fn origin(&self) -> Instant {
+        self.origin
+    }
+
+    /// Close a span that began at `started`, `depth` levels below this
+    /// trace's base. Callers capture `started` before the work and call this
+    /// after, so the span covers exactly the work.
+    pub fn mark(&mut self, name: &'static str, depth: u8, started: Instant) {
+        self.spans.push(Span {
+            name: name.to_owned(),
+            at_us: started.saturating_duration_since(self.origin).as_micros() as u64,
+            us: started.elapsed().as_micros() as u64,
+            depth: self.base + depth,
+            track: self.track,
+        });
+    }
+
+    /// Absorb another trace's spans. Both must share this origin — nothing
+    /// checks it, and mismatched origins put the spans in the wrong place.
+    pub fn absorb(&mut self, other: Trace) {
+        self.spans.extend(other.spans);
+    }
+
+    pub fn take(self) -> Vec<Span> {
+        self.spans
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Search records
@@ -99,11 +199,15 @@ pub struct SearchRecord {
     pub offset: u32,
     pub phase: String,
     pub total_us: u64,
-    /// Per-stage µs (text track: ese_embed, term_expand, lex_search,
-    /// vec_search, fuse+resolve; image track: clip_embed, image_search;
-    /// then blend — stages that didn't run are absent). The two tracks run
-    /// concurrently, so the stage sum can exceed `total_us`.
-    pub stages: Vec<(String, u64)>,
+    /// The search's span tree (text track: `text_track` > ese_embed,
+    /// term_expand, lex_search, vec_search, fuse+resolve > fuse, maxsim, mmr,
+    /// resolve; image track: `img_track` > clip_embed, image_search; then
+    /// blend — spans that didn't run are absent). Order is not significant:
+    /// a span closes when its work ends, so parents trail their children.
+    /// Every `at_us` is an offset from the same origin, which is what makes
+    /// the tracks' concurrency readable — and why the span sum is expected to
+    /// exceed `total_us`.
+    pub spans: Vec<Span>,
     /// Pre-fusion ranker list sizes.
     pub lex_n: usize,
     pub sem_n: usize,
@@ -364,9 +468,9 @@ fn search_log_bytes() -> (usize, usize) {
                 + r.kind.len()
                 + r.col.len()
                 + r.doc.len()
-                + r.stages
+                + r.spans
                     .iter()
-                    .map(|(s, _)| size_of::<(String, u64)>() + s.len())
+                    .map(|s| size_of::<Span>() + s.name.len())
                     .sum::<usize>()
                 + r.text_hits
                     .iter()
@@ -678,7 +782,7 @@ mod tests {
                 offset: 0,
                 phase: "hybrid".into(),
                 total_us: 0,
-                stages: vec![],
+                spans: vec![],
                 lex_n: 0,
                 sem_n: 0,
                 rel_killed: 0,

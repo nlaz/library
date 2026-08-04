@@ -81,17 +81,20 @@ pub fn answer(
     // The two tracks share only the query and the filter, so the image track
     // (CLIP embed + ANN + spread cutoff) runs on a scoped thread while the
     // text track — the dominant cost — runs here: its ~15–20ms hides under
-    // the text search instead of adding to the total.
+    // the text search instead of adding to the total. Both trace against
+    // `start`, so their spans land on one timeline and that overlap is
+    // visible in the perf view rather than inferred.
     let (text, img) = std::thread::scope(|s| {
-        let img = want_imgs.then(|| s.spawn(|| img_track(images, q, member.as_ref(), &clip_embed)));
-        let text = want_text.then(|| text_track(lib, q, member.as_ref()));
+        let img = want_imgs
+            .then(|| s.spawn(|| img_track(images, q, member.as_ref(), &clip_embed, start)));
+        let text = want_text.then(|| text_track(lib, q, member.as_ref(), start));
         (text, img.map(|h| h.join().expect("image track panicked")))
     });
 
     let mut phase = "lex";
-    // per-stage breakdown, recorded into the perf ring (and, in dev builds,
+    // the search's span tree, recorded into the perf ring (and, in dev builds,
     // the eprintln! at the bottom)
-    let mut stages: Vec<(&'static str, u128)> = Vec::new();
+    let mut trace = perf::Trace::new(start, perf::TRACK_TEXT);
     let mut text_hits: Vec<WireHit> = Vec::new();
     let mut img_hits: Vec<WireHit> = Vec::new();
     let mut ranker = crate::RankerStats::default();
@@ -104,7 +107,7 @@ pub fn answer(
         if t.hybrid {
             phase = "hybrid";
         }
-        stages.extend(t.stages);
+        trace.absorb(t.trace);
         text_hits = t.hits;
         text_prov = t.prov;
         ranker = t.ranker;
@@ -117,7 +120,7 @@ pub fn answer(
         if i.embedded {
             phase = if want_text { "hybrid+img" } else { "img" };
         }
-        stages.extend(i.stages);
+        trace.absorb(i.trace);
         img_hits = i.hits;
         img_prov = i.prov;
         (img_fetched, img_killed) = (i.fetched, i.killed);
@@ -132,13 +135,14 @@ pub fn answer(
         // across continuation requests
         hits = hits.into_iter().skip(q.offset as usize).take(K).collect();
     }
-    stages.push(("blend", t.elapsed().as_micros()));
+    trace.mark("blend", 0, t);
 
     let total = start.elapsed().as_micros();
+    let spans = trace.take();
     if cfg!(debug_assertions) {
-        let breakdown: String = stages
+        let breakdown: String = spans
             .iter()
-            .map(|(n, us)| format!("{n}={us}us"))
+            .map(|s| format!("{}{}={}us", "  ".repeat(s.depth as usize), s.name, s.us))
             .collect::<Vec<_>>()
             .join(" ");
         eprintln!(
@@ -156,10 +160,7 @@ pub fn answer(
         offset: q.offset,
         phase: phase.to_owned(),
         total_us: total as u64,
-        stages: stages
-            .iter()
-            .map(|(n, us)| ((*n).to_owned(), *us as u64))
-            .collect(),
+        spans,
         lex_n: ranker.lex_n,
         sem_n: ranker.sem_n,
         rel_killed,
@@ -181,9 +182,9 @@ pub fn answer(
 }
 
 /// What the text track (ese embed + hybrid search) produced, with its slice
-/// of the stage breakdown.
+/// of the span tree.
 struct TextTrack {
-    stages: Vec<(&'static str, u128)>,
+    trace: perf::Trace,
     hits: Vec<WireHit>,
     prov: Vec<perf::HitProv>,
     ranker: crate::RankerStats,
@@ -192,21 +193,29 @@ struct TextTrack {
     hybrid: bool,
 }
 
-fn text_track(lib: &Library, q: &Query, member: Option<&FxHashSet<String>>) -> TextTrack {
-    let t = Instant::now();
+fn text_track(
+    lib: &Library,
+    q: &Query,
+    member: Option<&FxHashSet<String>>,
+    origin: Instant,
+) -> TextTrack {
+    let track = Instant::now();
+    let mut trace = perf::Trace::new(origin, perf::TRACK_TEXT);
+    let t = track;
     // "full" query, library-wide: the settled query gets semantic search,
     // fuzzy term correction, and MMR diversity. Instant (per-keystroke) and
     // doc-scoped browser-find stay lexical-only and exact.
     let full = q.mode == "full" && q.doc.is_empty();
     let qemb: Option<Emb> = full.then(|| ese::encode_single(&q.q));
-    let mut stages: Vec<(&'static str, u128)> = vec![("ese_embed", t.elapsed().as_micros())];
+    trace.mark("ese_embed", 1, t);
     let qtoks = tokenize(&q.q);
     let k = if q.doc.is_empty() {
         q.offset as usize + K
     } else {
         K_DOC
     };
-    let mut ranker = crate::RankerStats::default();
+    // the ranker's own phases nest one level under this track
+    let mut ranker = crate::RankerStats::at(origin, perf::TRACK_TEXT, 1);
     let mut found = lib.rtx(|r| {
         crate::search(
             &r,
@@ -232,21 +241,21 @@ fn text_track(lib: &Library, q: &Query, member: Option<&FxHashSet<String>>) -> T
         found.retain(|h| h.rel >= MIN_REL || h.sem_rank.is_some());
         rel_killed = before - found.len();
     }
-    // the search's internal phases, reported instead of one opaque span
-    stages.push(("term_expand", ranker.term_expand_us as u128));
-    stages.push(("lex_search", ranker.lex_search_us as u128));
-    if qemb.is_some() {
-        stages.push(("vec_search", ranker.vec_search_us as u128));
-    }
-    stages.push(("fuse+resolve", ranker.fuse_us as u128));
+    // the ranker's internal phases, reported instead of one opaque span
+    trace.absorb(ranker.trace.clone());
+    let prov: Vec<perf::HitProv> = found
+        .iter()
+        .take(perf::HITS_PER_RECORD)
+        .map(perf::HitProv::from)
+        .collect();
+    let hits: Vec<WireHit> = found.iter().map(|h| wire::wire_hit(h, &qtoks)).collect();
+    // last, so the parent covers snippet/box wiring too — whatever it isn't
+    // covered by a child shows as the track's own time
+    trace.mark("text_track", 0, track);
     TextTrack {
-        prov: found
-            .iter()
-            .take(perf::HITS_PER_RECORD)
-            .map(perf::HitProv::from)
-            .collect(),
-        hits: found.iter().map(|h| wire::wire_hit(h, &qtoks)).collect(),
-        stages,
+        prov,
+        hits,
+        trace,
         ranker,
         rel_killed,
         hybrid: qemb.is_some(),
@@ -255,7 +264,7 @@ fn text_track(lib: &Library, q: &Query, member: Option<&FxHashSet<String>>) -> T
 
 /// What the image track (CLIP embed + ANN + spread cutoff) produced.
 struct ImgTrack {
-    stages: Vec<(&'static str, u128)>,
+    trace: perf::Trace,
     hits: Vec<WireHit>,
     prov: Vec<perf::ImgProv>,
     fetched: usize,
@@ -271,14 +280,18 @@ fn img_track(
     q: &Query,
     member: Option<&FxHashSet<String>>,
     clip_embed: impl Fn(&str) -> Option<ClipEmb>,
+    origin: Instant,
 ) -> ImgTrack {
     // library stream: every figure above the relevance cutoff joins
     // the blend (pagination doles them out)
     let k = if q.kind == "images" { K } else { usize::MAX };
-    let t = Instant::now();
+    let track = Instant::now();
+    let mut trace = perf::Trace::new(origin, perf::TRACK_IMAGE);
+    let t = track;
     let qemb: Option<ClipEmb> = clip_embed(&q.q);
+    trace.mark("clip_embed", 1, t);
     let mut out = ImgTrack {
-        stages: vec![("clip_embed", t.elapsed().as_micros())],
+        trace,
         hits: Vec::new(),
         prov: Vec::new(),
         fetched: 0,
@@ -287,7 +300,10 @@ fn img_track(
         floor: 0.0,
         embedded: false,
     };
-    let Some(e) = qemb else { return out };
+    let Some(e) = qemb else {
+        out.trace.mark("img_track", 0, track);
+        return out;
+    };
     out.embedded = true;
     let t = Instant::now();
     let mut found = images.rtx(|r| crate::image_search(&r, &e, crate::IMG_FETCH, member));
@@ -301,12 +317,15 @@ fn img_track(
         found.retain(|h| h.score >= min);
         out.killed = out.fetched - found.len();
     }
-    out.stages.push(("image_search", t.elapsed().as_micros()));
+    out.trace.mark("image_search", 1, t);
     out.prov = found
         .iter()
         .take(perf::HITS_PER_RECORD)
         .map(perf::ImgProv::from)
         .collect();
     out.hits = wire::group_image_hits(&found, k);
+    // last, so the parent covers the grouping too — whatever it isn't
+    // covered by a child shows as the track's own time
+    out.trace.mark("img_track", 0, track);
     out
 }

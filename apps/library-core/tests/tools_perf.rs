@@ -79,12 +79,35 @@ fn agent_searches_land_in_the_perf_ring_with_a_link_back() {
     assert_eq!(rec.served, rec.text_hits.len());
     // the provenance is the hits the model was actually shown
     assert_eq!(rec.text_hits[0].doc, "watchmaking");
-    // stages are what the perf view's waterfall draws
-    let names: Vec<&str> = rec.stages.iter().map(|(n, _)| n.as_str()).collect();
+    // the span tree is what the perf view's flame chart draws. The tool's own
+    // stages sit at depth 1 and the ranker's nest under `search`, so an agent
+    // search flames the same shape as a human's.
+    let shape: Vec<(u8, &str)> = rec
+        .spans
+        .iter()
+        .map(|s| (s.depth, s.name.as_str()))
+        .collect();
     assert_eq!(
-        names,
-        ["ese_embed", "search", "dedup+cutoff", "top_hit_page"]
+        shape,
+        [
+            (1, "ese_embed"),
+            (2, "term_expand"),
+            (2, "lex_search"),
+            (2, "vec_search"),
+            (3, "fuse"),
+            (3, "maxsim"),
+            (3, "resolve"),
+            (2, "fuse+resolve"),
+            (1, "search"),
+            (1, "dedup+cutoff"),
+            (1, "top_hit_page"),
+            (0, "search_tool"),
+        ]
     );
+    // the agent path used to pass stats: None, so these read as "not
+    // measured" in the view; it now reports them like the UI path
+    assert!(rec.lex_n > 0);
+    assert!(rec.sem_n > 0);
     assert!(rec.total_us > 0);
 }
 
@@ -106,6 +129,6 @@ fn a_miss_records_its_hits_even_though_confidence_is_none() {
         .expect("a miss is recorded too");
     assert_eq!(rec.mode, "agent");
     assert_eq!(rec.served, rec.text_hits.len());
-    // no top_hit_page hop on a "none" verdict, but the stage is still timed
-    assert!(rec.stages.iter().any(|(n, _)| n == "top_hit_page"));
+    // no top_hit_page hop on a "none" verdict, but the span is still timed
+    assert!(rec.spans.iter().any(|s| s.name == "top_hit_page"));
 }

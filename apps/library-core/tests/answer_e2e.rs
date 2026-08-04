@@ -1,9 +1,9 @@
 //! End-to-end tests for the blended `answer` pipeline against hermetic
-//! temp-dir stores: the per-stage perf breakdown, phase reporting, and the
-//! image track (which runs on its own thread inside `answer`). No real
-//! embedding model is ever loaded — instant/text-only and images-only
-//! queries are exactly the modes that never touch ese, and CLIP is a
-//! caller-supplied closure fed synthetic embeddings.
+//! temp-dir stores: the perf span tree, phase reporting, and the image track
+//! (which runs on its own thread inside `answer`). No real embedding model is
+//! ever loaded — instant/text-only and images-only queries are exactly the
+//! modes that never touch ese, and CLIP is a caller-supplied closure fed
+//! synthetic embeddings.
 
 use library_core::meta::Ctx;
 use library_core::{
@@ -104,6 +104,29 @@ fn record_for(q: &str) -> perf::SearchRecord {
         .expect("answer() should have pushed a perf record")
 }
 
+/// The span tree as (track, depth, name) — what the flame chart lays out.
+fn shape(rec: &perf::SearchRecord) -> Vec<(u8, u8, &str)> {
+    rec.spans
+        .iter()
+        .map(|s| (s.track, s.depth, s.name.as_str()))
+        .collect()
+}
+
+/// Every span must fall inside the timeline the record claims, or the chart
+/// draws blocks past its own root. `at_us` is measured from `answer`'s start
+/// and `total_us` at its end, so containment is an invariant, not a bound.
+fn assert_within_total(rec: &perf::SearchRecord) {
+    for s in &rec.spans {
+        assert!(
+            s.at_us + s.us <= rec.total_us,
+            "span {} runs to {}us past total {}us",
+            s.name,
+            s.at_us + s.us,
+            rec.total_us
+        );
+    }
+}
+
 #[test]
 fn instant_text_query_reports_lexical_stage_breakdown() {
     let lib = synthetic_library("instant");
@@ -115,20 +138,58 @@ fn instant_text_query_reports_lexical_stage_breakdown() {
     assert_eq!(resp.phase, "lex");
     assert!(!resp.hits.is_empty());
     let rec = record_for(&q.q);
-    let names: Vec<&str> = rec.stages.iter().map(|(n, _)| n.as_str()).collect();
-    // vec_search is absent (no embedding), clip stages are absent (no track)
+    // vec_search is absent (no embedding), mmr too (instant doesn't
+    // diversify), and the image lane never opens. The ranker's four fusion
+    // children sit a level below the fuse+resolve that encloses them.
     assert_eq!(
-        names,
+        shape(&rec),
         [
-            "ese_embed",
-            "term_expand",
-            "lex_search",
-            "fuse+resolve",
-            "blend"
+            (perf::TRACK_TEXT, 1, "ese_embed"),
+            (perf::TRACK_TEXT, 1, "term_expand"),
+            (perf::TRACK_TEXT, 1, "lex_search"),
+            (perf::TRACK_TEXT, 2, "fuse"),
+            (perf::TRACK_TEXT, 2, "maxsim"),
+            (perf::TRACK_TEXT, 2, "resolve"),
+            (perf::TRACK_TEXT, 1, "fuse+resolve"),
+            (perf::TRACK_TEXT, 0, "text_track"),
+            (perf::TRACK_TEXT, 0, "blend"),
         ]
     );
+    assert_within_total(&rec);
     assert!(rec.lex_n > 0);
     assert_eq!(rec.sem_n, 0);
+}
+
+/// The whole point of the offsets: `fuse+resolve` is a parent, not a sibling,
+/// and the flame chart nests by containment. If a child ever escaped its
+/// parent's window the chart would draw it in the wrong row.
+#[test]
+fn fusion_children_nest_inside_the_span_that_encloses_them() {
+    let lib = synthetic_library("nesting");
+    let images = synthetic_images("nesting");
+    let q = query("escapement nesting-probe", "instant", "");
+    answer(&lib, &images, &ctx(), &q, |_| None);
+
+    let rec = record_for(&q.q);
+    let at = |name: &str| {
+        let s = rec
+            .spans
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("{name} span"));
+        (s.at_us, s.at_us + s.us)
+    };
+    let (p_from, p_to) = at("fuse+resolve");
+    for child in ["fuse", "maxsim", "resolve"] {
+        let (c_from, c_to) = at(child);
+        assert!(
+            c_from >= p_from && c_to <= p_to,
+            "{child} [{c_from},{c_to}] escapes fuse+resolve [{p_from},{p_to}]"
+        );
+    }
+    // and the track encloses the whole ranker
+    let (t_from, t_to) = at("text_track");
+    assert!(t_from <= p_from && t_to >= p_to);
 }
 
 #[test]
@@ -147,8 +208,18 @@ fn images_query_runs_image_track_and_reports_stages() {
     assert_eq!(resp.phase, "img");
     assert!(!resp.hits.is_empty());
     let rec = record_for(&q.q);
-    let names: Vec<&str> = rec.stages.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, ["clip_embed", "image_search", "blend"]);
+    // kind=images runs no text track at all, so the image lane is the only
+    // one on the timeline
+    assert_eq!(
+        shape(&rec),
+        [
+            (perf::TRACK_IMAGE, 1, "clip_embed"),
+            (perf::TRACK_IMAGE, 1, "image_search"),
+            (perf::TRACK_IMAGE, 0, "img_track"),
+            (perf::TRACK_TEXT, 0, "blend"),
+        ]
+    );
+    assert_within_total(&rec);
     assert_eq!(rec.img_fetched, 2);
     assert_eq!(rec.img_killed, 1);
 }
@@ -163,7 +234,15 @@ fn failed_clip_embed_skips_image_search_stage() {
 
     assert!(resp.hits.is_empty());
     let rec = record_for(&q.q);
-    let names: Vec<&str> = rec.stages.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, ["clip_embed", "blend"]);
+    // the track still reports itself, so a failed encode reads as an empty
+    // lane rather than a search that never tried
+    assert_eq!(
+        shape(&rec),
+        [
+            (perf::TRACK_IMAGE, 1, "clip_embed"),
+            (perf::TRACK_IMAGE, 0, "img_track"),
+            (perf::TRACK_TEXT, 0, "blend"),
+        ]
+    );
     assert_eq!(rec.img_fetched, 0);
 }

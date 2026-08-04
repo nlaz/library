@@ -248,16 +248,14 @@ pub fn search_tool<R: fold::stream::Readable>(
         Err(e) => return e,
     };
 
-    // stage timings mirror the UI search path so the perf view can put an
-    // agent's search next to a human's and compare like with like
+    // spans mirror the UI search path so the perf view can put an agent's
+    // search next to a human's and compare like with like
     let start = Instant::now();
-    let mut stages: Vec<(String, u64)> = Vec::new();
-    let mut stage =
-        |name: &str, t: Instant| stages.push((name.to_owned(), t.elapsed().as_micros() as u64));
+    let mut trace = perf::Trace::new(start, perf::TRACK_TEXT);
 
     let t = Instant::now();
     let qemb: Emb = ese::encode_single(query);
-    stage("ese_embed", t);
+    trace.mark("ese_embed", 1, t);
     let k = k.clamp(1, TOOL_K);
     // fetch 2x: copy dedup below may drop hits, and the extras backfill.
     // complete off (agent queries are whole words, not mid-typing); fuzzy on
@@ -265,6 +263,9 @@ pub fn search_tool<R: fold::stream::Readable>(
     // recovers typos and OCR garble); diversify off (the tool does its own
     // dedup_doc_pages below).
     let t = Instant::now();
+    // the ranker's phases nest under this span, so an agent search flames
+    // exactly like a UI one (and reports its pre-fusion list sizes)
+    let mut ranker = crate::RankerStats::at(start, perf::TRACK_TEXT, 2);
     let mut hits = search(
         r,
         query,
@@ -275,9 +276,10 @@ pub fn search_tool<R: fold::stream::Readable>(
         true,
         false,
         |key| lib.get(key),
-        None,
+        Some(&mut ranker),
     );
-    stage("search", t);
+    trace.absorb(ranker.trace.clone());
+    trace.mark("search", 1, t);
 
     let t = Instant::now();
     let fetched = hits.len();
@@ -298,7 +300,7 @@ pub fn search_tool<R: fold::stream::Readable>(
         keep_it
     });
     hits.truncate(k);
-    stage("dedup+cutoff", t);
+    trace.mark("dedup+cutoff", 1, t);
 
     let top_bm25 = hits.iter().map(|h| h.bm25).fold(0.0f32, f32::max);
     let coverage = query_coverage(query, &hits);
@@ -347,7 +349,8 @@ pub fn search_tool<R: fold::stream::Readable>(
             }
         }
     }
-    stage("top_hit_page", t);
+    trace.mark("top_hit_page", 1, t);
+    trace.mark("search_tool", 0, start);
 
     // The agent's searches used to be invisible: only `answer()` recorded,
     // so "why did the librarian say that?" bottomed out at a tool summary
@@ -364,11 +367,9 @@ pub fn search_tool<R: fold::stream::Readable>(
         offset: 0,
         phase: "tool".into(),
         total_us: start.elapsed().as_micros() as u64,
-        stages,
-        // the agent path calls search() directly, which doesn't report
-        // pre-fusion list sizes; the UI renders these as "not measured"
-        lex_n: 0,
-        sem_n: 0,
+        spans: trace.take(),
+        lex_n: ranker.lex_n,
+        sem_n: ranker.sem_n,
         rel_killed,
         img_fetched: 0,
         img_killed: 0,

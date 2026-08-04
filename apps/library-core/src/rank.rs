@@ -1,11 +1,14 @@
 //! Hybrid search: lexical + semantic fused by normalized-score blend, plus
 //! MMR diversity.
 
+use std::time::Instant;
+
 use fold::pipeline::Scored;
 use fold::stream::Readable;
 use fxhash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
+use crate::perf::Trace;
 use crate::records::is_reserved;
 use crate::text::tokenize;
 use crate::{ChunkKey, ChunkRec, Emb, FxHashSet, Readers, Word, dot};
@@ -40,23 +43,34 @@ pub struct Hit {
     pub words: Vec<Word>,
 }
 
-/// Pre-fusion ranker list sizes and per-phase timings, reported through the
-/// `stats` out-param of [`search`] — the fused hit list alone can't
-/// reconstruct them. The timing fields become the perf view's sub-stages of
-/// the text search (formerly one opaque "lex+rrf" span).
-#[derive(Debug, Clone, Copy, Default)]
+/// Pre-fusion ranker list sizes and the ranker's span tree, reported through
+/// the `stats` out-param of [`search`] — the fused hit list alone can't
+/// reconstruct them. The trace becomes the perf view's sub-stages of the text
+/// search (formerly one opaque "lex+rrf" span).
+///
+/// Construct with [`RankerStats::at`] to pin the trace to the enclosing
+/// search's origin; `default()` measures from wherever it was made, which is
+/// only right for a caller that owns the whole timeline.
+#[derive(Debug, Clone, Default)]
 pub struct RankerStats {
     pub lex_n: usize,
     pub sem_n: usize,
-    /// µs: tokenization + typeahead completion + fuzzy vocabulary correction.
-    pub term_expand_us: u64,
-    /// µs: BM25 postings search (plus relevance-map assembly).
-    pub lex_search_us: u64,
-    /// µs: HNSW vector search (0 when the query has no embedding).
-    pub vec_search_us: u64,
-    /// µs: score fusion + MMR re-rank + hit resolution (primary-table
-    /// point-reads).
-    pub fuse_us: u64,
+    /// term_expand / lex_search / vec_search / fuse+resolve at `depth`, and
+    /// fuse / maxsim / mmr / resolve one deeper.
+    pub trace: Trace,
+}
+
+impl RankerStats {
+    /// Stats whose spans are offsets from `origin` on `track`, nested `depth`
+    /// levels down — so a caller that already opened a span for "the search"
+    /// gets the ranker's phases as its children.
+    pub fn at(origin: Instant, track: u8, depth: u8) -> Self {
+        RankerStats {
+            lex_n: 0,
+            sem_n: 0,
+            trace: Trace::at_depth(origin, track, depth),
+        }
+    }
 }
 
 /// Hits scoring below this fraction of the query's top BM25 hit are noise;
@@ -432,8 +446,17 @@ pub fn search<R: Readable>(
 ) -> Vec<Hit> {
     let ((lex, vec), (_, terms)) = r;
 
-    let mut st = RankerStats::default();
-    let t = std::time::Instant::now();
+    // keep the caller's origin, track and nesting: the local-then-copy shape
+    // below would otherwise overwrite them with a fresh timeline
+    let mut st = match &stats {
+        Some(s) => RankerStats {
+            lex_n: 0,
+            sem_n: 0,
+            trace: s.trace.clone(),
+        },
+        None => RankerStats::default(),
+    };
+    let t = Instant::now();
     let orig = tokenize(query);
     let mut toks = orig.clone();
     if complete && let Some(last) = toks.last().cloned() {
@@ -459,7 +482,7 @@ pub fn search<R: Readable>(
             }
         }
     }
-    st.term_expand_us = t.elapsed().as_micros() as u64;
+    st.trace.mark("term_expand", 0, t);
     if toks.is_empty() {
         if let Some(s) = stats {
             *s = st;
@@ -473,7 +496,7 @@ pub fn search<R: Readable>(
 
     // give fusion headroom beyond the final k (and keep the list pinned — see LEX_FETCH)
     let fetch = k.max(LEX_FETCH);
-    let t = std::time::Instant::now();
+    let t = Instant::now();
     let scored = match filter {
         Some(f) => lex.search_filtered(&expanded, fetch, |key: &ChunkKey| f.contains(&key.doc)),
         None => lex.search(&expanded, fetch),
@@ -496,8 +519,8 @@ pub fn search<R: Readable>(
         .enumerate()
         .map(|(i, k)| (k.clone(), i as u32))
         .collect();
-    st.lex_search_us = t.elapsed().as_micros() as u64;
-    let t = std::time::Instant::now();
+    st.trace.mark("lex_search", 0, t);
+    let t = Instant::now();
     let sem_scored: Vec<Scored<f32, ChunkKey>> = match (qemb, filter) {
         (Some(e), Some(f)) => vec.search_filtered(e, |key: &ChunkKey| f.contains(&key.doc)),
         (Some(e), None) => vec.search(e),
@@ -508,11 +531,16 @@ pub fn search<R: Readable>(
         .enumerate()
         .map(|(i, h)| (h.val.clone(), (i as u32, h.score)))
         .collect();
-    st.vec_search_us = t.elapsed().as_micros() as u64;
+    // no embedding means no vector search ran; an empty span would read as a
+    // measured zero rather than a stage that didn't happen
+    if qemb.is_some() {
+        st.trace.mark("vec_search", 0, t);
+    }
     st.lex_n = lexical.len();
     st.sem_n = sem_scored.len();
 
-    let t = std::time::Instant::now();
+    let outer = Instant::now();
+    let t = outer;
     // fusion inputs: each list normalized to its own top. Lexical reuses
     // the rel map; semantic converts cosine distance to similarity (HNSW
     // returns distance, best first) and normalizes by the top hit's.
@@ -530,17 +558,24 @@ pub fn search<R: Readable>(
         })
         .collect();
     let fused = fuse(&lex_list, &sem_list);
+    st.trace.mark("fuse", 1, t);
     // late-interaction re-rank of the top pool: word-level matching the
     // pooled embeddings can't see. Cheap enough for every keystroke.
+    let t = Instant::now();
     let fused = maxsim_rerank(fused, query, &resolve);
+    st.trace.mark("maxsim", 1, t);
     // diversity: demote near-duplicates (same book/edition) among the top
     // hits. Full queries only — the per-keystroke path can't afford the
     // embedding reads, and doc-scoped browser-find must keep full coverage.
     let ordered = if diversify {
-        mmr_rerank(fused, &resolve)
+        let t = Instant::now();
+        let out = mmr_rerank(fused, &resolve);
+        st.trace.mark("mmr", 1, t);
+        out
     } else {
         fused
     };
+    let t = Instant::now();
     let hits: Vec<Hit> = ordered
         .into_iter()
         .take(k)
@@ -563,7 +598,11 @@ pub fn search<R: Readable>(
             })
         })
         .collect();
-    st.fuse_us = t.elapsed().as_micros() as u64;
+    st.trace.mark("resolve", 1, t);
+    // the parent closes last because it ends last; emission order carries no
+    // meaning (the client sorts by offset, and `outer` starts before every
+    // child above), but its span has to cover all four
+    st.trace.mark("fuse+resolve", 0, outer);
     if let Some(s) = stats {
         *s = st;
     }

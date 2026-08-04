@@ -10,21 +10,35 @@ use crate::{Bbox, Hit, ImageHit, Word, tokenize};
 
 pub type Collections = std::collections::BTreeMap<String, Vec<String>>;
 
-/// Number of rendered page images already in a doc's `data/pages/<doc>/`
-/// directory — every host uses this to tell the reader how far it can
-/// scroll (the reader has no other source of a doc's total page count).
-pub fn count_pages(doc_pages_dir: &std::path::Path) -> u32 {
-    std::fs::read_dir(doc_pages_dir)
-        .map(|it| {
-            it.flatten()
-                .filter(|f| {
-                    let n = f.file_name();
-                    let n = n.to_string_lossy();
-                    n.starts_with("page-") && n.ends_with(".jpg")
-                })
-                .count() as u32
-        })
-        .unwrap_or(0)
+/// How many pages a document has — what every host tells the reader so it
+/// knows how far it can scroll.
+///
+/// Counted from the OCR sidecars (`data/ocr/<doc>/page-NNNN.json`) rather
+/// than the page renders, because the two answer different questions. A
+/// render is derived and re-creatable from the source file; the OCR is the
+/// expensive, non-reproducible part and never goes away. Counting renders
+/// would make a document's length a function of what happens to be cached,
+/// which is exactly wrong once `data/pages` is a cache.
+///
+/// The render count is still taken as an upper bound, for one window:
+/// `process_page` writes a page's JPEG before its JSON, so mid-ingest the
+/// renders briefly lead. Taking the max means the reader never *under*counts
+/// a document being ingested right now.
+pub fn count_pages(data: &std::path::Path, doc: &str) -> u32 {
+    let n = |dir: std::path::PathBuf, ext: &str| -> u32 {
+        std::fs::read_dir(dir)
+            .map(|it| {
+                it.flatten()
+                    .filter(|f| {
+                        let n = f.file_name();
+                        let n = n.to_string_lossy();
+                        n.starts_with("page-") && n.ends_with(ext)
+                    })
+                    .count() as u32
+            })
+            .unwrap_or(0)
+    };
+    n(data.join("ocr").join(doc), ".json").max(n(data.join("pages").join(doc), ".jpg"))
 }
 
 #[derive(Serialize)]
@@ -275,6 +289,66 @@ pub fn decorate_reserved_hits(hits: &mut [WireHit], meta: &crate::meta::Meta) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pages_fixture(name: &str, ocr: u32, jpg: u32) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "wire-count-{}-{name}-{}",
+            std::process::id(),
+            ocr * 1000 + jpg
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (o, p) = (dir.join("ocr").join("d"), dir.join("pages").join("d"));
+        std::fs::create_dir_all(&o).unwrap();
+        std::fs::create_dir_all(&p).unwrap();
+        for i in 1..=ocr {
+            std::fs::write(o.join(format!("page-{i:04}.json")), b"{}").unwrap();
+        }
+        for i in 1..=jpg {
+            std::fs::write(p.join(format!("page-{i:04}.jpg")), b"x").unwrap();
+        }
+        dir
+    }
+
+    // The whole point of the change: a document's length must not depend on
+    // what happens to be cached. An evicted book still has all its pages.
+    #[test]
+    fn pages_are_counted_from_ocr_not_renders() {
+        let dir = pages_fixture("evicted", 5, 0);
+        assert_eq!(count_pages(&dir, "d"), 5);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ...but process_page writes a page's JPEG before its JSON, so during an
+    // ingest the renders lead. Taking the max means the reader never
+    // undercounts a book being built right now.
+    #[test]
+    fn renders_are_an_upper_bound_while_ingest_is_running() {
+        let dir = pages_fixture("mid-ingest", 3, 5);
+        assert_eq!(count_pages(&dir, "d"), 5);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let dir = pages_fixture("settled", 5, 5);
+        assert_eq!(count_pages(&dir, "d"), 5);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unknown_doc_has_no_pages() {
+        let dir = pages_fixture("unknown", 2, 2);
+        assert_eq!(count_pages(&dir, "nobody"), 0);
+        assert_eq!(count_pages(std::path::Path::new("/nonexistent"), "d"), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_page_files_count() {
+        let dir = pages_fixture("junk", 2, 0);
+        let o = dir.join("ocr").join("d");
+        std::fs::write(o.join("notes.json"), b"{}").unwrap();
+        std::fs::write(o.join("page-0003.json.tmp"), b"{}").unwrap();
+        assert_eq!(count_pages(&dir, "d"), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn hit(kind: &'static str, n: u32) -> WireHit {
         WireHit {

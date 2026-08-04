@@ -74,7 +74,9 @@ pub(crate) async fn perf_searches(state: State<'_, AppState>) -> Result<serde_js
             .read()
             .expect("images lock poisoned")
             .rtx(|(vec, _)| vec.len());
-        let docs = std::fs::read_dir(data.join("pages"))
+        // ocr/, not pages/: renders are an evictable cache and would
+        // undercount a library that has evicted any
+        let docs = std::fs::read_dir(data.join("ocr"))
             .map(|d| d.filter_map(|e| e.ok()).count())
             .unwrap_or(0);
         serde_json::json!({

@@ -479,7 +479,9 @@ fn disk_scan(data: &Path) -> DiskScan {
     }
     let s = DiskScan {
         at: std::time::Instant::now(),
-        docs: std::fs::read_dir(data.join("pages"))
+        // ocr/, not pages/: renders are an evictable cache, so counting them
+        // would report the corpus shrinking every time the sweep runs
+        docs: std::fs::read_dir(data.join("ocr"))
             .map(|d| d.filter_map(|e| e.ok()).count())
             .unwrap_or(0),
         pdf: dir_bytes(&data.join("pdfs")),
@@ -783,7 +785,7 @@ pub fn ingest_rows(ctx: &Ctx) -> Vec<Value> {
             }
         }
 
-        let pages = crate::wire::count_pages(&data.join("pages").join(&doc));
+        let pages = crate::wire::count_pages(data, &doc);
         let title = titles
             .get(&doc)
             .cloned()

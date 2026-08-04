@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+import { SPAN_NAMES } from "./perf-flame";
 import { GLOSS, evidence } from "./perf-gloss";
 
 const EMPTY = { searches: [], ingest: [], agent: [] };
@@ -17,6 +18,13 @@ describe("GLOSS", () => {
 
     expect(marked.length).toBeGreaterThan(0);
     expect([...new Set(marked)].filter((t) => !GLOSS[t])).toEqual([]);
+  });
+
+  // Flame blocks are marked up from the span name the server sent, so the
+  // regex above can't see them — a span renamed in Rust would silently start
+  // popping up an empty tooltip. SPAN_NAMES is the list it checks instead.
+  it("covers every span the flame chart can draw", () => {
+    expect(SPAN_NAMES.filter((n) => !GLOSS[n])).toEqual([]);
   });
 
   it("gives every term a non-empty reading", () => {

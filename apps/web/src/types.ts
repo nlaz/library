@@ -149,6 +149,20 @@ export type HitProv = {
 
 export type ImgProv = { doc: string; page: number; idx: number; sim: number };
 
+/** One measured span of a search. `at_us` is an offset from the search's
+ * start — shared by both tracks, which is what lets the flame chart draw the
+ * text and image tracks' concurrency instead of implying a sequence. `depth`
+ * nests a span under the enclosing one on the same track; the root is
+ * implicit (the record's `total_us`), so unmeasured time reads as a gap. */
+export type Span = {
+  name: string;
+  at_us: number;
+  us: number;
+  depth: number;
+  /** 0 = text, 1 = image. */
+  track: number;
+};
+
 /** One answered query from the server-side ring buffer. */
 export type SearchRecord = {
   ts_ms: number;
@@ -160,7 +174,7 @@ export type SearchRecord = {
   offset: number;
   phase: string;
   total_us: number;
-  stages: [string, number][];
+  spans: Span[];
   lex_n: number;
   sem_n: number;
   rel_killed: number;

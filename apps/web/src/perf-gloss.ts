@@ -12,7 +12,8 @@
 // whose stdin loop cancels the active turn on every new request and would
 // kill an in-flight chat. Not built; the seam is here.
 
-import { median } from "./perf-fmt";
+import { spanMedian } from "./perf-flame";
+import { median, us } from "./perf-fmt";
 import type { AgentTurn, IngestRow, SearchRecord } from "./types";
 
 export type Gloss = {
@@ -81,6 +82,62 @@ export const GLOSS: Record<string, Gloss> = {
   clip_dim: { what: "Dimensionality of the CLIP embeddings backing figure search." },
   search_log_cap: {
     what: "How many searches the server's ring buffer keeps. Older ones are gone — this view can only show what's still in the ring.",
+  },
+
+  // --- search spans (the flame chart's blocks) ---
+  text_track: {
+    what: "The whole text half of a search: embed the query, expand its terms, run both rankers, fuse and resolve. Runs on the calling thread while the image track runs beside it, so the two lanes overlap on purpose.",
+  },
+  img_track: {
+    what: "The whole image half of a search: encode the query with CLIP, search the figure index, cut on the spread. Spawned on its own thread so its cost hides under the text track instead of adding to the total.",
+  },
+  ese_embed: {
+    what: "Encoding the query into a text embedding with the compiled-in ese model. Skipped entirely on instant (per-keystroke) and doc-scoped queries, which stay lexical.",
+  },
+  term_expand: {
+    what: "Tokenizing the query, then completing the trailing word from the term dictionary (type-ahead) and correcting unknown words to their nearest real vocabulary (fuzzy). Both feed the exact lexical index.",
+  },
+  lex_search: {
+    what: "The BM25 postings scan, plus assembling the relevance map. Cost is independent of how many hits are wanted — postings are scanned in full and truncated at the end — so it tracks corpus size and query term count, not LEX_FETCH.",
+  },
+  vec_search: {
+    what: "The HNSW nearest-neighbor search over chunk embeddings. Absent when the query has no embedding — an instant query records no span here at all rather than a measured zero.",
+  },
+  "fuse+resolve": {
+    what: "Everything after both rankers return: blending their lists, the MaxSim re-rank, MMR diversification, and the point-reads that turn keys into hits. The blocks nested under it are where its time actually goes.",
+  },
+  fuse: {
+    what: "Blending the lexical and semantic lists into one order, each normalized to its own per-query top and weighted by FUSE_W. Note cards take their boost here.",
+  },
+  maxsim: {
+    what: "The MaxSim late-interaction re-rank — normally the most expensive block on the chart. Every query token is scored against every distinct word of every pooled chunk, which at a 30-chunk pool is ~95k dot products. Watch this one before raising RERANK's pool.",
+  },
+  mmr: {
+    what: "Maximal-marginal-relevance diversification: demoting near-duplicates among the top hits. Full queries only, so an instant search records no span here.",
+  },
+  resolve: {
+    what: "Reading each surviving hit's words back out of the primary table — one point-read per hit. Grows with how many hits are asked for, which is why doc-scoped find (K_DOC) costs more here than a normal page.",
+  },
+  clip_embed: {
+    what: "Encoding the query into CLIP's shared text/image space. Runs through ONNX Runtime, so it is the slowest thing on the image lane and the reason that lane starts before it can search anything.",
+  },
+  image_search: {
+    what: "The HNSW search over figure embeddings plus the spread cutoff that drops figures too close to the noise floor.",
+  },
+  blend: {
+    what: "Interleaving the text and image hits into the served order and slicing out one page of it. The last thing a search does, and reliably the cheapest.",
+  },
+  search_tool: {
+    what: "One search the librarian agent ran as a tool call. Same ranker as a human's search, different framing: no type-ahead completion, no diversification, and its own page-level dedup afterwards.",
+  },
+  search: {
+    what: "The ranker call inside an agent's tool search — the same code path a UI search takes, with its phases nested underneath.",
+  },
+  "dedup+cutoff": {
+    what: "Dropping hits below the relevance floor, then collapsing multiple hits from one page down to one so the model sees distinct pages rather than the same page repeated.",
+  },
+  top_hit_page: {
+    what: "Reading the top hit's whole page so it rides back with the tool result — one hop instead of the model asking for it in a second turn. Skipped when confidence is none.",
   },
 
   // --- ingest ---
@@ -207,6 +264,24 @@ export function evidence(name: string, d: Rings): string | null {
     case "LEX_FETCH": {
       const m = median(searches.map((r) => r.lex_n));
       return m === null ? null : `lexical ranker returned a median of ${m} candidates`;
+    }
+    // the re-rank is the block that dominates the chart, and its share of a
+    // search is the number to check before touching RERANK's pool or weight
+    case "RERANK":
+    case "maxsim": {
+      const m = spanMedian(searches, "maxsim");
+      if (m === null) return null;
+      const total = median(searches.filter((r) => r.spans.some((s) => s.name === "maxsim")).map((r) => r.total_us));
+      const share = total ? ` · ${Math.round((m / total) * 100)}% of a median search` : "";
+      return `median re-rank across the ring: ${us(m)}${share}`;
+    }
+    case "lex_search":
+    case "vec_search":
+    case "ese_embed":
+    case "resolve":
+    case "fuse+resolve": {
+      const m = spanMedian(searches, name);
+      return m === null ? null : `median across ${n} searches: ${us(m)}`;
     }
     case "search_log_cap": {
       if (!n) return "ring is empty";

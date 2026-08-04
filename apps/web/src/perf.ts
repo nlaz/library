@@ -1,7 +1,8 @@
 // Hidden performance view (Cmd+.): four tabs over the subsystems worth
-// tuning — recent searches with per-stage timings and per-hit ranker
-// provenance, per-doc ingest metrics, the chat agent's turn provenance,
-// and memory provenance (where RAM goes, against process RSS).
+// tuning — recent searches, each expanding into a flame chart of its span
+// tree and its per-hit ranker provenance; per-doc ingest metrics; the chat
+// agent's turn provenance; and memory provenance (where RAM goes, against
+// process RSS).
 // Dense and labeled for human tuning — and self-describing enough (grouped
 // constants header, absolute numbers with units) that a screenshot alone
 // carries the state an agent needs to troubleshoot.
@@ -14,6 +15,7 @@
 import { agentLog, agentVersion } from "./agent-log";
 import { renderAgent } from "./perf-agent";
 import { bytes, esc, hhmmss, localStamp, opt, term, us } from "./perf-fmt";
+import { labelMode, layout, summary } from "./perf-flame";
 import { GLOSS, evidence } from "./perf-gloss";
 import { isTauri } from "./transport";
 import type { IngestRow, MemoryBreakdown, PerfMeta, SearchRecord, StoreMem } from "./types";
@@ -390,7 +392,11 @@ function renderSearches(all: SearchRecord[]) {
   const expandTs = pinned ?? primary.ts_ms;
   const rows = recs
     .map((r) => {
-      const stages = r.stages.map(([n, t]) => `${esc(n)}=${us(t)}`).join(" ");
+      // depth 1 only: the track totals say nothing the row's `total` doesn't,
+      // and the fusion children are what the expanded chart is for
+      const stages = summary(r.spans)
+        .map((s) => `${esc(s.name)}=${us(s.us)}`)
+        .join(" ");
       const killed = `rel:${r.rel_killed} img:${r.img_killed}`;
       const open = r.ts_ms === expandTs;
       const zero = r.zero ? ` <span class="flag">ZERO</span>` : "";
@@ -402,9 +408,7 @@ function renderSearches(all: SearchRecord[]) {
         `<td>${esc(r.phase)}</td>` +
         `<td class="n">${us(r.total_us)}</td>` +
         `<td class="stages">${stages}</td>` +
-        // the agent path calls search() directly, which never reports
-        // pre-fusion list sizes — say "not measured", not "0/0"
-        `<td class="n">${r.mode === "agent" ? "—" : `${r.lex_n}/${r.sem_n}`}</td>` +
+        `<td class="n">${r.lex_n}/${r.sem_n}</td>` +
         `<td class="n">${killed}</td>` +
         `<td class="n">${r.served}${zero}</td>` +
         `</tr>` +
@@ -439,23 +443,77 @@ function wireSrcChips(all: SearchRecord[]) {
   }
 }
 
-/** Expanded record: stage waterfall + provenance tables. */
-function detail(r: SearchRecord): string {
-  const total = Math.max(
-    r.total_us,
-    r.stages.reduce((a, [, t]) => a + t, 0),
-    1,
-  );
-  const bars = r.stages
-    .map(([n, t]) => {
-      const pct = Math.max(0.5, (t / total) * 100);
+/** The lane a track's blocks sit in, labeled where the lane starts. */
+const LANE_NAME: Record<number, string> = { 0: "text", 1: "image" };
+/** Left gutter holding those lane labels — `#perf .flame`'s 6ch margin. */
+const GUTTER_PX = 45;
+
+/**
+ * The search's span tree as a flame chart: x is elapsed time, y is nesting.
+ *
+ * Built as positioned DOM rather than canvas. There are only ever a dozen or
+ * so blocks, and DOM gets the theme for free — no `getComputedStyle` token
+ * re-read and `matchMedia` redraw the way atlas.ts needs — while staying
+ * selectable and hoverable through the existing term popover.
+ */
+function flame(r: SearchRecord): string {
+  if (!r.spans.length) return "";
+  const f = layout(r.spans, r.total_us);
+  // real width, so "does this label fit" is answered against pixels rather
+  // than a guess. The pane is already laid out; 900 is the pre-layout floor.
+  const chartPx = Math.max(($searchBody.clientWidth || 900) - GUTTER_PX, 200);
+  const root =
+    `<span class="fl-block fl-root" style="left:0;width:100%" ` +
+    `title="the whole search — spans that claim none of it are unmeasured time">` +
+    `<i>total</i> ${us(r.total_us)}</span>`;
+  const blocks = f.blocks
+    .map((b) => {
+      // depth shades by texture, not hue: a rainbow flamegraph would read as
+      // categorical color in a design system that has exactly one accent
+      const d = Math.min(b.depth, 2);
+      // the block's own numbers ride into the glossary popover rather than a
+      // native title, so a block has one tooltip and not two racing ones
+      const self = b.self_us !== b.us ? `, ${us(b.self_us)} outside its children` : "";
+      const detail = `${us(b.us)} starting +${us(b.at_us)} into the search${self}`;
+      // a block too thin for its own name shows none of it — the popover
+      // still names it, and clipped glyphs would read as corruption
+      const dur = us(b.us);
+      const mode = labelMode(b.name, dur, (b.width / 100) * chartPx);
+      const label =
+        mode === "full"
+          ? `<i>${esc(b.name)}</i> ${dur}`
+          : mode === "name"
+            ? `<i>${esc(b.name)}</i>`
+            : "";
       return (
-        `<div class="bar-row"><span class="bar-label">${esc(n)}</span>` +
-        `<span class="bar-track"><span class="bar" style="width:${pct}%"></span></span>` +
-        `<span class="bar-us">${us(t)}</span></div>`
+        `<span class="fl-block fl-d${d}" data-term="${esc(b.name)}"` +
+        ` data-detail="${esc(detail)}" tabindex="0"` +
+        ` style="left:${b.left.toFixed(3)}%;width:${b.width.toFixed(3)}%;--fl-row:${b.row}"` +
+        `>${label}</span>`
       );
     })
     .join("");
+  const lanes = f.lanes
+    .map(
+      (l) =>
+        `<span class="fl-lane" style="--fl-row:${
+          f.blocks.find((b) => b.track === l.track)!.row
+        }">${esc(LANE_NAME[l.track] ?? `track ${l.track}`)}</span>`,
+    )
+    .join("");
+  // the axis states the scale the percentages are against — without it a
+  // reader can only compare blocks to each other, never to a number
+  const axis =
+    `<div class="fl-axis"><span>0</span><span>${us(Math.round(f.span_us / 2))}</span>` +
+    `<span>${us(f.span_us)}</span></div>`;
+  return (
+    `<div class="flame" style="--fl-rows:${f.rows}">${root}${blocks}${lanes}</div>${axis}`
+  );
+}
+
+/** Expanded record: flame chart + provenance tables. */
+function detail(r: SearchRecord): string {
+  const bars = flame(r);
 
   let text = "";
   if (r.text_hits.length) {
@@ -504,7 +562,7 @@ function detail(r: SearchRecord): string {
     .filter(Boolean)
     .map((c) => `<div class="prov-col">${c}</div>`)
     .join("");
-  return `<div class="waterfall">${bars}</div>${cols ? `<div class="prov-cols">${cols}</div>` : ""}`;
+  return `${bars}${cols ? `<div class="prov-cols">${cols}</div>` : ""}`;
 }
 
 // --- ingest -----------------------------------------------------------------
@@ -884,8 +942,11 @@ function showPopover(el: HTMLElement) {
   const g = GLOSS[name];
   if (!g) return;
   const live = evidence(name, { searches, ingest, agent: agentLog() });
+  // a flame block carries its own measurement; a header constant doesn't
+  const detail = el.dataset.detail;
   $pop.innerHTML =
     `<div class="pop-head">${esc(el.textContent?.trim() ?? name)}</div>` +
+    (detail ? `<div class="pop-range">${esc(detail)}</div>` : "") +
     `<div class="pop-what">${esc(g.what)}</div>` +
     (g.range ? `<div class="pop-range">${esc(g.range)}</div>` : "") +
     (live ? `<div class="pop-live"><i>live</i> ${esc(live)}</div>` : "");

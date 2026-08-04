@@ -220,42 +220,119 @@
   letter-spacing: var(--track-label);
 }
 
-#perf .waterfall {
-  margin-bottom: var(--sp-3);
-  max-width: 640px;
-}
+/* Search flame chart: x is elapsed time, y is nesting. Blocks are absolutely
+   positioned off percentages computed in perf-flame.ts — the geometry is
+   entirely in the model, and this sheet only says what a row looks like.
 
-#perf .bar-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-bottom: 2px;
-}
-
-#perf .bar-label {
-  flex: 0 0 12ch;
-  color: var(--ink-dim);
-  font-size: var(--fs-micro);
-  text-align: right;
-}
-
-#perf .bar-track {
-  flex: 1;
-  background: var(--well);
-  height: 10px;
+   Depth reads as ground, not hue. A conventional flamegraph colors frames at
+   random to separate them, which in a design system with exactly one accent
+   would read as categorical meaning that isn't there. Dither was the first
+   attempt and it lost: every block here carries 10px type, and a 12% tile
+   behind that is speckle through the letterforms. So each level steps one
+   surface further into the page instead — wash, surface, well — which recedes
+   without touching contrast. */
+#perf .flame {
   position: relative;
+  /* left gutter holds the lane labels */
+  margin: 0 0 var(--sp-1) 6ch;
+  height: calc(var(--fl-rows) * var(--fl-h));
+  --fl-h: 15px;
 }
 
-#perf .bar {
-  display: block;
-  height: 100%;
-  background: var(--hl-line);
-}
-
-#perf .bar-us {
-  flex: 0 0 9ch;
-  font-variant-numeric: tabular-nums;
+#perf .fl-block {
+  position: absolute;
+  top: calc(var(--fl-row) * var(--fl-h));
+  height: calc(var(--fl-h) - 2px);
+  box-sizing: border-box;
+  padding: 0 3px;
   font-size: var(--fs-micro);
+  line-height: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--surface);
+  outline: 1px solid var(--line);
+  outline-offset: -1px;
+  cursor: default;
+}
+
+#perf .fl-block i {
+  font-style: normal;
+  letter-spacing: var(--track-label);
+}
+
+/* The search itself: a solid accent fill, so it takes --hl-line and never
+   --hl (tokens.css §2 — the wash only clears 2.1:1 in the light theme).
+
+   This is the one --hl-line fill in the app carrying type; every other one
+   is a textless mark (a rail tick, a progress fill, an atlas dot). That
+   matters, because --hl-line is dark brass in light and *light* brass in
+   dark, so a fixed ink can only work in one of them: --paper on it reads
+   4.7:1 in light and 1.5:1 in dark, which is a legible bar and an illegible
+   one. The ink has to flip with the token it sits on. */
+#perf .fl-root {
+  top: 0;
+  background: var(--hl-line);
+  color: var(--paper);
+  outline-color: var(--hl-line);
+}
+
+@media (prefers-color-scheme: dark) {
+  #perf .fl-root {
+    color: var(--bg);
+  }
+}
+
+/* depth 0 — a track. Washed, so a lane reads as one thing at a glance. */
+#perf .fl-d0 {
+  background: var(--hl-wash);
+  outline-color: var(--hl-line);
+}
+
+/* depth 1 — a stage */
+#perf .fl-d1 {
+  outline-color: var(--line-strong);
+}
+
+/* depth 2 — inside a stage, one surface further back */
+#perf .fl-d2 {
+  background: var(--well);
+}
+
+#perf .fl-block:hover,
+#perf .fl-block:focus-visible {
+  background: var(--hl-wash);
+  outline: 1px solid var(--hl-line);
+  outline-offset: -1px;
+  color: var(--ink);
+}
+
+/* which lane a row belongs to, in the gutter beside its track block */
+#perf .fl-lane {
+  position: absolute;
+  left: -6ch;
+  width: 6ch;
+  top: calc(var(--fl-row) * var(--fl-h));
+  padding-right: var(--sp-1);
+  text-align: right;
+  font-size: var(--fs-micro);
+  line-height: 13px;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+}
+
+/* the scale the percentages are against — without it blocks can only be
+   compared to each other, never read as a duration */
+#perf .fl-axis {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 var(--sp-3) 6ch;
+  padding-top: 2px;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
 }
 
 #perf .prov-title {
@@ -340,6 +417,48 @@
 }
 
 /* --- agent tab ----------------------------------------------------------- */
+
+/* The offset timeline of a chat turn. The search tab used to share this
+   primitive; it draws a flame chart now (spans nest and overlap, which rows
+   of labelled bars can't say), and the agent's flat tool chain does not, so
+   the bars live here with their only remaining caller. */
+#perf .waterfall {
+  margin-bottom: var(--sp-3);
+  max-width: 640px;
+}
+
+#perf .bar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: 2px;
+}
+
+#perf .bar-label {
+  flex: 0 0 12ch;
+  color: var(--ink-dim);
+  font-size: var(--fs-micro);
+  text-align: right;
+}
+
+#perf .bar-track {
+  flex: 1;
+  background: var(--well);
+  height: 10px;
+  position: relative;
+}
+
+#perf .bar {
+  display: block;
+  height: 100%;
+  background: var(--hl-line);
+}
+
+#perf .bar-us {
+  flex: 0 0 9ch;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-micro);
+}
 
 /* tool names run long (library_overview is 16 chars) */
 #perf .waterfall.wide {

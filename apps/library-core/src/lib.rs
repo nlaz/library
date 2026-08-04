@@ -29,7 +29,10 @@ pub use images::{
     open_images, try_open_images,
 };
 pub use rank::{Hit, LEX_FETCH, MIN_REL, RankerStats, search};
-pub(crate) use rank::{MMR_LAMBDA, MMR_POOL};
+// the tuning constants the perf header reports; not part of the crate's API
+pub(crate) use rank::{
+    FUSE_LEX_WEIGHT, FUZZ_CANDIDATES, MMR_LAMBDA, MMR_POOL, NOTE_BOOST, RERANK_POOL, RERANK_WEIGHT,
+};
 pub use records::{ChunkKey, ChunkRec, Word};
 pub use store::{
     ChunkIn, Graph, LexSink, LexTok, Library, ManifestSink, Readers, TermSink, VecIndex, VecSink,

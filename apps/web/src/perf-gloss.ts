@@ -60,11 +60,22 @@ export const GLOSS: Record<string, Gloss> = {
     what: "The relevance floor for figure hits, applied alongside the spread cutoff (which drops figures too close to the noise floor).",
     range: "0–1 · figures only",
   },
-  RRF_K: {
-    what: "The reciprocal-rank-fusion constant that merges the lexical and semantic lists. Larger flattens the weight of top ranks, so the two rankers have to agree more to win.",
+  FUSE_W: {
+    what: "The lexical share of the fused score: w·lexical + (1−w) semantic, each normalized to its own per-query top. 0.5 was the only setting in the 2026-07 sweep that beat rank-only RRF on every workload — lower favors paraphrase and loses known-item recall, higher the reverse.",
+    range: "0–1 · 1.0 = lexical only",
+  },
+  NOTE_BOOST: {
+    what: "How much a note card's fused score is multiplied by. Prose the reader wrote is a stronger statement of what matters to them than a page the ingester happened to OCR, so a card should outrank a page carrying comparable evidence. Not a sweep result — the gold set is books only.",
+  },
+  RERANK: {
+    what: "The MaxSim late-interaction re-rank, shown as weight/pool. Each query token takes its best match against the chunk's word vectors — word-level interaction the pooled embedding averages away — and that blends with the fused score. Pool is how many top hits get rescored.",
+    range: "weight 0–1 · quality peaks at pool 30 and declines past 50",
   },
   MMR: {
     what: "Maximal-marginal-relevance diversification, shown as lambda/pool. Lambda trades relevance against variety (1.0 = pure relevance); pool is how many candidates it reranks.",
+  },
+  FUZZ_CANDIDATES: {
+    what: "How many real vocabulary words each unknown query word is corrected to before it reaches the lexical index. Words already in the vocabulary expand to nothing, so a clean query is untouched and only typos and OCR garble pay.",
   },
   emb_dim: { what: "Dimensionality of the ese text embeddings backing semantic search." },
   clip_dim: { what: "Dimensionality of the CLIP embeddings backing figure search." },

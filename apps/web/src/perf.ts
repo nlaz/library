@@ -330,8 +330,14 @@ function searchFacts(): [string, string][] {
     ],
     [
       "fuse",
-      `${term("RRF_K", `RRF_K=${meta.rrf_k}`)}` +
-        ` ${term("MMR", `MMR=${f(meta.mmr_lambda)}/${meta.mmr_pool}`)}`,
+      `${term("FUSE_W", `FUSE_W=${f(meta.fuse_lex_weight)}`)}` +
+        ` ${term("NOTE_BOOST", `NOTE_BOOST=${f(meta.note_boost)}`)}`,
+    ],
+    [
+      "rerank",
+      `${term("RERANK", `RERANK=${f(meta.rerank_weight)}/${meta.rerank_pool}`)}` +
+        ` ${term("MMR", `MMR=${f(meta.mmr_lambda)}/${meta.mmr_pool}`)}` +
+        ` ${term("FUZZ_CANDIDATES", `FUZZ=${meta.fuzz_candidates}`)}`,
     ],
     [
       "dim",
@@ -465,7 +471,7 @@ function detail(r: SearchRecord): string {
           `<td class="n">${h.bm25.toFixed(2)}</td>` +
           `<td class="n">${h.rel.toFixed(2)}</td>` +
           `<td class="n">${opt(h.sem_dist, (d) => d.toFixed(3))}</td>` +
-          `<td class="n">${h.rrf.toFixed(4)}</td>` +
+          `<td class="n">${h.score.toFixed(4)}</td>` +
           `<td>${semOnly ? `<span class="flag">SEM-ONLY</span>` : ""}</td>` +
           `</tr>`
         );
@@ -474,7 +480,7 @@ function detail(r: SearchRecord): string {
     text =
       `<div class="prov-title">text hits (post-cutoff; lex#/sem# = 0-based rank in each ranker)</div>` +
       `<table><thead><tr><th>#</th><th>doc p. #chunk</th><th>lex#</th><th>sem#</th>` +
-      `<th>bm25</th><th>rel</th><th>dist</th><th>rrf</th><th>flags</th></tr></thead>` +
+      `<th>bm25</th><th>rel</th><th>dist</th><th>score</th><th>flags</th></tr></thead>` +
       `<tbody>${rows}</tbody></table>`;
   }
 

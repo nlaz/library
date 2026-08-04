@@ -118,7 +118,11 @@ export type PerfMeta = {
   img_fetch: number;
   min_rel: number;
   img_min_rel: number;
-  rrf_k: number;
+  fuse_lex_weight: number;
+  note_boost: number;
+  rerank_pool: number;
+  rerank_weight: number;
+  fuzz_candidates: number;
   mmr_pool: number;
   mmr_lambda: number;
   search_log_cap: number;
@@ -134,7 +138,8 @@ export type HitProv = {
   doc: string;
   page: number;
   idx: number;
-  rrf: number;
+  /** Final ranked score: the lex/sem blend as rescaled by the MaxSim rerank. */
+  score: number;
   rel: number;
   bm25: number;
   lex_rank: number | null;

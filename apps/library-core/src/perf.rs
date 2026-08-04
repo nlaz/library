@@ -141,8 +141,10 @@ pub struct HitProv {
     pub doc: String,
     pub page: u32,
     pub idx: u32,
-    /// RRF fused score (post-MMR order is what's served; this is the fuse).
-    pub rrf: f32,
+    /// The hit's final ranked score: the lexical/semantic blend as rescaled
+    /// by the MaxSim re-rank. (Named `rrf` until 2026-08 — fusion has been a
+    /// normalized-score blend, not reciprocal-rank, since the fusion sweep.)
+    pub score: f32,
     pub rel: f32,
     pub bm25: f32,
     pub lex_rank: Option<u32>,
@@ -156,7 +158,7 @@ impl From<&Hit> for HitProv {
             doc: h.key.doc.clone(),
             page: h.key.page,
             idx: h.key.idx,
-            rrf: h.score,
+            score: h.score,
             rel: h.rel,
             bm25: h.bm25,
             lex_rank: h.lex_rank,
@@ -266,7 +268,13 @@ pub fn meta(chunks: usize, figures: usize, docs: usize) -> Value {
         "img_fetch": crate::IMG_FETCH,
         "min_rel": crate::MIN_REL,
         "img_min_rel": crate::IMG_MIN_REL,
-        "rrf_k": 60, // the literal in crate::rrf
+        // fusion is a normalized-score blend; the "rrf_k" this once reported
+        // described a reciprocal-rank fuse that no longer exists
+        "fuse_lex_weight": crate::FUSE_LEX_WEIGHT,
+        "note_boost": crate::NOTE_BOOST,
+        "rerank_pool": crate::RERANK_POOL,
+        "rerank_weight": crate::RERANK_WEIGHT,
+        "fuzz_candidates": crate::FUZZ_CANDIDATES,
         "mmr_pool": crate::MMR_POOL,
         "mmr_lambda": crate::MMR_LAMBDA,
         "search_log_cap": SEARCH_LOG_CAP,

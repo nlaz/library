@@ -66,12 +66,7 @@ pub fn ocr_pdf(
     std::fs::create_dir_all(pages_dir)?;
     std::fs::create_dir_all(ocr_dir)?;
 
-    let mut n = {
-        let url = CFURL::from_file_path(pdf).context("bad pdf path")?;
-        let doc = CGPDFDocument::with_url(Some(&url))
-            .with_context(|| format!("cannot open {}", pdf.display()))?;
-        CGPDFDocument::number_of_pages(Some(&doc))
-    };
+    let mut n = open_pdf(pdf)?.1;
     if let Some(lim) = limit {
         n = n.min(lim);
     }
@@ -232,8 +227,25 @@ pub fn ocr_image(
     Ok(())
 }
 
+/// Open a PDF and report its page count, as one step.
+///
+/// Every render of a page from a cold start pays this, so it is separated
+/// out to be *timed* separately — see `probe.rs`. On a scanned book the
+/// document is hundreds of megabytes and this is not free.
+pub(crate) fn open_pdf(pdf: &Path) -> Result<(CFRetained<CGPDFDocument>, usize)> {
+    let url = CFURL::from_file_path(pdf).context("bad pdf path")?;
+    let doc = CGPDFDocument::with_url(Some(&url))
+        .with_context(|| format!("cannot open {}", pdf.display()))?;
+    let n = CGPDFDocument::number_of_pages(Some(&doc));
+    Ok((doc, n))
+}
+
 /// Rasterize page `i` (1-based) to `width` px wide, white background.
-fn render_page(doc: &CGPDFDocument, i: usize, width: u32) -> Result<CFRetained<CGImage>> {
+pub(crate) fn render_page(
+    doc: &CGPDFDocument,
+    i: usize,
+    width: u32,
+) -> Result<CFRetained<CGImage>> {
     let page = CGPDFDocument::page(Some(doc), i).context("no such page")?;
     let media = CGPDFPage::box_rect(Some(&page), CGPDFBox::MediaBox);
     let rot = CGPDFPage::rotation_angle(Some(&page)).rem_euclid(360);
@@ -285,8 +297,14 @@ fn render_page(doc: &CGPDFDocument, i: usize, width: u32) -> Result<CFRetained<C
 }
 
 fn save_jpeg(img: &CGImage, path: &Path) -> Result<()> {
+    save_jpeg_at(img, path, JPEG_QUALITY)
+}
+
+/// `save_jpeg` with the quality spelled out, so the probe can sweep it
+/// without every ingest caller having to name the default.
+pub(crate) fn save_jpeg_at(img: &CGImage, path: &Path, quality: f64) -> Result<()> {
     let url = CFURL::from_file_path(path).context("bad jpeg path")?;
-    let quality = CFNumber::new_f64(JPEG_QUALITY);
+    let quality = CFNumber::new_f64(quality);
     let opts = CFDictionary::from_slices(
         &[unsafe { kCGImageDestinationLossyCompressionQuality }],
         &[&*quality],

@@ -4,7 +4,7 @@
 //! web view's hand-mirrored types depend on.
 
 use library_core::images::{ImageKey, ImageRec, open_images};
-use library_core::perf::memory;
+use library_core::perf::{HostMem, memory};
 use library_core::{CLIP_DIM, ChunkKey, ChunkRec, EMB_DIM, Word, open};
 
 fn chunk(doc: &str, idx: u32, text: &str, hot: usize) -> ChunkRec {
@@ -72,8 +72,12 @@ fn memory_breakdown_covers_indexes_caches_and_stores() {
         }
     });
 
-    let rss = 1u64 << 30;
-    let m = memory(&lib, &images, &dir, Some(rss));
+    let footprint = 1u64 << 30;
+    let host = HostMem {
+        rss_bytes: Some(footprint / 4),
+        footprint_bytes: Some(footprint),
+    };
+    let m = memory(&lib, &images, &dir, host);
 
     // the corpus section: counts, exact embedding payload, per-source disk
     assert_eq!(
@@ -135,11 +139,26 @@ fn memory_breakdown_covers_indexes_caches_and_stores() {
         + m.models.iter().filter_map(|x| x.bytes).sum::<u64>()
         + m.stores.iter().map(|s| s.ram_bytes).sum::<u64>();
     assert_eq!(m.accounted_bytes, expected);
+    // the gap is measured against phys_footprint, not the (much smaller)
+    // resident_size that excludes compressed pages
     assert_eq!(
         m.unaccounted_bytes,
-        Some(rss as i64 - m.accounted_bytes as i64)
+        Some(footprint as i64 - m.accounted_bytes as i64)
     );
-    assert_eq!(memory(&lib, &images, &dir, None).unaccounted_bytes, None);
+
+    // ...falling back to rss only when the footprint probe came up empty
+    let rss_only = HostMem {
+        rss_bytes: Some(footprint / 4),
+        footprint_bytes: None,
+    };
+    assert_eq!(
+        memory(&lib, &images, &dir, rss_only).unaccounted_bytes,
+        Some((footprint / 4) as i64 - m.accounted_bytes as i64)
+    );
+    assert_eq!(
+        memory(&lib, &images, &dir, HostMem::default()).unaccounted_bytes,
+        None
+    );
 
     // ese is priced, clip is opaque
     assert!(
@@ -152,6 +171,7 @@ fn memory_breakdown_covers_indexes_caches_and_stores() {
     // serialized field names are the contract with the web mirror
     let v = serde_json::to_value(&m).expect("breakdown serializes");
     assert!(v["rss_bytes"].is_u64());
+    assert!(v["footprint_bytes"].is_u64());
     let idx = &v["indexes"][0];
     for field in [
         "live",

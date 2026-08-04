@@ -198,6 +198,9 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
     }
 
     let mut committer = EngineCommitter { eng };
+    // set if this session is the one that announces the cache; it then
+    // declines to evict for the rest of the session
+    let mut announced_now = false;
     loop {
         // the folders are the queue's source: scan before draining, so a
         // file dropped in Finder is indexed by the same pass that finds it
@@ -268,7 +271,7 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
         // timer of its own: a sweep on an idle machine is I/O for nothing,
         // and the moments worth reacting to — a document finished, files
         // appeared or vanished — are exactly the ones that wake this loop.
-        sweep_page_cache(&app, &state.ctx);
+        sweep_page_cache(&app, &state.ctx, &mut announced_now);
 
         // drain buffered wake-ups so a burst of drops is one sweep
         match rx.recv_timeout(Duration::from_secs(30)) {
@@ -282,12 +285,21 @@ pub(crate) fn ingest_worker(app: AppHandle, rx: mpsc::Receiver<()>) {
 /// silently reclaiming several gigabytes behind their back.
 ///
 /// An existing library can be well over the default budget — the author's
-/// is 6.6 GiB against 4 — and a first launch that quietly deleted 3 GiB of
-/// it would be alarming even though every byte is re-creatable. So the
-/// first sweep that *would* free anything only reports what it would do;
-/// eviction starts on the next one, by which time the user has been told
-/// where the setting is.
-fn sweep_page_cache(app: &AppHandle, ctx: &library_core::meta::Ctx) {
+/// was 6.6 GiB against 4 — and a first launch that quietly deleted 3 GiB of
+/// it would be alarming even though every byte comes back. So the first
+/// sweep that *would* free anything only reports what it would do, and this
+/// whole session then leaves the cache alone: the notice is worth nothing if
+/// the eviction lands thirty seconds behind it, while the user is still
+/// reading the sentence. They get until the next launch to change the
+/// budget, which is long enough to be a choice rather than a warning.
+fn sweep_page_cache(
+    app: &AppHandle,
+    ctx: &library_core::meta::Ctx,
+    announced_this_session: &mut bool,
+) {
+    if *announced_this_session {
+        return;
+    }
     let announced = ctx.setting(crate::cache::ANNOUNCED_KEY).is_some();
     // The reader's open document is not tracked here; last_read_at is
     // touched on every page served, so a book being read is the most
@@ -297,10 +309,11 @@ fn sweep_page_cache(app: &AppHandle, ctx: &library_core::meta::Ctx) {
         return;
     }
     if !announced {
+        *announced_this_session = true;
         let _ = ctx.set_setting(crate::cache::ANNOUNCED_KEY, "1");
         let _ = app.emit("cache:announce", plan.freed);
         eprintln!(
-            "page cache: {} MiB over budget, reclaiming from the next sweep",
+            "page cache: {} MiB over budget; leaving it alone this session",
             plan.freed / (1024 * 1024)
         );
         return;

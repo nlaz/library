@@ -329,6 +329,12 @@ export function onAppError(cb: (msg: string) => void): void {
   listen<string>("app:error", (e) => cb(e.payload));
 }
 
+/** Fired once, the first time the page-image cache is over its budget —
+ * before anything is removed. Payload is the bytes the sweep would free. */
+export function onCacheAnnounce(cb: (bytes: number) => void): void {
+  listen<number>("cache:announce", (e) => cb(e.payload));
+}
+
 /** The latched launch-screen status, for the subscribe-then-recheck that
  * makes a startup finishing before the webview boots survivable. */
 export function startupStatus(): Promise<StartupStatus> {

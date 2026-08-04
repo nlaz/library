@@ -2,6 +2,22 @@
 // perf-agent.ts both need them, and keeping them in a leaf module means the
 // unit tests can import them without standing up the overlay's markup.
 
+import type { MemoryBreakdown } from "./types";
+
+/** The total the memory tab's line items are measured against.
+ *
+ * phys_footprint, falling back to resident_size when the host had no
+ * footprint probe. The order matters: rss omits pages the memory compressor
+ * has taken, so on an idle app it can land far below the estimates that are
+ * trying to explain it — which is how the panel once showed rss=23.5MiB
+ * against accounted=205.1MiB and an unaccounted remainder of -181.6MiB.
+ *
+ * Mirrors `HostMem::total` in library-core's perf.rs; both sides pick
+ * footprint first, and the Rust test pins the same ordering. */
+export function memTotal(m: MemoryBreakdown): number | null {
+  return m.footprint_bytes ?? m.rss_bytes;
+}
+
 export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }

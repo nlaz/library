@@ -285,9 +285,11 @@ export type StoreMem = {
 };
 
 /** Where the process's RAM goes. Estimates deliberately don't reconcile
- * with rss_bytes; unaccounted_bytes carries the (signed) gap. */
+ * with the host total; unaccounted_bytes carries the (signed) gap. */
 export type MemoryBreakdown = {
   now_ms: number;
+  /** resident_size — excludes compressed pages, so it can sit far below
+   * footprint_bytes on an idle app. Reported, but not the denominator. */
   rss_bytes: number | null;
   corpus: CorpusMem;
   indexes: IndexMem[];
@@ -296,6 +298,8 @@ export type MemoryBreakdown = {
   stores: StoreMem[];
   accounted_bytes: number;
   unaccounted_bytes: number | null;
+  /** phys_footprint — the total everything else is measured against. */
+  footprint_bytes: number | null;
   atlas_building: boolean;
 };
 

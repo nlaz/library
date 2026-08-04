@@ -21,6 +21,7 @@ mod ingest;
 mod marginalia;
 mod mem;
 mod prefs;
+mod render;
 mod roots;
 mod serve;
 mod settings;
@@ -49,19 +50,25 @@ pub fn run() {
         // plugin's commands (see capabilities/default.json)
         .plugin(tauri_plugin_updater::Builder::new().build())
         .register_asynchronous_uri_scheme_protocol("pages", |ctx, request, responder| {
-            let data = ctx.app_handle().state::<AppState>().settings.data.clone();
+            let state = ctx.app_handle().state::<AppState>();
+            let server = state.pages.clone();
             // a search response can carry ~20-26 hits, each firing a page-image
             // request — spawn_blocking uses tokio's bounded, reused blocking
             // pool instead of a raw OS thread per request, which used to mean
             // a burst of thread creations on every keystroke's re-render
             tauri::async_runtime::spawn_blocking(move || {
-                responder.respond(serve_pages(data.join("pages"), request))
+                responder.respond(serve_pages(&server, request))
             });
         })
         .register_asynchronous_uri_scheme_protocol("ocr", |ctx, request, responder| {
             let data = ctx.app_handle().state::<AppState>().settings.data.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                responder.respond(serve_static(data.join("ocr"), "application/json", request))
+                responder.respond(serve_static(
+                    data.join("ocr"),
+                    "application/json",
+                    "public, max-age=31536000, immutable",
+                    request,
+                ))
             });
         })
         .setup(|app| {
@@ -73,9 +80,11 @@ pub fn run() {
             // a library with no folder has nowhere to put a dropped file
             roots::ensure_default_root(&ctx);
             let (tx, rx) = mpsc::channel::<()>();
+            let pages = crate::serve::PageServer::new(&settings.data, ctx.clone(), settings.width);
             app.manage(AppState {
                 settings,
                 ctx,
+                pages,
                 engine: RwLock::new(None),
                 status: std::sync::Mutex::new(crate::engine::Status::default()),
                 wake: tx,

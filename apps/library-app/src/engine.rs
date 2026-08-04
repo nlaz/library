@@ -28,6 +28,10 @@ pub struct AppState {
     /// Cache dir + metadata db, opened once at startup and shared by every
     /// command, the ingest worker and the chat tools.
     pub(crate) ctx: library_core::meta::Ctx,
+    /// Serves `pages://`, and repairs a cache miss by re-rendering. Built
+    /// once so its render gate and read-recency throttle are shared across
+    /// every request rather than per-request state.
+    pub(crate) pages: crate::serve::PageServer,
     pub(crate) engine: RwLock<Option<std::sync::Arc<Engine>>>,
     /// Last launch-screen status, latched so a late webview can catch up.
     pub(crate) status: std::sync::Mutex<Status>,

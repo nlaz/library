@@ -46,7 +46,7 @@ use objc2_vision::{
     VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel,
 };
 
-use crate::{PageOcr, Progress, ProgressFn, pdftext};
+use crate::{PageOcr, Progress, ProgressFn, SourceKind, pdftext};
 
 const JPEG_QUALITY: f64 = 0.8;
 
@@ -267,25 +267,7 @@ pub fn ocr_image(
         // drain autoreleased buffers like process_page does — callers may
         // ingest many images back to back
         let words = autoreleasepool(|_| -> Result<Option<Vec<Word>>> {
-            let url = CFURL::from_file_path(src).context("bad image path")?;
-            let source = unsafe { CGImageSource::with_url(&url, None) }
-                .with_context(|| format!("cannot open {}", src.display()))?;
-            // thumbnail_at_index rather than image_at_index: it applies the
-            // EXIF orientation (a phone photo would otherwise OCR sideways)
-            // and downscales to `width` in one decode, never upscaling
-            let yes = unsafe { kCFBooleanTrue }.context("no kCFBooleanTrue")?;
-            let max_px = CFNumber::new_i32(width as i32);
-            let keys = unsafe {
-                [
-                    kCGImageSourceCreateThumbnailFromImageAlways,
-                    kCGImageSourceCreateThumbnailWithTransform,
-                    kCGImageSourceThumbnailMaxPixelSize,
-                ]
-            };
-            let values: [&CFType; 3] = [yes, yes, &max_px];
-            let opts = CFDictionary::from_slices(&keys, &values);
-            let img = unsafe { source.thumbnail_at_index(0, Some(opts.as_opaque())) }
-                .with_context(|| format!("cannot decode {}", src.display()))?;
+            let img = decode_image(src, width)?;
             if work.render {
                 save_jpeg(&img, &jpg)?;
             }
@@ -308,6 +290,85 @@ pub fn ocr_image(
         vision,
         cached: skipped,
     });
+    Ok(())
+}
+
+/// Decode a standalone image file to `width` px on its longest edge.
+///
+/// `thumbnail_at_index` rather than `image_at_index`: it applies the EXIF
+/// orientation (a phone photo would otherwise OCR sideways) and downscales
+/// in one decode, never upscaling.
+fn decode_image(src: &Path, width: u32) -> Result<CFRetained<CGImage>> {
+    let url = CFURL::from_file_path(src).context("bad image path")?;
+    let source = unsafe { CGImageSource::with_url(&url, None) }
+        .with_context(|| format!("cannot open {}", src.display()))?;
+    let yes = unsafe { kCFBooleanTrue }.context("no kCFBooleanTrue")?;
+    let max_px = CFNumber::new_i32(width as i32);
+    let keys = unsafe {
+        [
+            kCGImageSourceCreateThumbnailFromImageAlways,
+            kCGImageSourceCreateThumbnailWithTransform,
+            kCGImageSourceThumbnailMaxPixelSize,
+        ]
+    };
+    let values: [&CFType; 3] = [yes, yes, &max_px];
+    let opts = CFDictionary::from_slices(&keys, &values);
+    unsafe { source.thumbnail_at_index(0, Some(opts.as_opaque())) }
+        .with_context(|| format!("cannot decode {}", src.display()))
+}
+
+/// Re-render a single page and leave it where the reader looks for it.
+///
+/// The cache-miss path: `data/pages` is bounded, so a page image can be
+/// gone while its document is perfectly intact, and this puts it back from
+/// the source file. Nothing else is touched — no OCR, no words, no status —
+/// because everything else about the page already survived the eviction.
+///
+/// Written via tmp + rename, matching `build_cover`. Two requests racing for
+/// the same page therefore cost a wasted render and never a torn JPEG,
+/// which is what lets the serve path treat coalescing as an optimisation
+/// rather than a correctness requirement.
+///
+/// Measured at ~160ms p50 / 256ms p95 for a 1600px page across a real
+/// library; see `library-ingest render-probe`.
+pub fn render_one(src: &Path, page: u32, width: u32, out: &Path) -> Result<()> {
+    if page == 0 {
+        bail!("page numbers are 1-based");
+    }
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // .tmp is per-page and per-process: two processes re-rendering the same
+    // page must not hand each other a half-written file to rename
+    let tmp = out.with_extension(format!("jpg.{}.tmp", std::process::id()));
+
+    // drain the page bitmap on the way out, like process_page does — this
+    // runs on a shared blocking pool that will be asked again immediately
+    let res = autoreleasepool(|_| -> Result<()> {
+        match SourceKind::of(src) {
+            Some(SourceKind::Pdf) => {
+                let (doc, n) = open_pdf(src)?;
+                if page as usize > n {
+                    bail!("{} has {n} pages, not {page}", src.display());
+                }
+                let img = render_page(&doc, page as usize, width)?;
+                save_jpeg(&img, &tmp)
+            }
+            Some(SourceKind::Image) => {
+                if page != 1 {
+                    bail!("an image document has one page, not {page}");
+                }
+                let img = decode_image(src, width)?;
+                save_jpeg(&img, &tmp)
+            }
+            None => bail!("unsupported file type: {}", src.display()),
+        }
+    });
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, out)?;
     Ok(())
 }
 
@@ -524,6 +585,100 @@ mod tests {
             assert_eq!(w.any(), render || words);
             std::fs::remove_dir_all(&dir).unwrap();
         }
+    }
+
+    /// An `n`-page letter-size PDF, assembled from bytes.
+    ///
+    /// CoreGraphics can write PDFs, but objc2-core-graphics does not expose
+    /// CGPDFContext under the features this crate enables — and a
+    /// hand-assembled file is arguably the better fixture anyway: the
+    /// renderer parses it exactly as it would parse a user's book, with no
+    /// shared code path between the thing under test and the thing testing
+    /// it. Blank pages (no /Contents) are valid; MediaBox is what
+    /// render_page reads.
+    fn blank_pdf(path: &Path, n: usize) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let kids: String = (0..n).map(|i| format!("{} 0 R ", i + 3)).collect();
+        let mut objs = vec![
+            "<</Type/Catalog/Pages 2 0 R>>".to_string(),
+            format!("<</Type/Pages/Kids[{}]/Count {n}>>", kids.trim_end()),
+        ];
+        for _ in 0..n {
+            objs.push("<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>".into());
+        }
+
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::with_capacity(objs.len());
+        for (i, body) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj{body}endobj\n", i + 1).as_bytes());
+        }
+        let xref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objs.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offsets {
+            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer<</Size {}/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n",
+                objs.len() + 1
+            )
+            .as_bytes(),
+        );
+        std::fs::write(path, out).unwrap();
+    }
+
+    fn two_page_pdf(path: &Path) {
+        blank_pdf(path, 2);
+    }
+
+    // The cache-miss path: a page image can be gone while its document is
+    // intact, and this puts it back without touching OCR, words or status.
+    #[test]
+    fn render_one_rebuilds_a_single_page() {
+        let dir = std::env::temp_dir().join(format!("render-one-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pdf = dir.join("book.pdf");
+        two_page_pdf(&pdf);
+
+        let out = dir.join("pages").join("d").join("page-0002.jpg");
+        render_one(&pdf, 2, 800, &out).unwrap();
+        assert!(out.exists(), "the render lands where the reader looks");
+        let img = image::open(&out).unwrap();
+        assert_eq!(img.width(), 800, "rendered at the requested width");
+
+        // no tmp file survives a success
+        let leftovers: Vec<_> = std::fs::read_dir(out.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "tmp+rename left {leftovers:?}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // A page request is a URL, so the page number is attacker-adjacent
+    // input: out-of-range must be a clean error, not a panic and not a
+    // zero-byte JPEG the reader would cache forever.
+    #[test]
+    fn render_one_refuses_a_page_the_document_does_not_have() {
+        let dir = std::env::temp_dir().join(format!("render-one-oob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pdf = dir.join("book.pdf");
+        two_page_pdf(&pdf);
+
+        let out = dir.join("page-9999.jpg");
+        for page in [0u32, 3, 9999] {
+            assert!(render_one(&pdf, page, 800, &out).is_err(), "page {page}");
+        }
+        assert!(!out.exists(), "a refusal must not leave a file behind");
+
+        assert!(render_one(&dir.join("nope.pdf"), 1, 800, &out).is_err());
+        assert!(render_one(&dir.join("book.txt"), 1, 800, &out).is_err());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

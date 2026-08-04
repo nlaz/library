@@ -483,6 +483,12 @@ struct PageFigures {
     keys: Vec<(ImageKey, Bbox)>,
     crops: Vec<image::DynamicImage>,
     log: Option<String>,
+    /// The page render could not be read, so this page contributed nothing
+    /// *because we could not look* — which must never be confused with a
+    /// page that genuinely has no figures. `commit_figures` replaces a
+    /// document's whole figure set, so mistaking the two silently retracts
+    /// every figure the document had.
+    unreadable: bool,
 }
 
 fn page_figures(
@@ -496,11 +502,13 @@ fn page_figures(
         keys: Vec::new(),
         crops: Vec::new(),
         log: None,
+        unreadable: false,
     };
     let jpg = pages_dir.join(format!("page-{:04}.jpg", page.page));
     let (img, regions): (image::DynamicImage, Vec<Bbox>) = match model {
         Some(m) => {
             let Ok(img) = image::open(&jpg) else {
+                out.unreadable = true;
                 return out;
             };
             let mut dets: Vec<layout::Detection> = match m.detect(&img) {
@@ -530,6 +538,7 @@ fn page_figures(
                 return out;
             }
             let Ok(img) = image::open(&jpg) else {
+                out.unreadable = true;
                 return out;
             };
             (img, regions)
@@ -614,6 +623,7 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
     let mut keys: Vec<(ImageKey, Bbox)> = Vec::new();
     let mut crops: Vec<image::DynamicImage> = Vec::new();
     let mut done = 0usize;
+    let mut unreadable: Vec<u32> = Vec::new();
     for group in pages.chunks(chunk) {
         progress(Progress::Figures {
             done,
@@ -623,14 +633,36 @@ pub fn prepare_figures(ctx: &IngestCtx, doc: &str, progress: ProgressFn) -> Resu
             .par_iter()
             .map(|page| page_figures(doc, &pages_dir, model.as_ref(), page, ensure_full))
             .collect();
-        for mut r in results {
+        for (page, mut r) in group.iter().zip(results) {
             if let Some(line) = r.log.take() {
                 progress(Progress::Log(line));
+            }
+            if r.unreadable {
+                unreadable.push(page.page);
             }
             keys.append(&mut r.keys);
             crops.append(&mut r.crops);
         }
         done += group.len();
+    }
+
+    // Refuse rather than under-report. The caller feeds this straight to
+    // commit_figures, which *replaces* the document's figure set — so
+    // returning a short list because some pages could not be opened would
+    // silently retract every figure on them, with no error anywhere. Now
+    // that a missing page render is an ordinary state rather than a
+    // corruption, "I could not look" must never be spelled the same way as
+    // "there is nothing there".
+    if !unreadable.is_empty() {
+        let shown: Vec<String> = unreadable.iter().take(5).map(u32::to_string).collect();
+        bail!(
+            "cannot read {} page render{} of '{doc}' (p.{}{}) — figures not rebuilt, \
+             because committing a partial set would drop the rest",
+            unreadable.len(),
+            if unreadable.len() == 1 { "" } else { "s" },
+            shown.join(", p."),
+            if unreadable.len() > 5 { ", …" } else { "" },
+        );
     }
     progress(Progress::Figures {
         done: pages.len(),
@@ -703,6 +735,75 @@ pub fn commit_figures(st: &mut Images, doc: &str, recs: &[ImageRec]) -> (usize, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page with two text bands separated by a tall gap — the word-gap
+    /// detector finds a figure between them.
+    fn page_with_a_gap(n: u32) -> PageOcr {
+        let row = |y: f32| Word {
+            t: "word".into(),
+            x: 0.1,
+            y,
+            w: 0.8,
+            h: 0.02,
+        };
+        PageOcr {
+            page: n,
+            words: vec![row(0.05), row(0.08), row(0.85), row(0.88)],
+        }
+    }
+
+    fn png(path: &Path, w: u32, h: u32) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        image::DynamicImage::new_rgb8(w, h).save(path).unwrap();
+    }
+
+    // The distinction this commit exists to preserve. page_figures returns
+    // an empty contribution in two very different situations, and
+    // commit_figures replaces a document's whole figure set — so conflating
+    // them retracts every figure the document had, silently.
+    #[test]
+    fn an_unreadable_page_is_not_a_page_without_figures() {
+        let dir = std::env::temp_dir().join(format!("figs-unreadable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pages_dir = dir.join("pages").join("d");
+        std::fs::create_dir_all(&pages_dir).unwrap();
+
+        // 1. a figure is there to be found, but the render is gone:
+        //    "I could not look"
+        let missing = page_figures("d", &pages_dir, None, &page_with_a_gap(1), false);
+        assert!(missing.unreadable, "a missing render must be reported");
+        assert!(missing.keys.is_empty());
+
+        // 2. same page, render present: the figure is found
+        png(&pages_dir.join("page-0002.jpg"), 200, 300);
+        let found = page_figures("d", &pages_dir, None, &page_with_a_gap(2), false);
+        assert!(!found.unreadable);
+        assert!(!found.keys.is_empty(), "the gap is a figure");
+
+        // 3. a page of solid text: "there is nothing here" — empty, but for
+        //    a completely different reason than case 1
+        let solid = PageOcr {
+            page: 3,
+            words: (0..20)
+                .map(|i| Word {
+                    t: "word".into(),
+                    x: 0.1,
+                    y: 0.05 + i as f32 * 0.045,
+                    w: 0.8,
+                    h: 0.02,
+                })
+                .collect(),
+        };
+        png(&pages_dir.join("page-0003.jpg"), 200, 300);
+        let empty = page_figures("d", &pages_dir, None, &solid, false);
+        assert!(
+            !empty.unreadable,
+            "a genuinely figureless page is not unreadable"
+        );
+        assert!(empty.keys.is_empty());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn source_kind_classifies_by_extension() {

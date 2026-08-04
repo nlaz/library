@@ -11,8 +11,14 @@
 //!   <ocr_dir>/page-NNNN.json     {"page": N, "words": [{"t","x","y","w","h"}]}
 //!
 //! Boxes are normalized 0..1 with a TOP-LEFT origin (Vision's bottom-left
-//! coordinates are flipped here). Pages whose JSON and JPEG both exist are
-//! skipped, so re-runs are incremental.
+//! coordinates are flipped here).
+//!
+//! Re-runs are incremental, and the two outputs are tracked apart: a page
+//! with both files is skipped, a page missing only its JPEG is re-rendered
+//! without going near Vision, and a page missing only its JSON is
+//! recognized (rasterizing again only if there is no text layer to read).
+//! See [`work_for_page`] — the split is what makes `data/pages` affordable
+//! to treat as a cache.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -50,6 +56,36 @@ const JPEG_QUALITY: f64 = 0.8;
 /// one page bitmap, so more just costs memory.
 const OCR_WORKERS: usize = 3;
 
+/// What a page still needs. The two halves are tracked apart because they
+/// cost wildly different amounts and, once `data/pages` is an evictable
+/// cache, go missing independently.
+///
+/// A page whose JSON survives but whose JPEG was swept needs `render` only:
+/// rasterize and encode, ~160ms. Treating that as "not done" and sending it
+/// back through Vision would cost minutes per book and would silently redo
+/// work that can never be improved by redoing it — and it would break the
+/// promise in `ingest.rs` that restoring a file must not cost an OCR pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PageWork {
+    pub render: bool,
+    pub words: bool,
+}
+
+impl PageWork {
+    fn any(&self) -> bool {
+        self.render || self.words
+    }
+}
+
+/// Decide from what is already on disk. Pure, so the matrix is testable
+/// without a renderer or a PDF.
+pub(crate) fn work_for_page(pages_dir: &Path, ocr_dir: &Path, i: usize) -> PageWork {
+    PageWork {
+        render: !pages_dir.join(format!("page-{i:04}.jpg")).exists(),
+        words: !ocr_dir.join(format!("page-{i:04}.json")).exists(),
+    }
+}
+
 /// Render + extract words for every page of `pdf` (or the first `limit`).
 /// Cached pages are skipped; `Progress::Ocr` counts completed pages, with a
 /// final `Progress::Log` summary line. With `text_layer`, pages carrying an
@@ -71,17 +107,15 @@ pub fn ocr_pdf(
         n = n.min(lim);
     }
 
-    let todo: Vec<usize> = (1..=n)
-        .filter(|i| {
-            !(ocr_dir.join(format!("page-{i:04}.json")).exists()
-                && pages_dir.join(format!("page-{i:04}.jpg")).exists())
-        })
+    let todo: Vec<(usize, PageWork)> = (1..=n)
+        .map(|i| (i, work_for_page(pages_dir, ocr_dir, i)))
+        .filter(|(_, w)| w.any())
         .collect();
     let skipped = n - todo.len();
 
     let next = AtomicUsize::new(0);
-    let (tx, rx) = mpsc::channel::<Result<bool>>();
-    let (mut done, mut layered) = (0usize, 0usize);
+    let (tx, rx) = mpsc::channel::<Result<PageDone>>();
+    let (mut done, mut layered, mut ocred, mut rendered) = (0usize, 0usize, 0usize, 0usize);
     std::thread::scope(|s| -> Result<()> {
         for _ in 0..OCR_WORKERS.min(todo.len()) {
             let tx = tx.clone();
@@ -100,8 +134,8 @@ pub fn ocr_pdf(
                 let text = text_layer.then(|| pdftext::TextLayer::open(pdf)).flatten();
                 loop {
                     let k = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&i) = todo.get(k) else { break };
-                    let res = process_page(&doc, text.as_ref(), i, width, pages_dir, ocr_dir);
+                    let Some(&(i, work)) = todo.get(k) else { break };
+                    let res = process_page(&doc, text.as_ref(), i, work, width, pages_dir, ocr_dir);
                     if tx.send(res).is_err() {
                         break; // receiver bailed on an earlier error
                     }
@@ -112,7 +146,10 @@ pub fn ocr_pdf(
         // moving `rx` into the loop makes an early `?` drop it, which stops
         // the workers at their next send instead of running out the queue
         for msg in rx {
-            layered += usize::from(msg?);
+            let d = msg?;
+            layered += usize::from(d.layered);
+            ocred += usize::from(d.ocred);
+            rendered += usize::from(d.rendered);
             done += 1;
             progress(Progress::Ocr {
                 done: (skipped + done) as u32,
@@ -121,43 +158,83 @@ pub fn ocr_pdf(
         }
         Ok(())
     })?;
+    // `rendered` counts JPEGs written, which overlaps the other two: a fresh
+    // page is both rendered and ocr'd. It is called out separately because
+    // pages that needed *only* a render are the ones an evicted cache
+    // produces, and they cost ~160ms where an OCR costs seconds.
+    let render_only = rendered.saturating_sub(layered + ocred);
     progress(Progress::Log(format!(
-        "ocr complete: {layered} text-layer, {} ocr'd, {skipped} cached, {n} total",
-        done - layered
+        "ocr complete: {layered} text-layer, {ocred} ocr'd, {render_only} re-rendered, \
+         {skipped} cached, {n} total"
     )));
     progress(Progress::OcrSummary {
         text_layer: layered as u32,
-        vision: (done - layered) as u32,
+        vision: ocred as u32,
         cached: skipped as u32,
     });
     Ok(())
 }
 
-/// Render page `i` (1-based), write its JPEG, and write its words — from
-/// the text layer when usable, else Vision. Returns whether the layer was
-/// used.
+/// What one page actually cost, for the summary counters.
+#[derive(Debug, Clone, Copy, Default)]
+struct PageDone {
+    /// Words came from the embedded text layer.
+    layered: bool,
+    /// Vision ran.
+    ocred: bool,
+    /// A JPEG was written.
+    rendered: bool,
+}
+
+/// Do whatever `work` says page `i` still needs: rasterize, encode, and
+/// extract words — from the text layer when usable, else Vision.
 fn process_page(
     doc: &CGPDFDocument,
     text: Option<&pdftext::TextLayer>,
     i: usize,
+    work: PageWork,
     width: u32,
     pages_dir: &Path,
     ocr_dir: &Path,
-) -> Result<bool> {
+) -> Result<PageDone> {
     let jpg = pages_dir.join(format!("page-{i:04}.jpg"));
     let js = ocr_dir.join(format!("page-{i:04}.json"));
+
+    // Ask the text layer first: if it can answer, a page needing only words
+    // never has to be rasterized at all.
+    let layer_words = work.words.then(|| text.and_then(|t| t.words(i))).flatten();
+    // Vision needs the bitmap, so words-without-a-layer forces a render even
+    // when the JPEG is already on disk.
+    let need_img = work.render || (work.words && layer_words.is_none());
+
     // drain autoreleased CGImages/Vision buffers every page, or a long
     // run accumulates hundreds of page bitmaps and exhausts memory
-    let (words, layered) = autoreleasepool(|_| -> Result<(Vec<Word>, bool)> {
-        let img = render_page(doc, i, width)?;
-        save_jpeg(&img, &jpg)?;
-        match text.and_then(|t| t.words(i)) {
-            Some(words) => Ok((words, true)),
-            None => Ok((ocr_words(&img)?, false)),
+    let (words, done) = autoreleasepool(|_| -> Result<(Option<Vec<Word>>, PageDone)> {
+        let mut done = PageDone::default();
+        let img = need_img.then(|| render_page(doc, i, width)).transpose()?;
+        if let (true, Some(img)) = (work.render, img.as_ref()) {
+            save_jpeg(img, &jpg)?;
+            done.rendered = true;
         }
+        let words = match (work.words, layer_words) {
+            (false, _) => None,
+            (true, Some(w)) => {
+                done.layered = true;
+                Some(w)
+            }
+            (true, None) => {
+                let img = img.as_ref().context("no bitmap to OCR")?;
+                done.ocred = true;
+                Some(ocr_words(img)?)
+            }
+        };
+        Ok((words, done))
     })?;
-    write_page_json(&js, i as u32, words)?;
-    Ok(layered)
+
+    if let Some(words) = words {
+        write_page_json(&js, i as u32, words)?;
+    }
+    Ok(done)
 }
 
 /// Write a page's words as OCR JSON, via tmp + rename so a crash can't
@@ -185,11 +262,11 @@ pub fn ocr_image(
     let jpg = pages_dir.join("page-0001.jpg");
     let js = ocr_dir.join("page-0001.json");
 
-    let cached = jpg.exists() && js.exists();
-    if !cached {
+    let work = work_for_page(pages_dir, ocr_dir, 1);
+    if work.any() {
         // drain autoreleased buffers like process_page does — callers may
         // ingest many images back to back
-        let words = autoreleasepool(|_| -> Result<Vec<Word>> {
+        let words = autoreleasepool(|_| -> Result<Option<Vec<Word>>> {
             let url = CFURL::from_file_path(src).context("bad image path")?;
             let source = unsafe { CGImageSource::with_url(&url, None) }
                 .with_context(|| format!("cannot open {}", src.display()))?;
@@ -209,15 +286,22 @@ pub fn ocr_image(
             let opts = CFDictionary::from_slices(&keys, &values);
             let img = unsafe { source.thumbnail_at_index(0, Some(opts.as_opaque())) }
                 .with_context(|| format!("cannot decode {}", src.display()))?;
-            save_jpeg(&img, &jpg)?;
-            ocr_words(&img)
+            if work.render {
+                save_jpeg(&img, &jpg)?;
+            }
+            // a re-render after eviction keeps the words it already has
+            work.words.then(|| ocr_words(&img)).transpose()
         })?;
-        write_page_json(&js, 1, words)?;
+        if let Some(words) = words {
+            write_page_json(&js, 1, words)?;
+        }
     }
     progress(Progress::Ocr { done: 1, total: 1 });
-    let (vision, skipped) = (u32::from(!cached), u32::from(cached));
+    let (vision, skipped) = (u32::from(work.words), u32::from(!work.any()));
+    let rendered = u32::from(work.render && !work.words);
     progress(Progress::Log(format!(
-        "ocr complete: 0 text-layer, {vision} ocr'd, {skipped} cached, 1 total"
+        "ocr complete: 0 text-layer, {vision} ocr'd, {rendered} re-rendered, \
+         {skipped} cached, 1 total"
     )));
     progress(Progress::OcrSummary {
         text_layer: 0,
@@ -388,6 +472,59 @@ pub(crate) fn round5(v: f64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pages/ocr pair where `jpg` and `json` say which page-0001 files
+    /// exist. No renderer, no PDF — the decision is pure.
+    fn work_fixture(name: &str, jpg: bool, json: bool) -> (std::path::PathBuf, PageWork) {
+        let dir = std::env::temp_dir().join(format!("ocr-work-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (p, o) = (dir.join("pages"), dir.join("ocr"));
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::create_dir_all(&o).unwrap();
+        if jpg {
+            std::fs::write(p.join("page-0001.jpg"), b"x").unwrap();
+        }
+        if json {
+            std::fs::write(o.join("page-0001.json"), b"{}").unwrap();
+        }
+        let w = work_for_page(&p, &o, 1);
+        (dir, w)
+    }
+
+    // The reason this split exists: an evicted page still has its OCR, and
+    // asking for it back must not re-run Apple Vision. Under the old single
+    // `json && jpg` predicate this page read as "not done" and cost a full
+    // recognition pass — minutes per book, redoing work that cannot be
+    // improved by redoing it.
+    #[test]
+    fn an_evicted_page_needs_a_render_and_no_vision() {
+        let (dir, w) = work_fixture("evicted", false, true);
+        assert_eq!(
+            w,
+            PageWork {
+                render: true,
+                words: false
+            }
+        );
+        assert!(w.any(), "it is still work; it is just cheap work");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn work_for_page_covers_the_matrix() {
+        // (jpg, json) -> (render, words)
+        for (jpg, json, render, words) in [
+            (false, false, true, true), // fresh page: everything
+            (true, false, false, true), // mid-ingest crash after the jpg
+            (false, true, true, false), // evicted render
+            (true, true, false, false), // settled: skipped entirely
+        ] {
+            let (dir, w) = work_fixture(&format!("m{jpg}{json}"), jpg, json);
+            assert_eq!(w, PageWork { render, words }, "jpg={jpg} json={json}");
+            assert_eq!(w.any(), render || words);
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
 
     #[test]
     fn tokens_carry_byte_offsets() {

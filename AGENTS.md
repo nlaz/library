@@ -74,6 +74,22 @@ one place three processes can write concurrently. Legacy
 `data/annotations/*.json` are **read-only migration input** (see
 `annots.rs`), not a live table.
 
+**`data/pages` is a bounded cache, not storage.** Page renders are ~5× the
+size of the sources they come from and cost ~160ms each to remake, so
+`cache.rs` sweeps them to a budget (pref `cache.pages.budget_bytes`) and
+`serve.rs` re-renders on a miss. Three consequences worth knowing before
+touching anything nearby:
+
+- Never derive a document's *existence* or *page count* from `data/pages`
+  — use `meta.db` and `wire::count_pages` (which counts OCR sidecars). A
+  swept book must not vanish from the library or open to an empty reader.
+- `data/ocr`, `data/text` and `<doc>/cover.jpg` are the floor and are
+  never evicted; the OCR in particular is what makes a re-render cheap.
+- **A render is only cache if it can be made again.** `source_state`
+  decides, and the sweep pins anything it cannot re-render — a document
+  whose file is gone has renders that are the *only* copy of it. That
+  guard is load-bearing; keep it and its tests.
+
 ## Data safety
 
 - `data/` at the repo root is a **live personal library** (databases, PDFs,

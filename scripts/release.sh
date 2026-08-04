@@ -169,7 +169,25 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
   spctl -a -vv "$APP"                        # expect: source=Notarized Developer ID
 fi
 
-NOTES="macOS 14+, Apple silicon. Asking the librarian needs macOS 26."
+# --- release notes ---
+#
+# One string, used twice: the GitHub release body, and `notes` in the
+# updater manifest, which is what an installed copy shows before it
+# updates itself. The requirements line is true of every build and is
+# always appended; anything release-specific goes in a file named for the
+# version, so cutting a release never means editing this script.
+#
+# Worth writing one whenever a release changes something a user would
+# otherwise discover by noticing. 0.1.3 reclaims several gigabytes of page
+# renders on first launch — every byte re-creatable, but nobody wants to
+# find that out from Finder.
+REQUIREMENTS="macOS 14+, Apple silicon. Asking the librarian needs macOS 26."
+NOTES_FILE="$ROOT/docs/release-notes/$VERSION.md"
+if [[ -f "$NOTES_FILE" ]]; then
+  NOTES="$(cat "$NOTES_FILE")"$'\n\n'"$REQUIREMENTS"
+else
+  NOTES="$REQUIREMENTS"
+fi
 [[ -n "$SIGN_IDENTITY" ]] || NOTES="$NOTES Unsigned — see the README for the first-launch step."
 
 # --- what a person downloads ---

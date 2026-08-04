@@ -45,60 +45,53 @@ fn is_processing(st: Option<&DocStatus>) -> bool {
 
 #[tauri::command]
 pub(crate) fn docs(state: State<'_, AppState>) -> Vec<DocInfo> {
-    let data = &state.settings.data;
-    let ctx = &state.ctx;
+    doc_list(&state.settings.data, &state.ctx)
+}
+
+/// The library grid. Split out of the command so it can be tested against a
+/// real cache directory and an in-memory `meta.db`.
+pub(crate) fn doc_list(data: &std::path::Path, ctx: &library_core::meta::Ctx) -> Vec<DocInfo> {
     let cols = ctx.shelves();
     let titles = ctx.titles();
     let names = ctx.file_names();
     let statuses = status::scan(ctx);
 
-    let mut out: Vec<DocInfo> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    // What exists is the union of three sources, not a walk of data/pages.
+    //
+    // The pages dir used to be the answer on its own, which quietly made a
+    // document's existence a property of its cache: evict the renders and a
+    // perfectly good book vanishes from the library. meta.db is the record
+    // of what the user has — a status row, or a file the scanner found — and
+    // the pages walk now only *adds*, so nothing that shows today can stop
+    // showing (documents minted before status tracking have neither row).
+    let mut ids: HashSet<String> = statuses.keys().cloned().collect();
+    ids.extend(names.keys().cloned());
     if let Ok(entries) = std::fs::read_dir(data.join("pages")) {
         for e in entries.flatten() {
-            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                ids.insert(e.file_name().to_string_lossy().into_owned());
             }
-            let id = e.file_name().to_string_lossy().into_owned();
-            let st = statuses.get(&id);
-            if st.map(|s| s.state) == Some(DocState::Deleted) {
-                continue; // tombstone: only the source file remains
-            }
-            let pages = wire::count_pages(&e.path());
-            seen.insert(id.clone());
-            out.push(DocInfo {
-                pages,
-                title: titles.get(&id).cloned(),
-                name: names.get(&id).cloned(),
-                collections: cols
-                    .iter()
-                    .filter(|(_, docs)| docs.contains(&id))
-                    .map(|(c, _)| c.clone())
-                    .collect(),
-                processing: is_processing(st),
-                status: st.cloned(),
-                id,
-            });
         }
     }
-    // docs with a live status but no pages dir yet (just queued, or failed
-    // before rendering) still get a card
-    for (id, st) in &statuses {
-        if seen.contains(id) || matches!(st.state, DocState::Ready | DocState::Deleted) {
-            continue;
+
+    let mut out: Vec<DocInfo> = Vec::new();
+    for id in ids {
+        let st = statuses.get(&id);
+        if st.map(|s| s.state) == Some(DocState::Deleted) {
+            continue; // tombstone: only the source file remains
         }
         out.push(DocInfo {
-            id: id.clone(),
-            title: titles.get(id).cloned(),
-            name: names.get(id).cloned(),
-            pages: 0,
+            pages: wire::count_pages(data, &id),
+            title: titles.get(&id).cloned(),
+            name: names.get(&id).cloned(),
             collections: cols
                 .iter()
-                .filter(|(_, docs)| docs.iter().any(|d| d == id))
+                .filter(|(_, docs)| docs.contains(&id))
                 .map(|(c, _)| c.clone())
                 .collect(),
-            processing: is_processing(Some(st)),
-            status: Some(st.clone()),
+            processing: is_processing(st),
+            status: st.cloned(),
+            id,
         });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -225,6 +218,87 @@ pub(crate) fn retry_doc(state: State<'_, AppState>, doc: String) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use library_core::meta::Ctx;
+
+    /// A cache dir plus an in-memory meta.db. `docs` are (id, state); each
+    /// gets `pages` OCR sidecars, and `rendered` page JPEGs.
+    fn fixture(
+        name: &str,
+        docs: &[(&str, Option<DocState>, u32, u32)],
+    ) -> (std::path::PathBuf, Ctx) {
+        let dir = std::env::temp_dir().join(format!("docs-list-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ctx = Ctx::in_memory(&dir).unwrap();
+        for (id, state, pages, rendered) in docs {
+            let o = dir.join("ocr").join(id);
+            std::fs::create_dir_all(&o).unwrap();
+            for i in 1..=*pages {
+                std::fs::write(o.join(format!("page-{i:04}.json")), b"{}").unwrap();
+            }
+            if *rendered > 0 {
+                let p = dir.join("pages").join(id);
+                std::fs::create_dir_all(&p).unwrap();
+                for i in 1..=*rendered {
+                    std::fs::write(p.join(format!("page-{i:04}.jpg")), b"x").unwrap();
+                }
+            }
+            if let Some(st) = state {
+                status::write(&ctx.meta, id, &DocStatus::new(*st)).unwrap();
+            }
+        }
+        (dir, ctx)
+    }
+
+    // The bug this commit exists to prevent: the grid used to be a walk of
+    // data/pages, so a ready book whose renders were evicted disappeared from
+    // the library entirely.
+    #[test]
+    fn a_ready_doc_with_no_renders_still_appears() {
+        let (dir, ctx) = fixture("evicted", &[("book", Some(DocState::Ready), 12, 0)]);
+        let out = doc_list(&dir, &ctx);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "book");
+        assert_eq!(out[0].pages, 12, "page count survives eviction");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ...while the pages walk still only ever *adds*, so a document from
+    // before status tracking — no status row, no file row — keeps its card.
+    #[test]
+    fn a_doc_with_renders_but_no_status_row_still_appears() {
+        let (dir, ctx) = fixture("legacy", &[("old", None, 4, 4)]);
+        let out = doc_list(&dir, &ctx);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "old");
+        assert!(out[0].status.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tombstoned_doc_is_hidden_even_with_renders_on_disk() {
+        let (dir, ctx) = fixture("dead", &[("gone", Some(DocState::Deleted), 3, 3)]);
+        assert!(doc_list(&dir, &ctx).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // a doc reachable through two sources must not produce two cards
+    #[test]
+    fn ids_are_not_duplicated_across_sources() {
+        let (dir, ctx) = fixture("both", &[("book", Some(DocState::Ready), 5, 5)]);
+        let out = doc_list(&dir, &ctx);
+        assert_eq!(out.len(), 1, "status row and pages dir are the same doc");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_queued_doc_with_nothing_on_disk_yet_still_appears() {
+        let (dir, ctx) = fixture("queued", &[("new", Some(DocState::Queued), 0, 0)]);
+        let out = doc_list(&dir, &ctx);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].pages, 0);
+        assert!(out[0].processing);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn is_processing_none_is_not_processing() {

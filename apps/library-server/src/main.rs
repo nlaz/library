@@ -114,6 +114,9 @@ struct App {
     /// The cache dir plus the metadata db. Reads here run concurrently with
     /// the desktop app's writes — that is what WAL buys us.
     ctx: Ctx,
+    /// doc -> unix seconds when its read recency was last written. Throttles
+    /// the page-view stamps down to something a sweep can still order by.
+    touched: std::sync::Mutex<std::collections::HashMap<String, u64>>,
 }
 
 impl App {
@@ -128,6 +131,34 @@ impl App {
                 .and_then(|v| v.try_into().ok())
         })
     }
+
+    /// Note that a document was read, at most once a minute per document —
+    /// a scroll asks for hundreds of pages and this only needs to be
+    /// accurate enough to sort an eviction sweep by.
+    fn touch_read(&self, doc: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        {
+            let mut seen = self.touched.lock().expect("touch map poisoned");
+            match seen.get(doc) {
+                Some(at) if now.saturating_sub(*at) < 60 => return,
+                _ => seen.insert(doc.to_string(), now),
+            };
+        }
+        // best-effort: an LRU stamp is never worth failing a page view over
+        let _ = self.ctx.touch_read(doc, now);
+    }
+}
+
+/// `/pages/<doc>/page-NNNN.jpg` -> `<doc>`. Covers count too: opening a
+/// shelf is not reading a book, but it is the same document being looked
+/// at, and a cover request is one per doc rather than one per page.
+fn page_doc(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/pages/")?;
+    let (doc, file) = rest.split_once('/')?;
+    (!doc.is_empty() && file.ends_with(".jpg")).then(|| doc.to_string())
 }
 
 #[tokio::main]
@@ -172,6 +203,7 @@ async fn main() -> Result<()> {
         images: RwLock::new(images),
         clip,
         ctx: ctx.clone(),
+        touched: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // real collection names ride into the sidecar's tool schema +
@@ -573,6 +605,27 @@ async fn main() -> Result<()> {
         .nest_service("/pages", ServeDir::new(args.data.join("pages")))
         .nest_service("/ocr", ServeDir::new(args.data.join("ocr")))
         .fallback_service(ServeDir::new(&args.web))
+        // Feed page views into the same read-recency the desktop app's
+        // eviction sweep orders by. meta.db is multi-process — that is what
+        // it is for — and without this, a book read only through the web UI
+        // looks untouched to the app, which would then evict it first.
+        //
+        // Observation only: the request goes to ServeDir exactly as before,
+        // so ETags, ranges and content types are untouched. This server
+        // cannot re-render an evicted page (it has no renderer, by design),
+        // so the least it can do is not cause one.
+        .layer(axum::middleware::from_fn({
+            let app = app.clone();
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let app = app.clone();
+                async move {
+                    if let Some(doc) = page_doc(req.uri().path()) {
+                        app.touch_read(&doc);
+                    }
+                    next.run(req).await
+                }
+            }
+        }))
         .layer(CorsLayer::permissive());
     let addr = SocketAddr::from(([127, 0, 0, 1], args.http_port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -592,5 +645,33 @@ async fn main() -> Result<()> {
                 eprintln!("session ended: {e:#}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The middleware runs on every request, so what it does *not* match
+    // matters as much as what it does: an API call must never be read as
+    // somebody opening a book.
+    #[test]
+    fn page_doc_matches_page_requests_and_nothing_else() {
+        assert_eq!(
+            page_doc("/pages/kant/page-0004.jpg").as_deref(),
+            Some("kant")
+        );
+        assert_eq!(page_doc("/pages/kant/cover.jpg").as_deref(), Some("kant"));
+
+        for path in [
+            "/api/search?q=x",
+            "/pages/",
+            "/pages/kant",
+            "/pages//page-0001.jpg",
+            "/ocr/kant/page-0001.json",
+            "/pages/kant/page-0001.json",
+        ] {
+            assert_eq!(page_doc(path), None, "{path} must not count as a read");
+        }
     }
 }

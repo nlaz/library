@@ -8,6 +8,7 @@ import { attachMarkLayer, scheduleMarkTicks, setMarkupDoc } from "./markup";
 import { ocrUrl, pageImg } from "./assets";
 import { hlBoxes } from "./highlights";
 import { goBack, originLabel } from "./nav";
+import { pageErrorText, pageRetryDelay } from "./reader-model";
 import type { OcrWord, WireHit } from "./types";
 
 const $reader = document.getElementById("reader")!;
@@ -56,6 +57,58 @@ export function closeReader() {
   $reader.hidden = true;
 }
 
+/** Build a page's `<img>` and keep it honest about failure.
+ *
+ * A page image is no longer guaranteed to exist: under an evictable cache
+ * it may be 404 while its render is being made, or 503 because the render
+ * queue shed the request. Before, a failed load left a permanently blank
+ * box — no retry, no message, and the placeholder's aspect ratio never
+ * corrected. The retry here is also what makes shedding safe on the server
+ * side: refusing a request is only backpressure if the client comes back. */
+export function loadPage(el: HTMLElement, doc: string, page: number): HTMLImageElement {
+  const img = document.createElement("img");
+  img.decoding = "async"; // keep JPEG decode off the scroll path
+  let attempt = 0;
+
+  img.addEventListener("load", () => {
+    // real aspect ratio, so placeholder heights stop drifting
+    el.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
+    fitTextLayer(el);
+    scheduleTicks(); // page heights shifted — tick offsets moved
+    scheduleMarkTicks();
+  });
+
+  img.addEventListener("error", () => {
+    const delay = pageRetryDelay(++attempt);
+    if (delay !== null) {
+      // cache-bust, or the browser serves us its own memory of the 404
+      window.setTimeout(() => {
+        if (el.contains(img)) img.src = `${pageImg(doc, page)}?r=${attempt}`;
+      }, delay);
+      return;
+    }
+    // out of attempts: say so, and leave a way back that doesn't require
+    // scrolling the page out of range and back
+    img.remove();
+    const miss = document.createElement("div");
+    miss.className = "rpage-miss";
+    const why = document.createElement("p");
+    why.textContent = pageErrorText();
+    const again = document.createElement("button");
+    again.className = "ghost";
+    again.textContent = "Try again";
+    again.addEventListener("click", () => {
+      miss.remove();
+      el.prepend(loadPage(el, doc, page));
+    });
+    miss.append(why, again);
+    el.prepend(miss);
+  });
+
+  img.src = pageImg(doc, page);
+  return img;
+}
+
 function buildPages(doc: string, pages: number) {
   loader?.disconnect();
   tracker?.disconnect();
@@ -82,16 +135,7 @@ function buildPages(doc: string, pages: number) {
         const el = e.target as HTMLElement;
         if (e.isIntersecting) {
           if (!el.firstElementChild) {
-            const img = document.createElement("img");
-            img.decoding = "async"; // keep JPEG decode off the scroll path
-            img.src = pageImg(doc, Number(el.dataset.page));
-            img.addEventListener("load", () => {
-              // real aspect ratio, so placeholder heights stop drifting
-              el.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
-              fitTextLayer(el);
-              scheduleTicks(); // page heights shifted — tick offsets moved
-              scheduleMarkTicks();
-            });
+            const img = loadPage(el, doc, Number(el.dataset.page));
             el.append(img);
             attachTextLayer(el, doc, Number(el.dataset.page));
             attachHitLayer(el);

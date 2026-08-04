@@ -109,6 +109,22 @@
   user-select: none;
 }
 
+/* a page whose render could not be fetched. Sits inside the placeholder's
+   aspect ratio rather than collapsing it, so scroll offsets hold still */
+.rpage-miss {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  text-align: center;
+  color: var(--ink-dim);
+  font-size: var(--fs-ui);
+}
+
 /* --- §11 reader text layer: invisible selectable text over the page scan ------- */
 
 .tlayer {

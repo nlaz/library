@@ -518,15 +518,21 @@ select.well {
   align-items: center;
 }
 
+/* the knob is the only thing in the system that is genuinely raised off a
+   surface it is not flush with, so it gets a face and a chisel of its own —
+   both mixed from --divot-ground and the two sources, never from --surface
+   or --edge-lo directly, or it stops following the paper override */
 .switch::after {
   content: "";
   width: 14px;
   height: 14px;
   border-radius: var(--r-pill);
-  background: color-mix(in oklab, var(--divot-src-hi) 34%, var(--surface));
+  background: color-mix(in oklab, var(--divot-src-hi) 34%, var(--divot-ground));
   box-shadow:
-    inset 1px 1px 0 0 color-mix(in oklab, var(--divot-src-hi) 60%, var(--surface)),
-    inset -1px -1px 0 0 var(--edge-lo);
+    inset 1px 1px 0 0
+      color-mix(in oklab, var(--divot-src-hi) 62%, var(--divot-ground)),
+    inset -1px -1px 0 0
+      color-mix(in oklab, var(--divot-src-lo) 55%, var(--divot-ground));
   transform: translateX(0);
   transition: transform 120ms ease-out;
 }
@@ -567,10 +573,12 @@ select.well {
   height: 16px;
   margin-top: -4px;
   border-radius: var(--r-pill);
-  background: color-mix(in oklab, var(--divot-src-hi) 34%, var(--surface));
+  background: color-mix(in oklab, var(--divot-src-hi) 34%, var(--divot-ground));
   box-shadow:
-    inset 1px 1px 0 0 color-mix(in oklab, var(--divot-src-hi) 60%, var(--surface)),
-    inset -1px -1px 0 0 var(--edge-lo);
+    inset 1px 1px 0 0
+      color-mix(in oklab, var(--divot-src-hi) 62%, var(--divot-ground)),
+    inset -1px -1px 0 0
+      color-mix(in oklab, var(--divot-src-lo) 55%, var(--divot-ground));
 }
 
 /* ==========================================================================

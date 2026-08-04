@@ -21,5 +21,10 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["fs", "cors"] }
 tokio-stream = "0.1"
 
+# TASK_VM_INFO.phys_footprint for the perf panel; libc's mach surface is
+# deprecated in favour of this. See src/mem.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+mach2 = "0.4"
+
 [lints]
 workspace = true

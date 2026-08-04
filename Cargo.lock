@@ -3599,6 +3599,7 @@ dependencies = [
  "fastembed",
  "fold",
  "library-core",
+ "mach2",
  "memory-stats",
  "serde",
  "serde_json",

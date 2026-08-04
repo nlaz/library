@@ -2,7 +2,7 @@
 // tuning — recent searches, each expanding into a flame chart of its span
 // tree and its per-hit ranker provenance; per-doc ingest metrics; the chat
 // agent's turn provenance; and memory provenance (where RAM goes, against
-// process RSS).
+// the process's phys_footprint).
 // Dense and labeled for human tuning — and self-describing enough (grouped
 // constants header, absolute numbers with units) that a screenshot alone
 // carries the state an agent needs to troubleshoot.
@@ -14,7 +14,7 @@
 
 import { agentLog, agentVersion } from "./agent-log";
 import { renderAgent } from "./perf-agent";
-import { bytes, esc, hhmmss, localStamp, opt, term, us } from "./perf-fmt";
+import { bytes, esc, hhmmss, localStamp, memTotal, opt, term, us } from "./perf-fmt";
 import { labelMode, layout, summary } from "./perf-flame";
 import { GLOSS, evidence } from "./perf-gloss";
 import { isTauri } from "./transport";
@@ -705,12 +705,13 @@ function corpusDisk(m: MemoryBreakdown): number {
 }
 
 function memoryFacts(m: MemoryBreakdown): [string, string][] {
-  const rss = m.rss_bytes;
-  const pct = rss ? ` (${Math.round((m.accounted_bytes / rss) * 100)}%)` : "";
+  const total = memTotal(m);
+  const pct = total ? ` (${Math.round((m.accounted_bytes / total) * 100)}%)` : "";
   return [
     [
       "resident",
-      `${term("rss", `rss=${opt(rss, bytes)}`)}` +
+      `${term("footprint", `footprint=${opt(m.footprint_bytes, bytes)}`)}` +
+        ` ${term("rss", `rss=${opt(m.rss_bytes, bytes)}`)}` +
         ` ${term("accounted", `accounted=${bytes(m.accounted_bytes)}${pct}`)}` +
         ` ${term("unaccounted", `unaccounted=${opt(m.unaccounted_bytes, bytes)}`)}` +
         (m.atlas_building ? ` <span class="flag">ATLAS BUILDING</span>` : ""),
@@ -722,16 +723,16 @@ function memoryFacts(m: MemoryBreakdown): [string, string][] {
     ],
     [
       "caveat",
-      `estimates ≠ rss: ${term("onnx", "onnx arena")}, file-backed pages,` +
+      `estimates ≠ footprint: ${term("onnx", "onnx arena")}, file-backed pages,` +
         ` allocator retention, ${term("thread scratch", "thread scratch")}`,
     ],
   ];
 }
 
-/** "% of rss" cell with a mini bar; "—" when RSS is unknown. */
-function pctCell(part: number | null, rss: number | null): string {
-  if (part === null || !rss || rss <= 0) return `<td class="n">—</td>`;
-  const pct = (part / rss) * 100;
+/** "% of footprint" cell with a mini bar; "—" when the total is unknown. */
+function pctCell(part: number | null, total: number | null): string {
+  if (part === null || !total || total <= 0) return `<td class="n">—</td>`;
+  const pct = (part / total) * 100;
   const w = Math.max(0.5, Math.min(100, pct));
   return (
     `<td class="n"><span class="mem-bar"><span class="bar" style="width:${w}%"></span></span>` +
@@ -741,7 +742,7 @@ function pctCell(part: number | null, rss: number | null): string {
 
 /** A store's summary row plus, when expanded, one dimmed row per keyspace
  * (disk-heavy first) — where the orphans and the pinned RAM show up. */
-function storeRows(s: StoreMem, rss: number | null): string {
+function storeRows(s: StoreMem, total: number | null): string {
   const open = memOpen.has(s.name);
   const known = KNOWN_KS[s.name] ?? [];
   const isOrphan = (name: string) => known.length > 0 && !known.includes(name);
@@ -756,7 +757,7 @@ function storeRows(s: StoreMem, rss: number | null): string {
   const main =
     `<tr data-store="${esc(s.name)}"><td class="q"><span class="twist">${open ? "▾" : "▸"}</span> ${esc(s.name)}</td>` +
     `<td class="n">${bytes(s.ram_bytes)}</td>` +
-    pctCell(s.ram_bytes, rss) +
+    pctCell(s.ram_bytes, total) +
     `<td class="n">${bytes(s.disk_bytes)}</td>` +
     `<td class="n">${s.keyspaces.length}</td>` +
     `<td>${detail}</td></tr>`;
@@ -788,14 +789,14 @@ const IDX_DISK: Record<string, [string, string[]]> = {
 
 function renderMemory(m: MemoryBreakdown) {
   facts.memory = memoryFacts(m);
-  const rss = m.rss_bytes;
+  const total = memTotal(m);
   const c = m.corpus;
   const group = (label: string) => `<tr class="mem-group"><td colspan="6">${esc(label)}</td></tr>`;
   // `name`/`detail` arrive as HTML — callers escape their own data
   const row = (name: string, resident: number | null, disk: number | null, items: string, detail: string) =>
     `<tr><td class="q">${name}</td>` +
     `<td class="n">${resident === null ? "—" : bytes(resident)}</td>` +
-    pctCell(resident, rss) +
+    pctCell(resident, total) +
     `<td class="n">${disk === null ? "—" : bytes(disk)}</td>` +
     `<td class="n">${items}</td>` +
     `<td>${detail}</td></tr>`;
@@ -867,7 +868,7 @@ function renderMemory(m: MemoryBreakdown) {
         x.bytes === null ? c.model_dir_bytes : null, // clip's files live in data/models
         "—",
         x.bytes === null
-          ? `${term("onnx", "opaque")} — visible only in rss`
+          ? `${term("onnx", "opaque")} — visible only in the footprint`
           : term("ese weights", esc(x.residency)),
       ),
     )
@@ -882,12 +883,12 @@ function renderMemory(m: MemoryBreakdown) {
           m.unaccounted_bytes,
           null,
           "—",
-          "rss − accounted: onnx arena, page cache, allocator retention, thread scratch",
+          "footprint − accounted: onnx arena, page cache, allocator retention, thread scratch",
         );
 
   $memoryBody.innerHTML =
     `<table><thead><tr>` +
-    `<th>component</th><th>resident (est.)</th><th>% of rss</th><th>disk</th><th>items</th><th>detail</th>` +
+    `<th>component</th><th>resident (est.)</th><th>% of footprint</th><th>disk</th><th>items</th><th>detail</th>` +
     `</tr></thead><tbody>` +
     group("documents") +
     docs +
@@ -898,7 +899,7 @@ function renderMemory(m: MemoryBreakdown) {
     group("models") +
     models +
     group("stores") +
-    m.stores.map((s) => storeRows(s, rss)).join("") +
+    m.stores.map((s) => storeRows(s, total)).join("") +
     remainder +
     `</tbody></table>`;
 

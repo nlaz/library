@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { bytes, median, ms, opt, us } from "./perf-fmt";
+import { bytes, median, memTotal, ms, opt, us } from "./perf-fmt";
+import type { MemoryBreakdown } from "./types";
 
 describe("duration formatting", () => {
   it("rolls µs over to ms at 1000", () => {
@@ -31,6 +32,32 @@ describe("bytes", () => {
   // render as a giant positive number or NaN
   it("keeps the sign on negative values", () => {
     expect(bytes(-1024)).toBe("-1.0KiB");
+  });
+});
+
+describe("memTotal", () => {
+  const m = (footprint: number | null, rss: number | null) =>
+    ({ footprint_bytes: footprint, rss_bytes: rss }) as MemoryBreakdown;
+
+  // The ordering is the whole fix. rss excludes compressed pages, so an idle
+  // app reports a fraction of what it holds — picking it over footprint is
+  // what made the panel show accounted=205MiB against rss=23.5MiB and an
+  // unaccounted remainder of -181.6MiB. Mirrors HostMem::total in Rust.
+  it("prefers footprint over rss", () => {
+    expect(memTotal(m(500, 23))).toBe(500);
+  });
+
+  it("falls back to rss when the host had no footprint probe", () => {
+    expect(memTotal(m(null, 23))).toBe(23);
+  });
+
+  it("is null when neither probe landed", () => {
+    expect(memTotal(m(null, null))).toBe(null);
+  });
+
+  // a real zero must not read as "no probe" and silently promote rss
+  it("keeps a zero footprint rather than falling through", () => {
+    expect(memTotal(m(0, 23))).toBe(0);
   });
 });
 

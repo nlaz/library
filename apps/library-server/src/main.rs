@@ -33,6 +33,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
 mod chat;
+mod mem;
 mod wt;
 
 #[derive(Parser)]
@@ -316,10 +317,10 @@ async fn main() -> Result<()> {
                 let app = app.clone();
                 async move {
                     let out = tokio::task::spawn_blocking(move || {
-                        let rss = memory_stats::memory_stats().map(|m| m.physical_mem as u64);
+                        let host = crate::mem::host_mem();
                         let lib = app.lib.read().expect("library lock poisoned");
                         let images = app.images.read().expect("images lock poisoned");
-                        library_core::perf::memory(&lib, &images, &app.ctx.data, rss)
+                        library_core::perf::memory(&lib, &images, &app.ctx.data, host)
                     })
                     .await
                     .expect("perf memory task panicked");

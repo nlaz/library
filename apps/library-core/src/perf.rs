@@ -289,10 +289,36 @@ pub fn meta(chunks: usize, figures: usize, docs: usize) -> Value {
 // Memory provenance
 // ---------------------------------------------------------------------------
 
+/// What the host could tell us about the process's own memory.
+///
+/// Two numbers, because they answer different questions and disagree by a
+/// lot. `rss_bytes` is the mach `resident_size`: pages currently backed by
+/// physical RAM. It **excludes anything the compressor has taken**, so an
+/// idle app's heap quietly evaporates from it — which is how the panel came
+/// to report a 23 MiB RSS against 205 MiB of accounted line items.
+/// `footprint_bytes` is `phys_footprint`, the number Activity Monitor's
+/// "Memory" column shows and the one memory pressure is judged on: it counts
+/// compressed and swapped pages, so it stays put while the app sits idle.
+///
+/// Prefer `footprint_bytes` and fall back to `rss_bytes`; either may be
+/// `None` when its probe fails or the platform has no equivalent.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HostMem {
+    pub rss_bytes: Option<u64>,
+    pub footprint_bytes: Option<u64>,
+}
+
+impl HostMem {
+    /// The number to measure the accounted line items against.
+    pub fn total(&self) -> Option<u64> {
+        self.footprint_bytes.or(self.rss_bytes)
+    }
+}
+
 /// Where the process's RAM goes, as well as Rust-side accounting can tell.
 ///
-/// The line items are estimates and deliberately don't reconcile with
-/// `rss_bytes`: the CLIP ONNX arena is invisible to us, ese's weights are
+/// The line items are estimates and deliberately don't reconcile with the
+/// host's total: the CLIP ONNX arena is invisible to us, ese's weights are
 /// file-backed `.rodata` (resident only as touched pages), fjall memory-maps
 /// table files, and allocator retention plus per-thread search scratch are
 /// unaccounted. The signed `unaccounted_bytes` remainder carries that gap
@@ -301,7 +327,10 @@ pub fn meta(chunks: usize, figures: usize, docs: usize) -> Value {
 pub struct MemoryBreakdown {
     pub now_ms: u64,
     /// Host-provided resident set size; `None` means the probe failed.
+    /// Excludes compressed pages — see [`HostMem`] for why that matters.
     pub rss_bytes: Option<u64>,
+    /// Host-provided `phys_footprint`; `None` off macOS or on probe failure.
+    pub footprint_bytes: Option<u64>,
     pub corpus: CorpusMem,
     pub indexes: Vec<IndexMem>,
     pub caches: Vec<CacheMem>,
@@ -309,8 +338,9 @@ pub struct MemoryBreakdown {
     pub stores: Vec<StoreMem>,
     /// Sum of every RAM line item above (disk figures excluded).
     pub accounted_bytes: u64,
-    /// `rss - accounted`; negative when capacity-based estimates exceed a
-    /// partially paged-out RSS.
+    /// `footprint - accounted`, falling back to `rss - accounted` when there
+    /// is no footprint. Still signed: capacity-based estimates can exceed a
+    /// partially paged-out RSS, and on the fallback path they often do.
     pub unaccounted_bytes: Option<i64>,
     /// A corpus-sized transient is in flight (all embeddings + chunk text).
     pub atlas_building: bool,
@@ -495,14 +525,9 @@ fn search_log_bytes() -> (usize, usize) {
 
 /// Assemble the breakdown: one read transaction per store for the sink
 /// stats, the stores' own fjall numbers, and a TTL-cached walk of the
-/// corpus dirs under `data`. `rss_bytes` comes from the host so this crate
+/// corpus dirs under `data`. [`HostMem`] comes from the host so this crate
 /// stays platform-free.
-pub fn memory(
-    lib: &Library,
-    images: &Images,
-    data: &Path,
-    rss_bytes: Option<u64>,
-) -> MemoryBreakdown {
+pub fn memory(lib: &Library, images: &Images, data: &Path, host: HostMem) -> MemoryBreakdown {
     let (lex_cache, vec_stats) = lib.rtx(|((lex, vec), _)| (lex.cache_stats(), vec.stats()));
     let img_stats = images.rtx(|(vec, _)| vec.stats());
     let (log_entries, log_bytes) = search_log_bytes();
@@ -572,8 +597,9 @@ pub fn memory(
 
     MemoryBreakdown {
         now_ms: now_ms(),
-        rss_bytes,
-        unaccounted_bytes: rss_bytes.map(|r| r as i64 - accounted_bytes as i64),
+        rss_bytes: host.rss_bytes,
+        footprint_bytes: host.footprint_bytes,
+        unaccounted_bytes: host.total().map(|t| t as i64 - accounted_bytes as i64),
         corpus,
         indexes,
         caches,
@@ -776,6 +802,32 @@ pub fn ingest_rows(ctx: &Ctx) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The gap is only meaningful against a total that counts compressed
+    // pages, so footprint wins whenever the host could produce one. rss is
+    // the fallback, not the default.
+    #[test]
+    fn host_total_prefers_footprint_over_rss() {
+        let both = HostMem {
+            rss_bytes: Some(23),
+            footprint_bytes: Some(500),
+        };
+        assert_eq!(both.total(), Some(500));
+
+        let no_footprint = HostMem {
+            rss_bytes: Some(23),
+            footprint_bytes: None,
+        };
+        assert_eq!(no_footprint.total(), Some(23));
+
+        let no_rss = HostMem {
+            rss_bytes: None,
+            footprint_bytes: Some(500),
+        };
+        assert_eq!(no_rss.total(), Some(500));
+
+        assert_eq!(HostMem::default().total(), None);
+    }
 
     #[test]
     fn ring_caps_and_orders_newest_first() {

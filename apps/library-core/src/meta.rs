@@ -138,6 +138,34 @@ impl Meta {
         Meta::prepare(conn)
     }
 
+    /// Open `dir/meta.db` read-only, without creating it and **without
+    /// migrating it**.
+    ///
+    /// [`open`](Self::open) runs [`migrate`](Self::migrate), so a tool that
+    /// merely wants to *look* at a user's library still writes to it — and
+    /// would silently upgrade a database belonging to a newer build of the
+    /// app than the tool. Measurement harnesses want neither. The connection
+    /// refuses writes at the SQLite level, so this is enforced rather than
+    /// promised.
+    ///
+    /// The schema is whatever is on disk: callers must tolerate columns a
+    /// migration would have added.
+    pub fn open_readonly(dir: &Path) -> io::Result<Meta> {
+        let conn = Connection::open_with_flags(
+            dir.join(META_DB),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(sql_err)?;
+        // No journal_mode/synchronous pragmas: setting journal_mode is itself
+        // a write. busy_timeout is not — and it is the one that matters here,
+        // since the whole point is reading a database the app is using.
+        conn.busy_timeout(std::time::Duration::from_secs(10))
+            .map_err(sql_err)?;
+        Ok(Meta {
+            conn: Mutex::new(conn),
+        })
+    }
+
     fn prepare(conn: Connection) -> io::Result<Meta> {
         // WAL is what makes a reader (the server, the CLI) coexist with a
         // writer (the app) instead of blocking it. NORMAL sync is the
@@ -790,6 +818,53 @@ mod tests {
             .write(|c| c.query_row("SELECT count(*) FROM schema_version", [], |r| r.get(0)))
             .unwrap();
         assert_eq!(applied, MIGRATIONS.len() as i64);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // A measurement harness reads a live library while the app is running.
+    // "Read-only" has to mean the connection refuses writes, not that the
+    // caller intends not to make any.
+    #[test]
+    fn readonly_open_neither_migrates_nor_writes() {
+        let dir = std::env::temp_dir().join(format!("meta-ro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        {
+            let m = Meta::open(&dir).unwrap();
+            m.set_title("kant", Some("Critique")).unwrap();
+        }
+        // pretend the app is a schema behind this build: drop the version
+        // rows so open() would re-run every migration, and open_readonly
+        // must not
+        {
+            let m = Meta::open(&dir).unwrap();
+            m.write(|c| c.execute("DELETE FROM schema_version", []))
+                .unwrap();
+        }
+
+        let ro = Meta::open_readonly(&dir).unwrap();
+        assert_eq!(
+            ro.titles().get("kant").map(String::as_str),
+            Some("Critique")
+        );
+        let versions: i64 = ro
+            .write(|c| c.query_row("SELECT count(*) FROM schema_version", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(versions, 0, "open_readonly must not migrate");
+
+        // and the connection itself refuses a write
+        let err = ro
+            .write(|c| c.execute("INSERT INTO schema_version (version) VALUES (1)", []))
+            .expect_err("a read-only connection must reject writes");
+        assert!(
+            err.to_string().contains("readonly") || err.to_string().contains("read-only"),
+            "unexpected error: {err}"
+        );
+
+        // opening a database that isn't there is an error, not a creation
+        let missing = dir.join("nope");
+        assert!(Meta::open_readonly(&missing).is_err());
+        assert!(!missing.join(META_DB).exists());
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

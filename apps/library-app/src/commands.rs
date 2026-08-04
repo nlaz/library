@@ -96,10 +96,10 @@ pub(crate) async fn perf_memory(
     let eng = engine(&state)?;
     let data = state.settings.data.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let rss = memory_stats::memory_stats().map(|m| m.physical_mem as u64);
+        let host = crate::mem::host_mem();
         let lib = eng.lib.read().expect("library lock poisoned");
         let images = eng.images.read().expect("images lock poisoned");
-        library_core::perf::memory(&lib, &images, &data, rss)
+        library_core::perf::memory(&lib, &images, &data, host)
     })
     .await
     .map_err(|e| e.to_string())

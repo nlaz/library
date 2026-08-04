@@ -171,14 +171,17 @@ export const GLOSS: Record<string, Gloss> = {
   "emb payload": {
     what: "The exact bytes of all embeddings (chunks + figures × dimension × 4). Resident, but inside the HNSW index rows — listed here to show how much of the index cost is the vectors themselves versus graph links and maps.",
   },
+  footprint: {
+    what: "phys_footprint: everything this process is charged for, including pages the memory compressor has squeezed and pages swapped out. This is what Activity Monitor's Memory column shows and what memory pressure is judged on, so it is the total every other number on this tab is trying to explain.",
+  },
   rss: {
-    what: "Resident set size: the physical memory the OS currently attributes to this process. The one true total — everything else on this tab is an estimate trying to explain it.",
+    what: "Resident set size: only the pages currently backed by physical RAM. macOS compresses an idle process's heap, so this can fall to a small fraction of the footprint while the app is holding exactly as much — it once read 23 MiB against 205 MiB of accounted line items, which is why the percentages are taken against footprint instead. Shown because the gap between the two is itself the read: rss far below footprint means most of the heap is sitting compressed.",
   },
   accounted: {
     what: "The sum of every RAM line item below: indexes, caches, the ese weights, and the stores' memtables, block caches, and pinned blocks. Disk figures are never included.",
   },
   unaccounted: {
-    what: "rss minus accounted — memory we can see but not name. Mostly the CLIP ONNX runtime's arena, plus page cache for memory-mapped store files, allocator retention, and per-thread search scratch. Can go negative when capacity-based estimates exceed a partially paged-out RSS.",
+    what: "footprint minus accounted — memory we can see but not name. Mostly the CLIP ONNX runtime's arena, plus page cache for memory-mapped store files, allocator retention, and per-thread search scratch. Still signed: it can go negative when capacity-based estimates overshoot, and reliably does on the rss fallback path, where the total excludes compressed pages the estimates still count.",
   },
   slots: {
     what: "The HNSW graph's high-water mark. Removals tombstone nodes onto a free list and never shrink the arrays, so a churned index costs slots × per-vector bytes, not live × — that's the gap between live and slots.",

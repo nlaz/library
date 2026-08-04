@@ -19,6 +19,7 @@ mod docs;
 mod engine;
 mod ingest;
 mod marginalia;
+mod mem;
 mod prefs;
 mod roots;
 mod serve;

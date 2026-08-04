@@ -240,6 +240,41 @@ enum Cli {
         #[arg(long)]
         lex_only: bool,
     },
+    /// Measure what re-rendering a page from its source file would cost —
+    /// the question behind treating data/pages as an evictable cache.
+    ///
+    /// Read-only: never opens the fold stores (so it runs with the app up),
+    /// opens meta.db read-only, and renders to a temp dir.
+    RenderProbe {
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+        /// Sample only the first N ready docs.
+        #[arg(long)]
+        docs: Option<usize>,
+        /// Probe these doc ids instead of every ready doc. Repeatable.
+        #[arg(long = "doc")]
+        only: Vec<String>,
+        /// Pages sampled per doc: first, last, and evenly spaced between.
+        #[arg(long, default_value_t = 5)]
+        pages_per_doc: usize,
+        /// Rendered page-image width in pixels.
+        #[arg(long, default_value_t = 1600)]
+        width: u32,
+        /// JPEG quality, 0..1.
+        #[arg(long, default_value_t = 0.8)]
+        quality: f64,
+        /// Reuse one open CGPDFDocument across a doc's sampled pages — the
+        /// counterfactual for adding a handle cache to the serve path.
+        #[arg(long)]
+        warm_handle: bool,
+        /// Also write the full report, with its provenance block, here.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Run at full priority instead of background QoS. Gate on this:
+        /// background QoS is E-cores only and makes latency pessimistic.
+        #[arg(long)]
+        hot: bool,
+    },
 }
 
 fn now_secs() -> u64 {
@@ -552,6 +587,32 @@ fn main() -> Result<()> {
             k,
             lex_only,
         } => search(&query, &data, k, lex_only),
+        Cli::RenderProbe {
+            data,
+            docs,
+            only,
+            pages_per_doc,
+            width,
+            quality,
+            warm_handle,
+            out,
+            hot,
+        } => {
+            if !hot {
+                be_gentle();
+            }
+            library_ingest::probe::run(library_ingest::probe::Args {
+                data,
+                docs,
+                only,
+                pages_per_doc,
+                width,
+                quality,
+                warm_handle,
+                out,
+                hot,
+            })
+        }
     }
 }
 

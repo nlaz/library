@@ -25,6 +25,7 @@ pub mod migrate;
 pub mod models;
 pub mod ocr;
 pub mod pdftext;
+pub mod probe;
 pub mod status;
 pub mod subdivide;
 pub mod textout;
@@ -178,6 +179,60 @@ pub fn read_ocr(ocr_dir: &Path) -> Result<Vec<PageOcr>> {
 /// caller must handle, not an error).
 pub fn source_path(meta: &Meta, doc: &str) -> Option<PathBuf> {
     meta.doc_path(doc)
+}
+
+/// Whether a document's file can be read *right now*.
+///
+/// [`source_path`] answers a different question — where the scanner last saw
+/// the file — and deliberately treats an iCloud stub as present, because for
+/// its callers a stub is not a disappearance. Anything about to actually
+/// open the file needs the stricter answer, so this re-`stat`s rather than
+/// trusting `files.state`: that column is written at scan time and can be
+/// hours stale, and reading an evicted stub silently pulls the whole file
+/// down from the network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// Present and readable at this path.
+    Ready(PathBuf),
+    /// No row at all — a document minted before the roots index, or one
+    /// whose rows went with an unlinked root. Nothing to render from.
+    NoRow,
+    /// The scanner knows the file, and it is not there.
+    Missing,
+    /// Present but evicted to the cloud. Not a disappearance, and not
+    /// something to fault in behind a page request either.
+    Dataless,
+}
+
+impl Source {
+    /// The path, if the file can be read now.
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Source::Ready(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// The short cause label the probe and the storage pane both report.
+    pub fn cause(&self) -> &'static str {
+        match self {
+            Source::Ready(_) => "ready",
+            Source::NoRow => "no_source_row",
+            Source::Missing => "missing_on_disk",
+            Source::Dataless => "dataless",
+        }
+    }
+}
+
+pub fn source_state(meta: &Meta, doc: &str) -> Source {
+    let Some(path) = meta.doc_path(doc) else {
+        return Source::NoRow;
+    };
+    match library_core::roots::stat(&path) {
+        None => Source::Missing,
+        Some(s) if s.dataless => Source::Dataless,
+        Some(_) => Source::Ready(path),
+    }
 }
 
 /// Bring a dropped or picked file into the library by copying it into

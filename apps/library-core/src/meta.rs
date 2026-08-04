@@ -36,6 +36,7 @@ use crate::wire::Collections;
 const MIGRATIONS: &[&str] = &[
     include_str!("meta/0001_initial.sql"),
     include_str!("meta/0002_roots.sql"),
+    include_str!("meta/0003_page_cache.sql"),
 ];
 
 /// Filename under the app-support dir.
@@ -527,6 +528,55 @@ impl Meta {
         })
     }
 
+    // --- read recency -------------------------------------------------------
+
+    /// Mark a document as read now, for the page cache's LRU.
+    ///
+    /// `at` is unix seconds, passed in rather than read here so the caller
+    /// can throttle: this is written from the page-serving path, where a
+    /// single search can ask for two dozen images at once and a book's
+    /// scroll asks for hundreds. Once a minute per document is plenty to
+    /// order an eviction sweep by.
+    ///
+    /// Upserts, because a document can be served before anything else has
+    /// given it a row.
+    pub fn touch_read(&self, doc: &str, at: u64) -> io::Result<()> {
+        self.write(|c| {
+            c.execute(
+                "INSERT INTO docs (id, last_read_at) VALUES (?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET last_read_at = excluded.last_read_at",
+                params![doc, at as i64],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Every document with a row, least recently read first — the order an
+    /// eviction sweep works through. Documents nobody has opened carry 0 and
+    /// sort to the front, which is what we want: unread renders are the
+    /// cheapest thing in the cache to lose.
+    pub fn read_order(&self) -> Vec<(String, u64)> {
+        self.read(|c| {
+            let mut q =
+                c.prepare("SELECT id, last_read_at FROM docs ORDER BY last_read_at ASC, id ASC")?;
+            let rows = q.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64))
+            })?;
+            rows.collect()
+        })
+    }
+
+    /// When a document was last read, or `None` if it has no row.
+    pub fn last_read(&self, doc: &str) -> Option<u64> {
+        self.read(|c| {
+            c.query_row("SELECT last_read_at FROM docs WHERE id = ?1", [doc], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()
+        })
+        .map(|v| v.max(0) as u64)
+    }
+
     // --- titles -------------------------------------------------------------
 
     /// `doc id -> what a person would call its file`: the last path
@@ -819,6 +869,58 @@ mod tests {
             .unwrap();
         assert_eq!(applied, MIGRATIONS.len() as i64);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn read_recency_round_trips_and_orders_unread_first() {
+        let m = Meta::open_in_memory().unwrap();
+        m.set_doc_placement("kant", "pdf", None).unwrap();
+        m.set_doc_placement("hume", "pdf", None).unwrap();
+        m.set_doc_placement("locke", "pdf", None).unwrap();
+
+        // never opened: 0, and no row of its own is needed to say so
+        assert_eq!(m.last_read("kant"), Some(0));
+        assert_eq!(m.last_read("nobody"), None);
+
+        m.touch_read("hume", 500).unwrap();
+        m.touch_read("locke", 100).unwrap();
+
+        assert_eq!(m.last_read("hume"), Some(500));
+        // an unread doc must sort ahead of everything read — its renders are
+        // the cheapest thing in the cache to lose
+        let order: Vec<String> = m.read_order().into_iter().map(|(d, _)| d).collect();
+        assert_eq!(order, vec!["kant", "locke", "hume"]);
+
+        // touching again moves it to the back, not to a second row
+        m.touch_read("locke", 900).unwrap();
+        let order: Vec<String> = m.read_order().into_iter().map(|(d, _)| d).collect();
+        assert_eq!(order, vec!["kant", "hume", "locke"]);
+    }
+
+    // the page-serving path can be asked for an image before anything else
+    // has minted the document a row
+    #[test]
+    fn touch_read_mints_a_row_for_an_unknown_doc() {
+        let m = Meta::open_in_memory().unwrap();
+        m.touch_read("fresh", 42).unwrap();
+        assert_eq!(m.last_read("fresh"), Some(42));
+        assert_eq!(m.read_order(), vec![("fresh".to_string(), 42)]);
+    }
+
+    // touch_read upserts into `docs`, so it must not disturb the columns a
+    // document already had — losing an ingest state to a page view would be
+    // a spectacular way to break the library
+    #[test]
+    fn touching_a_doc_leaves_the_rest_of_its_row_alone() {
+        let m = Meta::open_in_memory().unwrap();
+        m.set_title("kant", Some("Critique")).unwrap();
+        m.set_doc_placement("kant", "pdf", Some("philosophy"))
+            .unwrap();
+        m.touch_read("kant", 7).unwrap();
+
+        assert_eq!(m.titles().get("kant").map(String::as_str), Some("Critique"));
+        assert_eq!(m.shelf_of_doc("kant").as_deref(), Some("philosophy"));
+        assert_eq!(m.last_read("kant"), Some(7));
     }
 
     // A measurement harness reads a live library while the app is running.

@@ -57,4 +57,21 @@ impl<T: ScalarInt> Scalar for T {
 pub trait Metric<T> {
     type Out: Distance;
     fn distance(a: &[T], b: &[T]) -> Self::Out;
+
+    /// Set when [`prepare`](Metric::prepare) is not the identity — i.e. the
+    /// index must condition every vector before storing or querying it.
+    ///
+    /// The flag is written into the persisted graph header and validated on
+    /// load, so a graph built under one setting is never silently reused
+    /// under the other; a mismatch reads as a stale blob and the caller
+    /// rebuilds from its durable vectors.
+    const CONDITIONED: bool = false;
+
+    /// Condition a vector in place before it enters the index (on insert) or
+    /// is used as a query. The default is a no-op; metrics that assume a
+    /// precondition — [`UnitCosine`](crate::metric::UnitCosine) assumes unit
+    /// length — establish it here so the assumption cannot be violated by a
+    /// caller.
+    #[inline(always)]
+    fn prepare(_v: &mut [T]) {}
 }

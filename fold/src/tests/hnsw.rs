@@ -154,6 +154,66 @@ fn hnsw_checkpoint_blob_reopen() {
     });
 }
 
+/// A checkpointed blob is only reusable by a metric that agrees with the one
+/// that wrote it: a conditioned metric (`UnitCosine`) stores normalized
+/// copies, so handing that blob to `Cosine` — or the reverse — would search
+/// vectors the metric does not expect. `anny` rejects the mismatch via the
+/// header and the sink must treat that like any other stale blob and replay
+/// from the persisted vector rows, which are stored unconditioned.
+///
+/// This is the upgrade path for an already-indexed library, so it must be
+/// silent and lossless rather than a panic or a wrong answer.
+#[test]
+fn hnsw_blob_replays_when_the_metric_conditioning_changes() {
+    use anny::metric::{Cosine, UnitCosine};
+    type CosSink = terminal::search::Hnsw<String, f32, Cosine, 4>;
+    type UnitSink = terminal::search::Hnsw<String, f32, UnitCosine, 4>;
+
+    let path = fresh_db("hnsw_metric_swap.db");
+    // vectors that are emphatically not unit length, so a graph searched
+    // under the wrong assumption would give itself away
+    let w = |x: f32| [x, 1.0, 0.0, 0.0].map(|c| c * (1.0 + x));
+
+    let mut st = Stream::new(&path, CosSink::new("vecs", Cosine, 42));
+    st.wtx(|tx| {
+        for i in 0..150 {
+            tx.insert(&Keyed::new(format!("k{i}"), w(i as f32)));
+        }
+    });
+    st.checkpoint();
+    drop(st);
+
+    // reopen the same store under the conditioned metric: the blob is
+    // rejected, the vector rows are replayed, and search still works
+    let mut st = Stream::new(&path, UnitSink::new("vecs", UnitCosine, 42));
+    st.rtx(|ix| {
+        assert_eq!(ix.len(), 150, "every vector row must survive the replay");
+        let top = &ix.search(&w(23.0))[0];
+        assert_eq!(top.val, "k23");
+        // decisive: under UnitCosine a vector's distance to itself is
+        // 1 - <v̂,v̂> = 0. Had the rejected blob been reused, the graph would
+        // hold the unnormalized vectors Cosine stored and this would be
+        // 1 - <v,v>, i.e. hugely negative.
+        assert!(
+            top.score.abs() < 1e-4,
+            "self-distance {} means the graph holds unconditioned vectors",
+            top.score
+        );
+    });
+
+    // and it can write its own blob, which reloads on the fast path
+    st.checkpoint();
+    let baseline: Vec<String> =
+        st.rtx(|ix| ix.search(&w(77.0)).into_iter().map(|h| h.val).collect());
+    drop(st);
+    let st = Stream::new(&path, UnitSink::new("vecs", UnitCosine, 42));
+    st.rtx(|ix| {
+        assert_eq!(ix.len(), 150);
+        let got: Vec<String> = ix.search(&w(77.0)).into_iter().map(|h| h.val).collect();
+        assert_eq!(got, baseline, "blob-loaded graph differs from original");
+    });
+}
+
 #[test]
 fn hnsw_search_filtered() {
     let path = fresh_db("hnsw_filter.db");

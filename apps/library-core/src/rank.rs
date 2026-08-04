@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::records::is_reserved;
 use crate::text::tokenize;
-use crate::{ChunkKey, ChunkRec, EMB_DIM, Emb, FxHashSet, Readers, Word};
+use crate::{ChunkKey, ChunkRec, Emb, FxHashSet, Readers, Word, dot};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hit {
@@ -116,10 +116,14 @@ const RERANK_MAX_QUERY_TOKENS: usize = 32;
 
 /// Normalize in place; returns the original norm (0.0 leaves `v` untouched).
 fn normalize(v: &mut Emb) -> f32 {
-    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let n = dot(v, v).sqrt();
     if n > 0.0 {
+        // reciprocal multiply: f32 division has several times the latency of
+        // a multiply and does not pipeline, and this runs once per document
+        // token vector on every search
+        let inv = 1.0 / n;
         for x in v.iter_mut() {
-            *x /= n;
+            *x *= inv;
         }
     }
     n
@@ -149,8 +153,16 @@ fn query_token_dirs(query: &str) -> Vec<(Emb, f32)> {
 /// rarity-weighted mean of those best matches is blended with the fused
 /// score, and the pool is re-sorted. Hits past the pool keep fused order,
 /// and reranked scores are rescaled into the pool's original score range so
-/// the full list stays monotonic. Static-table arithmetic only (~30M mults
-/// for 20 chunks — sub-millisecond), so it runs on every search.
+/// the full list stays monotonic.
+///
+/// Static-table arithmetic only, but not free: a 30-chunk pool of 200-word
+/// chunks against a 17-token query is ~95k dot products over EMB_DIM, and
+/// the token vectors are rebuilt from the table on every search. Measured
+/// ~50ms/call before the 2026-08 pass that vectorized [`dot`] and made the
+/// scoring single-pass (an earlier version of this comment claimed
+/// "sub-millisecond", which was never true); it is the most expensive stage
+/// of a search, so re-measure before growing [`RERANK_POOL`] or
+/// [`RERANK_MAX_QUERY_TOKENS`].
 pub(crate) fn maxsim_rerank(
     mut fused: Vec<(f32, ChunkKey)>,
     query: &str,
@@ -166,39 +178,64 @@ pub(crate) fn maxsim_rerank(
         return fused;
     }
 
+    // A word's best dot against each query token depends only on the word and
+    // the query, so it is computed once for the whole pool rather than once
+    // per chunk that contains the word — and prose repeats heavily, both
+    // within a 200-word chunk and across the ~30 chunks of a pool.
+    //
+    // What is memoized is the *scores* (one f32 per query token), not the
+    // token vectors: a word's directions run ~1-2 x EMB_DIM floats, so
+    // caching those would cost megabytes per search, while this is ~17
+    // floats per distinct word. An empty entry marks a word whose pieces all
+    // dequantized to a zero vector.
+    let mut memo: FxHashMap<String, Vec<f32>> = FxHashMap::default();
     let maxsim: Vec<f32> = fused[..pool]
         .iter()
         .map(|(_, key)| {
             let Some(rec) = resolve(key) else {
                 return 0.0;
             };
-            // dedup words — repeats add nothing to a max
             let mut seen: FxHashSet<&str> = FxHashSet::default();
-            let mut doc_dirs: Vec<Emb> = Vec::new();
+            let mut best = vec![-1.0f32; qtok.len()];
+            let mut any = false;
             for w in &rec.words {
-                if seen.insert(w.t.as_str()) {
+                if !seen.insert(w.t.as_str()) {
+                    continue;
+                }
+                if !memo.contains_key(w.t.as_str()) {
+                    // Each direction is scored against every query token the
+                    // moment it is built, rather than collected into a Vec
+                    // that is then re-scanned once per query token — same
+                    // maxima (max is order-independent), but `dir` stays in
+                    // L1 across the inner loop and the set is never
+                    // materialized.
+                    let mut m = vec![f32::NEG_INFINITY; qtok.len()];
+                    let mut usable = false;
                     ese::for_each_token_vector(&w.t, |v| {
                         let mut dir = *v;
                         if normalize(&mut dir) > 0.0 {
-                            doc_dirs.push(dir);
+                            usable = true;
+                            for (b, (qd, _)) in m.iter_mut().zip(qtok.iter()) {
+                                *b = b.max(dot(qd, &dir));
+                            }
                         }
                     });
+                    memo.insert(w.t.clone(), if usable { m } else { Vec::new() });
+                }
+                let per_word = &memo[w.t.as_str()];
+                if !per_word.is_empty() {
+                    any = true;
+                    for (b, m) in best.iter_mut().zip(per_word.iter()) {
+                        *b = b.max(*m);
+                    }
                 }
             }
-            if doc_dirs.is_empty() {
+            if !any {
                 return 0.0;
             }
             let mut acc = 0.0f32;
-            for (qd, w) in &qtok {
-                let mut best = -1.0f32;
-                for dd in &doc_dirs {
-                    let mut dot = 0.0f32;
-                    for i in 0..EMB_DIM {
-                        dot += qd[i] * dd[i];
-                    }
-                    best = best.max(dot);
-                }
-                acc += w * best;
+            for (b, (_, w)) in best.iter().zip(qtok.iter()) {
+                acc += w * b;
             }
             acc / wsum
         })
@@ -242,21 +279,6 @@ pub(crate) fn maxsim_rerank(
     fused
 }
 
-/// Cosine similarity of two embeddings (0 if either is degenerate).
-pub(crate) fn cosine(a: &Emb, b: &Emb) -> f32 {
-    let (mut dot, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
-    for i in 0..EMB_DIM {
-        dot += a[i] * b[i];
-        na += a[i] * a[i];
-        nb += b[i] * b[i];
-    }
-    if na == 0.0 || nb == 0.0 {
-        0.0
-    } else {
-        dot / (na.sqrt() * nb.sqrt())
-    }
-}
-
 /// How many top fused hits the MMR diversity re-rank considers. Fixed
 /// (independent of `k`/`offset`) so greedy selection is deterministic and
 /// pagination stays prefix-stable; hits past the pool keep their fused order.
@@ -267,13 +289,19 @@ pub(crate) const MMR_LAMBDA: f32 = 0.7;
 
 /// Update each unpicked pool item's running max similarity against one newly
 /// selected item — the trick that keeps [`mmr_rerank`] O(pool²) overall.
+///
+/// `embs` must hold **unit** vectors, with degenerate embeddings stored as
+/// `None`; similarity is then a bare [`dot`]. [`mmr_rerank`] normalizes the
+/// pool once up front, which turns what was an O(pool²) recomputation of
+/// both norms — the same ‖e‖ recomputed on every one of the ~5000 pairs a
+/// full pool visits — into O(pool).
 pub(crate) fn bump_sim(max_sim: &mut [f32], picked: &[bool], embs: &[Option<Emb>], sel: usize) {
     let Some(se) = &embs[sel] else { return };
     for (i, mi) in max_sim.iter_mut().enumerate() {
         if !picked[i]
             && let Some(e) = &embs[i]
         {
-            *mi = mi.max(cosine(e, se));
+            *mi = mi.max(dot(e, se));
         }
     }
 }
@@ -291,9 +319,16 @@ pub(crate) fn mmr_rerank(
     if pool_n <= 1 {
         return fused;
     }
+    // normalize once so [`bump_sim`] compares unit vectors with a bare dot.
+    // A degenerate embedding becomes `None`: [`cosine`] defined it as 0.0
+    // similarity against everything, which is exactly how `None` already
+    // behaves here (never bumps, stays maximally novel).
     let embs: Vec<Option<Emb>> = fused[..pool_n]
         .iter()
-        .map(|(_, k)| resolve(k).map(|r| r.emb))
+        .map(|(_, k)| {
+            let mut e = resolve(k)?.emb;
+            (normalize(&mut e) > 0.0).then_some(e)
+        })
         .collect();
     let top = fused[0].0;
     let norm = |s: f32| if top > 0.0 { s / top } else { 1.0 };
@@ -538,6 +573,7 @@ pub fn search<R: Readable>(
 #[cfg(test)]
 mod fuzzy_mmr_tests {
     use super::*;
+    use crate::EMB_DIM;
 
     fn key(doc: &str) -> ChunkKey {
         ChunkKey {
@@ -703,15 +739,73 @@ mod fuzzy_mmr_tests {
         }
     }
 
+    /// The MMR path dropped its explicit `cosine(a, b)` in favour of
+    /// normalizing the pool once and taking a bare [`dot`]. This pins the
+    /// identity that swap rests on — degenerate inputs included, since
+    /// `cosine` defined those as 0.0 and the new path defines them as
+    /// `None`.
     #[test]
-    fn cosine_identical_is_one_orthogonal_is_zero() {
+    fn normalized_dot_is_cosine_similarity() {
+        // the definition mmr_rerank used before the pool was pre-normalized
+        let cosine = |a: &Emb, b: &Emb| {
+            let (na, nb) = (dot(a, a), dot(b, b));
+            if na == 0.0 || nb == 0.0 {
+                0.0
+            } else {
+                dot(a, b) / (na.sqrt() * nb.sqrt())
+            }
+        };
+        // what mmr_rerank + bump_sim do now
+        let sim = |a: &Emb, b: &Emb| {
+            let unit = |v: &Emb| {
+                let mut u = *v;
+                (normalize(&mut u) > 0.0).then_some(u)
+            };
+            match (unit(a), unit(b)) {
+                (Some(x), Some(y)) => dot(&x, &y),
+                _ => 0.0,
+            }
+        };
+
         let (e0, e1) = (one_hot(0), one_hot(1));
-        assert!((cosine(&e0, &e0) - 1.0).abs() < 1e-6);
-        assert!(cosine(&e0, &e1).abs() < 1e-6);
-        // degenerate (zero) vectors are defined as 0, not NaN
+        let scaled = {
+            let mut s = one_hot(0);
+            s.iter_mut().for_each(|x| *x *= 7.5);
+            s
+        };
+        let mixed = {
+            let mut m = one_hot(3);
+            m[7] = 2.0;
+            m
+        };
         let z = [0.0f32; EMB_DIM];
-        assert_eq!(cosine(&z, &e0), 0.0);
-        assert_eq!(cosine(&z, &z), 0.0);
+
+        for (a, b) in [
+            (&e0, &e0),
+            (&e0, &e1),
+            (&scaled, &e0),
+            (&mixed, &e0),
+            (&mixed, &e1),
+            (&z, &e0),
+            (&z, &z),
+        ] {
+            assert!(
+                (sim(a, b) - cosine(a, b)).abs() < 1e-6,
+                "normalized dot {} != cosine {}",
+                sim(a, b),
+                cosine(a, b)
+            );
+        }
+        // and the values themselves, not merely that the two agree
+        assert!((sim(&e0, &e0) - 1.0).abs() < 1e-6);
+        assert!(sim(&e0, &e1).abs() < 1e-6);
+        assert!(
+            (sim(&scaled, &e0) - 1.0).abs() < 1e-6,
+            "similarity is scale-invariant"
+        );
+        // degenerate (zero) vectors are defined as 0, not NaN
+        assert_eq!(sim(&z, &e0), 0.0);
+        assert_eq!(sim(&z, &z), 0.0);
     }
 
     #[test]

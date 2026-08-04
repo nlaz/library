@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::meta::Ctx;
 use crate::records::is_reserved;
-use crate::{ChunkKey, Emb, Library, perf, sidecar, tools};
+use crate::{ChunkKey, Emb, Library, dot, perf, sidecar, tools};
 
 /// Bump when the sidecar schema or the algorithm changes meaningfully; a
 /// version mismatch reads as stale and triggers a rebuild.
@@ -487,14 +487,10 @@ fn sanitize_title(t: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn normalize(e: &mut Emb) {
-    let norm = e.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+    let inv = 1.0 / dot(e, e).sqrt().max(1e-9);
     for x in e.iter_mut() {
-        *x /= norm;
+        *x *= inv;
     }
-}
-
-fn dot(a: &Emb, b: &Emb) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 /// Distinct *other* docs among each chunk's neighbors.

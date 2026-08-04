@@ -30,14 +30,19 @@ pub(crate) const BUDGET_KEY: &str = "cache.pages.budget_bytes";
 /// Pref key recording that the user has been told the cache exists.
 pub(crate) const ANNOUNCED_KEY: &str = "cache.pages.announced";
 
-/// Default budget. Comfortably more than a working set of a few open books,
-/// and small enough to be worth having on a laptop.
-pub(crate) const DEFAULT_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
+/// Default budget. Room for a couple of open books plus what a search
+/// touches, and small enough to be worth having on a laptop.
+///
+/// Decimal GB, not GiB, and deliberately: the Settings picker and
+/// `formatBytes` both think in decimal, so a binary default would match no
+/// option in the list and the picker would sit there displaying a number
+/// that was not the setting.
+pub(crate) const DEFAULT_BUDGET: u64 = 2_000_000_000;
 
 /// Below this a working set thrashes: every search re-renders what the last
 /// one evicted, and the app feels broken while doing exactly what it was
 /// told. Refuse rather than obey.
-pub(crate) const MIN_BUDGET: u64 = 1024 * 1024 * 1024;
+pub(crate) const MIN_BUDGET: u64 = 1_000_000_000;
 
 /// Evict down to this fraction of the budget, not to the budget itself.
 /// Stopping exactly at the line means the next render crosses it again and
@@ -271,7 +276,7 @@ mod tests {
         }
     }
 
-    const GB: u64 = 1024 * 1024 * 1024;
+    const GB: u64 = 1_000_000_000;
 
     // THE test. Two documents in the author's library are ready, readable,
     // and have no source file at all — their renders are the only surviving

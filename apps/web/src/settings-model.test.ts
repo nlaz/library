@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   activeSection,
   baseName,
+  BUDGET_CHOICES,
+  DEFAULT_BUDGET,
   formatBytes,
   librarianRow,
   PINNED_NOTE,
@@ -156,6 +158,31 @@ describe("storageRows", () => {
   it("warns that pinned renders are the only copy", () => {
     expect(PINNED_NOTE).toMatch(/only copy/);
     expect(PINNED_NOTE).toMatch(/never removes those on its own/);
+  });
+});
+
+describe("BUDGET_CHOICES", () => {
+  // A <select> with no matching option silently shows its first one, so a
+  // default outside this list would make the picker display a limit that is
+  // not the one in force. The first version of this shipped with a binary
+  // GiB default against decimal GB choices and did exactly that.
+  it("contains the default, or the picker lies about the setting", () => {
+    expect(BUDGET_CHOICES.map(([, bytes]) => bytes)).toContain(DEFAULT_BUDGET);
+  });
+
+  it("offers no limit, and nothing below the floor that Rust would clamp", () => {
+    expect(BUDGET_CHOICES.map(([, b]) => b)).toContain(0);
+    for (const [, bytes] of BUDGET_CHOICES) {
+      if (bytes > 0) expect(bytes).toBeGreaterThanOrEqual(1e9);
+    }
+  });
+
+  it("labels each choice the way formatBytes would render it", () => {
+    for (const [label, bytes] of BUDGET_CHOICES) {
+      if (bytes === 0) continue;
+      // "2 GB" vs formatBytes' "2.0 GB" — same number, and that is the point
+      expect(formatBytes(bytes).replace(".0", "")).toBe(label);
+    }
   });
 });
 

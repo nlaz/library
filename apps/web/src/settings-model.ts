@@ -162,14 +162,23 @@ export function storageRows(s: Storage): [label: string, value: string][] {
   return rows;
 }
 
-/** Budget choices, in bytes. 0 is "no limit". */
+/** Budget choices, in bytes. 0 is "no limit".
+ *
+ * Decimal GB, matching `formatBytes` and — load-bearing — matching the
+ * default in `cache.rs`. If the default is not one of these values the
+ * `<select>` falls back to its first option, so the picker would sit there
+ * confidently displaying a limit that is not the one in force. */
 export const BUDGET_CHOICES: [label: string, bytes: number][] = [
   ["1 GB", 1e9],
-  ["3 GB", 3e9],
+  ["2 GB", 2e9],
   ["4 GB", 4e9],
   ["10 GB", 10e9],
   ["No limit", 0],
 ];
+
+/** The default in `cache.rs`. Mirrored so the picker can be checked
+ * against it — see the test. */
+export const DEFAULT_BUDGET = 2e9;
 
 /** The sentence under the pinned row. Its whole job is to say that these
  * bytes are not spare — and that the app will not touch them on its own. */

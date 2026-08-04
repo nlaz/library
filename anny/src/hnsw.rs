@@ -453,9 +453,28 @@ where
         }
     }
 
+    // A query takes the same conditioning as a stored vector (see
+    // `Metric::prepare`) — otherwise a metric with a precondition would
+    // compare a conditioned neighbor against a raw query. Unconditioned
+    // metrics borrow `q` untouched and pay nothing; a conditioned one copies
+    // once per search, negligible against the thousands of distance
+    // evaluations that follow.
+    #[inline]
+    fn prep_q<'a>(q: &'a [Dtype], buf: &'a mut Vec<Dtype>) -> &'a [Dtype] {
+        if !Distance::CONDITIONED {
+            return q;
+        }
+        buf.clear();
+        buf.extend_from_slice(q);
+        Distance::prepare(buf);
+        buf
+    }
+
     // ----------------------------- public: search -----------------------------
     // Returns up to K nearest (id, distance), ascending. K is now THE k.
     pub fn search(&self, q: &[Dtype]) -> Vec<(Distance::Out, u32)> {
+        let mut qbuf = Vec::new();
+        let q = Self::prep_q(q, &mut qbuf);
         let (e_lvl, e_id) = match self.entry_point {
             Some(ep) => ep,
             None => return Vec::new(),
@@ -494,7 +513,10 @@ where
     }
 
     // ----------------------------- public: insert -----------------------------
-    pub fn insert(&mut self, v: [Dtype; DIM]) -> u32 {
+    pub fn insert(&mut self, mut v: [Dtype; DIM]) -> u32 {
+        // establish the metric's precondition once, here, rather than
+        // trusting every caller to have done it
+        Distance::prepare(&mut v);
         let level = self.random_level();
         let upper = self.alloc_upper(level);
         let id = if let Some(slot) = self.free_nodes.pop() {
@@ -767,6 +789,8 @@ where
         q: &[Dtype],
         allow: impl Fn(u32) -> bool,
     ) -> Vec<(Distance::Out, u32)> {
+        let mut qbuf = Vec::new();
+        let q = Self::prep_q(q, &mut qbuf);
         let (e_lvl, e_id) = match self.entry_point {
             Some(ep) => ep,
             None => return Vec::new(),
@@ -821,6 +845,8 @@ where
     // Brute-force over an explicit id list (the small-allow-list fallback):
     // exact, sorted ascending, up to K. Dead/out-of-range ids are skipped.
     pub fn search_among(&self, q: &[Dtype], ids: &[u32]) -> Vec<(Distance::Out, u32)> {
+        let mut qbuf = Vec::new();
+        let q = Self::prep_q(q, &mut qbuf);
         let mut out: Vec<(Distance::Out, u32)> = ids
             .iter()
             .filter(|&&id| (id as usize) < self.meta.len() && self.meta[id as usize].alive)
@@ -844,11 +870,14 @@ where
             64 + n * (DIM * size_of::<Dtype>() + M_0 * 4 + 6) + self.upper.len() * 4,
         );
         out.extend_from_slice(b"ANNG");
-        push_u32(&mut out, 1); // format version
+        push_u32(&mut out, 2); // format version
         push_u32(&mut out, DIM as u32);
         push_u32(&mut out, M_0 as u32);
         push_u32(&mut out, MAX_LEVEL as u32);
         push_u32(&mut out, size_of::<Dtype>() as u32);
+        // stored vectors are conditioned copies under a conditioned metric,
+        // so a blob is only reusable by a metric that agrees
+        push_u32(&mut out, Distance::CONDITIONED as u32);
         push_u64(&mut out, n as u64);
         push_u64(&mut out, self.upper.len() as u64);
         push_u64(&mut out, self.free_nodes.len() as u64);
@@ -889,14 +918,15 @@ where
         if c.take(4)? != b"ANNG" {
             return Err(LoadError::BadMagic);
         }
-        if c.u32()? != 1 {
+        if c.u32()? != 2 {
             return Err(LoadError::BadVersion);
         }
-        let (dim, m0, maxl, dsize) = (c.u32()?, c.u32()?, c.u32()?, c.u32()?);
+        let (dim, m0, maxl, dsize, cond) = (c.u32()?, c.u32()?, c.u32()?, c.u32()?, c.u32()?);
         if dim as usize != DIM
             || m0 as usize != M_0
             || maxl as usize != MAX_LEVEL
             || dsize as usize != size_of::<Dtype>()
+            || (cond != 0) != Distance::CONDITIONED
         {
             return Err(LoadError::ShapeMismatch);
         }
@@ -1057,7 +1087,7 @@ impl<'a> Cursor<'a> {
 // ============================ tests ============================
 #[cfg(test)]
 mod tests {
-    use crate::metric::{L1, L2};
+    use crate::metric::{Cosine, L1, L2, UnitCosine};
 
     use super::*;
     use std::collections::HashSet;
@@ -1267,6 +1297,126 @@ mod tests {
     // type aliases keep the (now longer) generic list readable in tests
     type Ix8 = Hnsw<f32, L2, 8, 16, 10, 20, 40, 12>;
     type Ix16 = Hnsw<f32, L2, 16, 16, 10, 20, 40, 12>;
+    type IxCos = Hnsw<f32, Cosine, 8, 16, 10, 20, 40, 12>;
+    type IxUnit = Hnsw<f32, UnitCosine, 8, 16, 10, 20, 40, 12>;
+
+    /// UnitCosine exists only to avoid recomputing norms that Cosine derives
+    /// afresh on every comparison, so it must compute the *same function*.
+    /// Inputs are deliberately not unit length and span a wide range of
+    /// magnitudes: establishing the precondition is the index's job, not the
+    /// caller's, and cosine is scale-invariant either way.
+    ///
+    /// This is the metric-level identity. It does not extend to asserting
+    /// that two separately built graphs return identical ids — HNSW
+    /// construction branches on distance comparisons, so differences in the
+    /// last ulp can select different neighbors and yield two equally valid
+    /// approximations. See `unit_cosine_holds_recall` for that end.
+    #[test]
+    fn unit_cosine_is_cosine_on_the_same_pair() {
+        let mut rng = Rng::new(7);
+        let vecs: Vec<[f32; 8]> = (0..400)
+            .map(|_| {
+                let scale = 0.1 + rng.f32() * 40.0;
+                let mut v: [f32; 8] = rng.vec();
+                v.iter_mut().for_each(|x| *x = (*x - 0.5) * scale);
+                v
+            })
+            .collect();
+
+        let mut worst = 0.0f32;
+        for (a, b) in vecs.iter().zip(vecs.iter().skip(1)) {
+            let c = <Cosine as Metric<f32>>::distance(a, b);
+            let (mut ua, mut ub) = (*a, *b);
+            <UnitCosine as Metric<f32>>::prepare(&mut ua);
+            <UnitCosine as Metric<f32>>::prepare(&mut ub);
+            let u = <UnitCosine as Metric<f32>>::distance(&ua, &ub);
+            worst = worst.max((c - u).abs());
+        }
+        assert!(worst < 1e-5, "max |Cosine - UnitCosine| was {worst:e}");
+
+        // prepare() must be idempotent — the index applies it on insert, and
+        // a rebuild from already-conditioned vectors must not drift
+        let mut v = vecs[0];
+        <UnitCosine as Metric<f32>>::prepare(&mut v);
+        let once = v;
+        <UnitCosine as Metric<f32>>::prepare(&mut v);
+        for (a, b) in once.iter().zip(v.iter()) {
+            assert!((a - b).abs() < 1e-6, "prepare is not idempotent");
+        }
+        // and a degenerate vector survives it rather than becoming NaN
+        let mut z = [0.0f32; 8];
+        <UnitCosine as Metric<f32>>::prepare(&mut z);
+        assert!(z.iter().all(|x| *x == 0.0));
+    }
+
+    /// The swap must not cost recall. Both metrics approximate the same exact
+    /// ranking, so both are measured against brute force rather than against
+    /// each other.
+    #[test]
+    fn unit_cosine_holds_recall() {
+        let mut rng = Rng::new(9);
+        let centers: Vec<[f32; 8]> = (0..12).map(|_| rng.vec()).collect();
+        let base: Vec<[f32; 8]> = (0..2000)
+            .map(|_| {
+                let scale = 0.2 + rng.f32() * 20.0;
+                let mut v = rng.clustered(&centers);
+                v.iter_mut().for_each(|x| *x *= scale);
+                v
+            })
+            .collect();
+
+        let mut cos: IxCos = Hnsw::new(Cosine, 42);
+        let mut unit: IxUnit = Hnsw::new(UnitCosine, 42);
+        for v in &base {
+            cos.insert(*v);
+            unit.insert(*v);
+        }
+
+        let (mut rc, mut ru) = (0usize, 0usize);
+        let queries: Vec<[f32; 8]> = (0..40).map(|_| rng.clustered(&centers)).collect();
+        for q in &queries {
+            let mut exact: Vec<(f32, u32)> = base
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (<Cosine as Metric<f32>>::distance(q, v), i as u32))
+                .collect();
+            exact.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let gt: HashSet<u32> = exact[..10].iter().map(|(_, i)| *i).collect();
+            rc += cos.search(q).iter().filter(|(_, i)| gt.contains(i)).count();
+            ru += unit
+                .search(q)
+                .iter()
+                .filter(|(_, i)| gt.contains(i))
+                .count();
+        }
+        let tot = (queries.len() * 10) as f64;
+        let (rc, ru) = (rc as f64 / tot, ru as f64 / tot);
+        assert!(rc > 0.9 && ru > 0.9, "recall collapsed: {rc:.3} / {ru:.3}");
+        assert!(
+            (rc - ru).abs() < 0.05,
+            "recall diverged: Cosine {rc:.3} vs UnitCosine {ru:.3}"
+        );
+    }
+
+    /// A conditioned metric stores conditioned copies, so its blob is not
+    /// interchangeable with an unconditioned one's even at identical shape.
+    /// The header carries the flag and a mismatch must read as stale — a
+    /// silent reuse would search normalized vectors with a metric that
+    /// expects raw ones.
+    #[test]
+    fn blob_does_not_cross_the_conditioned_boundary() {
+        let mut rng = Rng::new(11);
+        let mut unit: IxUnit = Hnsw::new(UnitCosine, 3);
+        for _ in 0..40 {
+            unit.insert(rng.vec());
+        }
+        let blob = unit.to_bytes();
+        assert_eq!(
+            IxCos::from_bytes(Cosine, &blob).err(),
+            Some(LoadError::ShapeMismatch)
+        );
+        assert!(IxUnit::from_bytes(UnitCosine, &blob).is_ok());
+    }
 
     #[test]
     fn empty_index() {
@@ -1580,7 +1730,9 @@ mod tests {
             ix.remove(*id);
         }
         let s = ix.stats();
-        let expected = 62
+        // 66 = fixed header: magic(4) + version/dim/m0/maxlevel/dtype/
+        // conditioned(6*4) + n/upper_len/free_len(3*8) + entry(6) + rng(8)
+        let expected = 66
             + 8 * ML
             + s.slots * (s.dim * s.dtype_bytes + s.m0 * 4 + 6)
             + (s.upper_len + s.free_slots + s.free_upper_len) * 4;

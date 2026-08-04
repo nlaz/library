@@ -3,7 +3,7 @@
 //! the lexical sinks: HNSW for search, meta for key->bbox, manifest for
 //! doc->keys (diff-based re-ingest).
 
-use anny::metric::Cosine;
+use anny::metric::UnitCosine;
 use fold::pipeline::terminal::search::{Hnsw, HnswReader};
 use fold::pipeline::terminal::{InvertedIndex, InvertedIndexReader};
 use fold::pipeline::{Keyed, Map};
@@ -52,7 +52,7 @@ pub struct ImageRec {
 /// compile-time TOP_K below (search-time only; stored graphs stay valid).
 pub const IMG_FETCH: usize = 256;
 
-pub type ImgVecIndex = Hnsw<ImageKey, f32, Cosine, CLIP_DIM, 32, 256, 256, 80, 16>;
+pub type ImgVecIndex = Hnsw<ImageKey, f32, UnitCosine, CLIP_DIM, 32, 256, 256, 80, 16>;
 
 /// What the image store's table feeds the graph.
 pub type ImageIn = Keyed<ImageKey, ImageRec>;
@@ -76,7 +76,7 @@ pub type ImgGraph = (ImgVecSink, (ImgMetaSink, ImgManifestSink));
 pub type Images = KeyedStream<ImageKey, ImageRec, ImgGraph>;
 
 pub type ImgReaders<'tx, R> = (
-    HnswReader<'tx, R, ImageKey, f32, Cosine, CLIP_DIM, 32, 256, 256, 80, 16>,
+    HnswReader<'tx, R, ImageKey, f32, UnitCosine, CLIP_DIM, 32, 256, 256, 80, 16>,
     (
         InvertedIndexReader<'tx, R, Bbox, ImageKey>,
         InvertedIndexReader<'tx, R, ImageKey, String>,
@@ -97,7 +97,7 @@ pub fn img_graph() -> ImgGraph {
     (
         Map::new(
             to_vec as fn(&ImageIn) -> Keyed<ImageKey, ClipEmb>,
-            ImgVecIndex::new("imgvec", Cosine, 42),
+            ImgVecIndex::new("imgvec", UnitCosine, 42),
         ),
         (
             Map::new(

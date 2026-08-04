@@ -1,7 +1,7 @@
 //! The graph. fn pointers (not closures) keep every node's type nameable, so
 //! the whole graph and its reader tuple get type aliases.
 
-use anny::metric::Cosine;
+use anny::metric::UnitCosine;
 use fold::pipeline::terminal::search::{Bm25, Bm25Reader, Hnsw, HnswReader};
 use fold::pipeline::terminal::{InvertedIndex, InvertedIndexReader};
 use fold::pipeline::{FlatMap, Keyed, Map};
@@ -14,7 +14,7 @@ use crate::{ChunkKey, ChunkRec, EMB_DIM, Emb};
 // M_0=32, K=40 results, EF_SEARCH=80, EF_BUILD=80, MAX_LEVEL=16.
 // K/EF_SEARCH are search-time only: bumping them doesn't invalidate stored
 // graphs (the persisted blob validates DIM/M_0/MAX_LEVEL).
-pub type VecIndex = Hnsw<ChunkKey, f32, Cosine, EMB_DIM, 32, 40, 80, 80, 16>;
+pub type VecIndex = Hnsw<ChunkKey, f32, UnitCosine, EMB_DIM, 32, 40, 80, 80, 16>;
 
 /// The Bm25 sink's tokenizer type: a plain fn pointer keeps it nameable.
 pub type LexTok = fn(&str, &mut Vec<u8>);
@@ -45,7 +45,7 @@ pub type Library = KeyedStream<ChunkKey, ChunkRec, Graph>;
 pub type Readers<'tx, R> = (
     (
         Bm25Reader<'tx, R, ChunkKey, LexTok>,
-        HnswReader<'tx, R, ChunkKey, f32, Cosine, EMB_DIM, 32, 40, 80, 80, 16>,
+        HnswReader<'tx, R, ChunkKey, f32, UnitCosine, EMB_DIM, 32, 40, 80, 80, 16>,
     ),
     (
         InvertedIndexReader<'tx, R, ChunkKey, String>,
@@ -75,7 +75,7 @@ pub fn graph() -> Graph {
             ),
             Map::new(
                 to_vec as fn(&ChunkIn) -> Keyed<ChunkKey, Emb>,
-                VecIndex::new("vec", Cosine, 42),
+                VecIndex::new("vec", UnitCosine, 42),
             ),
         ),
         (

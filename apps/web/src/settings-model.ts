@@ -178,7 +178,7 @@ export const BUDGET_CHOICES: [label: string, bytes: number][] = [
 
 /** The default in `cache.rs`. Mirrored so the picker can be checked
  * against it — see the test. */
-export const DEFAULT_BUDGET = 2e9;
+export const DEFAULT_BUDGET = 4e9;
 
 /** The sentence under the pinned row. Its whole job is to say that these
  * bytes are not spare — and that the app will not touch them on its own. */

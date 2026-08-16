@@ -37,7 +37,15 @@ pub(crate) const ANNOUNCED_KEY: &str = "cache.pages.announced";
 /// `formatBytes` both think in decimal, so a binary default would match no
 /// option in the list and the picker would sit there displaying a number
 /// that was not the setting.
-pub(crate) const DEFAULT_BUDGET: u64 = 2_000_000_000;
+///
+/// Raised from 2 GB: a real library outgrows that badly. At ~1 MB a render,
+/// 2 GB holds a couple of thousand pages, so a 13,000-page collection kept
+/// about a tenth of itself and nearly every search hit was a cold miss —
+/// which is only survivable because the grid now retries a shed render
+/// (apps/web/src/page-retry.ts) rather than showing a broken image. This
+/// doubling buys back headroom; it does not change the shape of the problem
+/// for a library several times larger, where the answer is the picker.
+pub(crate) const DEFAULT_BUDGET: u64 = 4_000_000_000;
 
 /// Below this a working set thrashes: every search re-renders what the last
 /// one evicted, and the app feels broken while doing exactly what it was

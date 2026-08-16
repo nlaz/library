@@ -25,11 +25,31 @@ import {
 } from "./dom";
 import { docTitle } from "./format";
 import { hlBoxes } from "./highlights";
+import { gridRetryDelay } from "./page-retry";
 import { onHitStep, readerOpen, stepHit } from "./reader";
 import { cycleKind, resetGhost, resetKind, sendQuery } from "./search";
 import type { WireHit } from "./types";
 
 let viewerHit: WireHit | null = null;
+
+/** The page the overlay is showing, and how many times its render has been
+ * asked for again. Same story as the results grid: the request can be shed
+ * (library-app/src/render.rs), and the overlay used to sit blank when it
+ * was — which is exactly where someone lands after clicking a card whose
+ * preview didn't load. */
+let viewerSrc = "";
+let viewerAttempt = 0;
+
+$pageImg.addEventListener("error", () => {
+  const delay = gridRetryDelay(++viewerAttempt);
+  if (delay === null || !viewerSrc) return;
+  const src = viewerSrc;
+  window.setTimeout(() => {
+    // not if the overlay closed or moved on to another page in the meantime
+    if (viewerSrc !== src || $overlay.hidden) return;
+    $pageImg.src = `${src}?r=${viewerAttempt}`;
+  }, delay);
+});
 
 export function openViewer(hit: WireHit) {
   viewerHit = hit;
@@ -43,6 +63,8 @@ export function openViewer(hit: WireHit) {
   if ($pageImg.src.endsWith(src)) {
     reveal();
   } else {
+    viewerSrc = src;
+    viewerAttempt = 0; // a fresh page gets the full budget of tries
     $pageImg.src = src;
     $pageImg.addEventListener("load", reveal, { once: true });
   }

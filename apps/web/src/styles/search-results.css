@@ -64,6 +64,22 @@
   display: block;
 }
 
+/* a preview whose page render could not be fetched after retrying. Fills the
+   window the crop left rather than collapsing the card, and offers no second
+   control — the card itself already opens the viewer, which asks again */
+.pv-miss {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  text-align: center;
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
 .card .meta {
   padding: 10px 12px;
 }

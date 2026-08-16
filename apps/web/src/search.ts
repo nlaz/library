@@ -22,6 +22,7 @@ import { docTitle, hitKey } from "./format";
 import { getCol, renderHome } from "./home";
 import { hlBoxes } from "./highlights";
 import { notesOpen } from "./notebox";
+import { gridRetryDelay } from "./page-retry";
 import { clearReaderHits, readerDoc, readerOpen, setReaderHits } from "./reader";
 import { completionPrefix, ghostTail } from "./search-ghost";
 import { DEFAULT_KIND, type Kind, nextKind } from "./search-kinds";
@@ -159,6 +160,46 @@ function marginaliaCard(hit: WireHit): { el: HTMLElement; place: () => void } {
   return { el, place: () => {} };
 }
 
+/** Point a card's preview at its page render, and come back for it if the
+ * request fails.
+ *
+ * A miss is ordinary here: page images are an evictable cache, and the
+ * protocol handler sheds a render it has no room to start. Without a retry
+ * the card kept the browser's broken-image glyph until the next query — see
+ * page-retry.ts for why the grid's schedule is longer and jittered where the
+ * reader's is short and exact. Out of attempts, the crop goes and a quiet
+ * placeholder takes its place; the card still opens the viewer, which asks
+ * again on its own. */
+function loadPreview(pv: HTMLElement, inner: HTMLElement, src: string): HTMLImageElement {
+  const img = document.createElement("img");
+  img.loading = "lazy";
+  let attempt = 0;
+
+  img.addEventListener("error", () => {
+    const delay = gridRetryDelay(++attempt);
+    if (delay === null) {
+      // the highlight boxes are positioned against a scan that isn't
+      // coming, so the whole crop goes rather than hanging over nothing
+      inner.remove();
+      const miss = document.createElement("div");
+      miss.className = "pv-miss";
+      miss.textContent = "page unavailable";
+      pv.append(miss);
+      return;
+    }
+    window.setTimeout(() => {
+      // A superseded query's cards are already out of the grid. Retrying
+      // them would spend the render queue on results nobody is looking at —
+      // and starve the ones on screen, which is the whole failure again.
+      if (!img.isConnected) return;
+      img.src = `${src}?r=${attempt}`; // or the browser serves us its own memory of the miss
+    }, delay);
+  });
+
+  img.src = src;
+  return img;
+}
+
 function card(hit: WireHit): { el: HTMLElement; place: () => void } {
   if (hit.kind === "card") return marginaliaCard(hit);
 
@@ -172,9 +213,7 @@ function card(hit: WireHit): { el: HTMLElement; place: () => void } {
   pv.className = "preview";
   const inner = document.createElement("div");
   inner.className = "pv-inner";
-  const img = document.createElement("img");
-  img.src = pageUrl(hit.img);
-  img.loading = "lazy";
+  const img = loadPreview(pv, inner, pageUrl(hit.img));
   // an image card's crop IS the figure — a brass wash over the whole
   // preview would just be noise, so boxes only decorate text cards
   inner.append(img, ...(isImage ? [] : hlBoxes(hit.boxes)));

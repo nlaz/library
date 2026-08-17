@@ -424,3 +424,46 @@ it("the document-level ? key stands down while the catalog is open", async () =>
   c.press("?");
   expect(keys.keysOpen()).toBe(false);
 });
+
+// Keep this test last: setDesktop cannot be undone, and the rest of the file
+// exercises the browser build's verb-less rows.
+it("a book still indexing gets cancel where delete would be", async () => {
+  const format = await import("./format");
+  const state = await import("./state");
+  const cancelled: string[] = [];
+  state.setDesktop({
+    cancelDoc: async (id: string) => {
+      cancelled.push(id);
+    },
+    // once desktop is set, marginalia reads route through it too
+    listCards: async () => CARDS,
+  } as unknown as NonNullable<typeof state.desktop>);
+  format.setDocList([
+    {
+      id: "berger",
+      title: "Ways of Seeing",
+      pages: 176,
+      collections: [],
+      processing: true,
+      status: { state: "preparing", stage: "ocr", done: 41, total: 176, updated: 0 },
+    },
+  ]);
+
+  cmdK();
+  await tick();
+  type("ways of seeing");
+  c.press("Tab");
+  expect(labels()).toContain("Cancel indexing…");
+  expect(labels()).not.toContain("Remove from the library…");
+
+  // the confirm is still a stage you walk into, same as remove
+  type("cancel");
+  c.press("Tab");
+  expect(labels()).toEqual(["Stop indexing “Ways of Seeing”"]);
+  c.press("Enter");
+  await tick();
+  expect(cancelled).toEqual(["berger"]);
+  expect(changed).toContain("berger");
+
+  format.setDocList([]);
+});

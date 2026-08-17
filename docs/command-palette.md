@@ -298,14 +298,15 @@ mechanism.
 
 ## Known limits
 
-Three things the palette will want and the backend cannot do yet: cancelling
-an in-flight ingest, deleting a card (only archive, via `filed: true`), and
-creating or renaming a collection without moving files, since a shelf *is* a
-depth-1 folder. The first two are small additions; the third is a real design
-question about whether collections should ever be virtual, and is out of scope
-here.
+Two things the palette will want and the backend cannot do yet: deleting a
+card (only archive, via `filed: true`), and creating or renaming a collection
+without moving files, since a shelf *is* a depth-1 folder. The first is a
+small addition; the second is a real design question about whether collections
+should ever be virtual, and is out of scope here. (Cancelling an ingest landed
+as `cancel_doc`: a book still indexing offers "Cancel indexing…" where
+"Remove from the library…" would be.)
 
-The web build degrades: `docs`, roots, reveal, delete, retry and rename are
-Tauri-only. The palette filters its registry by host the same way the drawer
+The web build degrades: `docs`, roots, reveal, delete, cancel, retry and
+rename are Tauri-only. The palette filters its registry by host the same way the drawer
 already takes `edit: desktop ? … : null`, and on web the BOOKS rows come from
 `collections()` with `docTitle()`'s prettified fallback.

@@ -285,6 +285,10 @@ function bookVerbs(doc: string): Item[] {
   ];
   if (!desktop) return out; // the browser build has no file to rename or move
   const d = desktop;
+  // a book still on its way in is cancelled rather than deleted — the same
+  // removal (gone from the shelf, file kept), by the command that knows how
+  // to stop a worker mid-pass instead of refusing while one is running
+  const processing = getDocList().find((x) => x.id === doc)?.processing ?? false;
   out.push(
     { id: "v:rename", label: "Rename…", group, drill: () => renameStage(d, doc) },
     { id: "v:file", label: "File into a collection…", group, drill: () => shelfStage(d, doc) },
@@ -294,7 +298,14 @@ function bookVerbs(doc: string): Item[] {
       group,
       run: () => void d.revealDoc(doc).catch(report),
     },
-    { id: "v:delete", label: "Remove from the library…", group, drill: () => removeStage(d, doc) },
+    processing
+      ? { id: "v:cancel", label: "Cancel indexing…", group, drill: () => removeStage(d, doc, true) }
+      : {
+          id: "v:delete",
+          label: "Remove from the library…",
+          group,
+          drill: () => removeStage(d, doc),
+        },
   );
   return out;
 }
@@ -374,23 +385,25 @@ function shelfStage(d: Host, doc: string): Stage {
 }
 
 /** Destructive, so it is a stage rather than a row: the confirmation is a
- * place you have to walk into, and ⌫ walks back out of it. */
-function removeStage(d: Host, doc: string): Stage {
+ * place you have to walk into, and ⌫ walks back out of it. With `cancel`
+ * it is the same removal offered to a book still indexing, through the
+ * command that stops the worker instead of refusing while it runs. */
+function removeStage(d: Host, doc: string, cancel = false): Stage {
   const title = docTitle(doc);
   return {
-    crumb: `remove ${title}`,
+    crumb: `${cancel ? "cancel" : "remove"} ${title}`,
     placeholder: "",
     raw: true,
     items: () => [
       {
         id: "remove:confirm",
-        label: `Remove “${title}” from the library`,
+        label: cancel ? `Stop indexing “${title}”` : `Remove “${title}” from the library`,
         group: "confirm",
         meta: "the file stays on disk",
         chord: "⏎",
         run: async () => {
           try {
-            await d.deleteDoc(doc);
+            await (cancel ? d.cancelDoc(doc) : d.deleteDoc(doc));
             localStorage.removeItem(`pos:${doc}`);
             forgetDoc(doc); // and it must not stay on anyone's way back
             if (location.hash.startsWith(`#/read/${encodeURIComponent(doc)}`)) location.hash = "#/";

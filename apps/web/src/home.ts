@@ -145,6 +145,25 @@ function bookCard(d: DocInfo, cols: Collections): HTMLElement {
     cover.append(bar);
     // a live event wins; the persisted status seeds the initial render
     updateBookProgress(el, ingesting.get(d.id) ?? statusEvent(d));
+    // the one verb a card mid-ingest offers: stop, and take the book with
+    // it — the file stays put, so adding it again undoes this
+    const cancel = document.createElement("button");
+    cancel.className = "bcancel divot firm";
+    cancel.textContent = "✕";
+    cancel.title = "Cancel indexing";
+    cancel.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!(await desktop!.confirmCancel(displayTitle(d)))) return;
+      try {
+        await desktop!.cancelDoc(d.id);
+        ingesting.delete(d.id);
+        forgetDoc(d.id); // and it must not stay on anyone's way back
+      } catch (err) {
+        notify(`cancel: ${err}`, { sticky: true });
+      }
+      renderHome(await loadCollections());
+    });
+    cover.append(cancel);
   } else {
     // text_ready reads and searches fine — figures are still indexing, so
     // keep a quiet badge but leave the card fully usable

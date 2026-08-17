@@ -262,6 +262,21 @@ export function retryDoc(doc: string): Promise<void> {
   return invoke("retry_doc", { doc });
 }
 
+/** Stop indexing a doc that is queued or mid-ingest, and drop it from the
+ * library. A doc the worker is on gets a tombstone the worker answers at
+ * its next commit; either way the original file is kept, and adding it
+ * again starts over. */
+export function cancelDoc(doc: string): Promise<void> {
+  return invoke("cancel_doc", { doc });
+}
+
+export function confirmCancel(title: string): Promise<boolean> {
+  return confirmDialog(
+    `Stop indexing “${title}”? It is removed from the library; the original file is kept.`,
+    { title: "Cancel indexing", kind: "warning" },
+  );
+}
+
 export function confirmDelete(title: string): Promise<boolean> {
   return confirmDialog(
     `Remove “${title}” from the library? Its pages and search entries are deleted; the original file is kept.`,

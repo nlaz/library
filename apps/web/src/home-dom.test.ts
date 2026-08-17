@@ -27,6 +27,10 @@ let panelLeft = 40;
 /** Doc ids the menu asked Finder to show. */
 let revealed: string[] = [];
 
+/** Doc ids whose indexing was cancelled, and what the confirm answers. */
+let cancelled: string[] = [];
+let confirmAnswer = true;
+
 beforeAll(async () => {
   await mountChrome();
   const state = await import("./state");
@@ -34,6 +38,10 @@ beforeAll(async () => {
     docs: async () => docs,
     revealDoc: async (id: string) => {
       revealed.push(id);
+    },
+    confirmCancel: async () => confirmAnswer,
+    cancelDoc: async (id: string) => {
+      cancelled.push(id);
     },
   } as unknown as typeof import("./tauri"));
   home = await import("./home");
@@ -46,6 +54,8 @@ beforeAll(async () => {
 beforeEach(() => {
   panelLeft = 40;
   revealed = [];
+  cancelled = [];
+  confirmAnswer = true;
 });
 
 const $home = () => document.getElementById("home")!;
@@ -69,6 +79,27 @@ it("drops the first-run card the moment a book is added, still indexing", async 
   expect($home().querySelector(".onboard")).toBeNull();
   // the card's own progress bar is what reports the indexing from here
   expect($home().querySelector(".book.processing .progress")).not.toBeNull();
+});
+
+it("a card mid-ingest offers cancel, behind the confirm", async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  docs = [
+    doc({ processing: true, pages: 0, status: { state: "queued", done: 0, total: 0 } as DocStatus }),
+  ];
+  await home.renderHome({});
+  const btn = $home().querySelector<HTMLElement>(".book.processing .bcancel");
+  expect(btn).not.toBeNull();
+
+  // declining the dialog cancels nothing
+  confirmAnswer = false;
+  btn!.click();
+  await tick();
+  expect(cancelled).toEqual([]);
+
+  confirmAnswer = true;
+  btn!.click();
+  await tick();
+  expect(cancelled).toEqual(["kant"]);
 });
 
 it("opens a menu leftward when there is room for it", async () => {

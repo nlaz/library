@@ -129,6 +129,29 @@ pub(crate) fn forget_caches(data: &std::path::Path, doc: &str) {
     let _ = std::fs::remove_file(data.join("text").join(format!("{doc}.md")));
 }
 
+/// The removal itself, shared by delete and cancel: retract from the stores
+/// first so search can't hand out hits whose page images are already gone,
+/// then drop everything derived, tombstone, and prune the title.
+fn remove_doc(
+    eng: &crate::engine::Engine,
+    data: &std::path::Path,
+    ctx: &library_core::meta::Ctx,
+    doc: &str,
+) -> Result<(), String> {
+    {
+        let mut lib = eng.lib.write().expect("library lock poisoned");
+        library_ingest::commit_text(&mut lib, doc, &[]);
+    }
+    {
+        let mut images = eng.images.write().expect("images lock poisoned");
+        library_ingest::commit_figures(&mut images, doc, &[]);
+    }
+    forget_caches(data, doc);
+    worker::clear_staged(data, doc);
+    status::write(ctx, doc, &DocStatus::new(DocState::Deleted)).map_err(|e| e.to_string())?;
+    ctx.set_title(doc, None).map_err(|e| e.to_string())
+}
+
 /// Remove a doc: retract it from both indexes, delete everything derived
 /// from it, and prune its title. The file itself is left wherever the user
 /// keeps it; a `deleted` tombstone stops the worker from re-ingesting it
@@ -147,25 +170,65 @@ pub(crate) async fn delete_doc(state: State<'_, AppState>, doc: String) -> Resul
         return Err("still processing — try again when ingest finishes".into());
     }
     let eng = engine(&state)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        // retract from the stores first so search can't hand out hits whose
-        // page images are already gone
-        {
-            let mut lib = eng.lib.write().expect("library lock poisoned");
-            library_ingest::commit_text(&mut lib, &doc, &[]);
+    tauri::async_runtime::spawn_blocking(move || remove_doc(&eng, &data, &ctx, &doc))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// What cancelling a doc amounts to, given where it is.
+#[derive(Debug, PartialEq)]
+enum Cancel {
+    /// Not on its way in — settled, failed, or unknown. Nothing to stop.
+    NotIndexing,
+    /// A live ingest pass owns the stores and the cache dirs, so the safe
+    /// way to stop it is the signal it already honours: the tombstone,
+    /// which the worker checks before every commit and answers by
+    /// retracting whatever it had landed (see `worker::cancelled`).
+    Tombstone,
+    /// Nobody has it claimed: the full removal, right now.
+    Remove,
+}
+
+/// `text_ready` is already searchable — removing one is a delete, not a
+/// cancel — so cancel applies exactly to the `processing` states the UI
+/// shows a progress bar for.
+fn cancel_plan(st: Option<&DocStatus>, claimed: bool) -> Cancel {
+    if !is_processing(st) {
+        Cancel::NotIndexing
+    } else if claimed {
+        Cancel::Tombstone
+    } else {
+        Cancel::Remove
+    }
+}
+
+/// Stop indexing a document that is still on its way into the library, and
+/// remove it. Like `delete_doc`, the file stays wherever the user keeps it,
+/// and adding it back starts the ingest over.
+#[tauri::command]
+pub(crate) async fn cancel_doc(state: State<'_, AppState>, doc: String) -> Result<(), String> {
+    if library_core::records::is_reserved(&doc) {
+        return Err("not a document".into());
+    }
+    let data = state.settings.data.clone();
+    let ctx = state.ctx.clone();
+    match cancel_plan(
+        status::read(&ctx, &doc).as_ref(),
+        worker::claimed(&data, &doc),
+    ) {
+        Cancel::NotIndexing => Err("not being indexed".into()),
+        Cancel::Tombstone => {
+            status::write(&ctx, &doc, &DocStatus::new(DocState::Deleted))
+                .map_err(|e| e.to_string())?;
+            ctx.set_title(&doc, None).map_err(|e| e.to_string())
         }
-        {
-            let mut images = eng.images.write().expect("images lock poisoned");
-            library_ingest::commit_figures(&mut images, &doc, &[]);
+        Cancel::Remove => {
+            let eng = engine(&state)?;
+            tauri::async_runtime::spawn_blocking(move || remove_doc(&eng, &data, &ctx, &doc))
+                .await
+                .map_err(|e| e.to_string())?
         }
-        forget_caches(&data, &doc);
-        worker::clear_staged(&data, &doc);
-        status::write(&ctx, &doc, &DocStatus::new(DocState::Deleted)).map_err(|e| e.to_string())?;
-        ctx.set_title(&doc, None).map_err(|e| e.to_string())?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    }
 }
 
 /// The file a "Show in Finder" points at, wherever the user keeps it.
@@ -325,6 +388,33 @@ mod tests {
                 expected,
                 "is_processing for {state:?}"
             );
+        }
+    }
+
+    #[test]
+    fn cancel_plan_covers_every_state_and_both_claim_answers() {
+        // cancel applies exactly where is_processing does; a live claim
+        // downgrades the removal to the tombstone the worker watches for
+        for (state, processing) in [
+            (Some(DocState::Queued), true),
+            (Some(DocState::Preparing), true),
+            (Some(DocState::Staged), true),
+            (Some(DocState::TextReady), false),
+            (Some(DocState::Ready), false),
+            (Some(DocState::Failed), false),
+            (Some(DocState::Deleted), false),
+            (None, false),
+        ] {
+            let st = state.map(DocStatus::new);
+            for claimed in [false, true] {
+                let plan = cancel_plan(st.as_ref(), claimed);
+                let want = match (processing, claimed) {
+                    (false, _) => Cancel::NotIndexing,
+                    (true, true) => Cancel::Tombstone,
+                    (true, false) => Cancel::Remove,
+                };
+                assert_eq!(plan, want, "cancel_plan for {state:?}, claimed={claimed}");
+            }
         }
     }
 

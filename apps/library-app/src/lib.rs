@@ -118,6 +118,7 @@ pub fn run() {
             docs::docs,
             docs::set_title,
             docs::delete_doc,
+            docs::cancel_doc,
             docs::retry_doc,
             docs::reveal_doc,
             ingest::ingest_paths,
